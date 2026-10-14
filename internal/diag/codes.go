@@ -219,6 +219,9 @@ const (
 	CodeAddrOf Code = "E4036"
 	// CodeMissingArm reports a match that leaves values uncovered.
 	CodeMissingArm Code = "E4037"
+	// CodeEmptyCLayout reports a C value type with no members, which has no
+	// C layout to match.
+	CodeEmptyCLayout Code = "E4038"
 )
 
 // Concurrency diagnostics occupy the E6001-E6099 range.

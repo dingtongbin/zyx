@@ -320,6 +320,16 @@ extern struct Point {
 	wantClean(t, diags)
 }
 
+func TestEmptyExternStruct(t *testing.T) {
+	src := `package server
+
+extern struct Nothing {
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeEmptyCLayout)
+}
+
 func TestFieldRecursion(t *testing.T) {
 	cases := map[string]string{
 		"direct": `package server

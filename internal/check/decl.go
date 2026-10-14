@@ -359,6 +359,11 @@ func (c *checker) checkStruct(v *ast.StructDecl) {
 			}
 		}
 		c.checkRecursion(d, v.Name)
+		if v.Extern && len(d.Fields) == 0 {
+			c.errorHelp(diag.CodeEmptyCLayout, v.Name.Sp,
+				"declare at least one field",
+				"an empty extern struct has no C layout")
+		}
 	})
 }
 
