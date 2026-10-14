@@ -44,9 +44,14 @@ func New(kind string, payload ...string) *Node {
 	return &Node{Kind: kind, Payload: payload}
 }
 
-// Child appends children and returns the node.
+// Child appends children and returns the node. A nil child is dropped, so
+// that a node the builder could not render does not reach the format.
 func (n *Node) Child(children ...*Node) *Node {
-	n.Children = append(n.Children, children...)
+	for _, c := range children {
+		if c != nil {
+			n.Children = append(n.Children, c)
+		}
+	}
 	return n
 }
 
@@ -65,6 +70,9 @@ func (n *Node) Mark(name, arg string) *Node {
 // Sorted sorts the marks of the node and every descendant by name and
 // argument, which the format requires.
 func (n *Node) Sorted() *Node {
+	if n == nil {
+		return nil
+	}
 	sortMarks(n.Marks)
 	for _, child := range n.Children {
 		child.Sorted()
@@ -80,6 +88,13 @@ func sortMarks(marks []Mark) {
 		}
 	}
 }
+
+// First returns the first child of a kind, or nil. It is the accessor the
+// backend uses to read a tree it did not build.
+func (n *Node) First(kind string) *Node { return n.child(kind) }
+
+// All returns every child of a kind, in order.
+func (n *Node) All(kind string) []*Node { return n.children(kind) }
 
 // child returns the first child of a kind, or nil.
 func (n *Node) child(kind string) *Node {
