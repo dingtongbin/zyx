@@ -52,6 +52,10 @@ func (l *lexer) scanIdent() {
 	} else if kw, ok := token.LookupKeyword(text); ok {
 		kind = kw
 	}
+	if kind == token.C && l.startsCBlock(l.pos) {
+		l.scanCBlock(start)
+		return
+	}
 	l.emitSig(token.Token{Kind: kind, Span: l.span(start, l.pos)})
 }
 

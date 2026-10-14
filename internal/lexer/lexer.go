@@ -20,6 +20,16 @@ func Lex(file *source.File) ([]token.Token, []diag.Diagnostic) {
 	return l.tokens, l.diags
 }
 
+// LexExpr lexes the byte range [start, end) of file as the token stream of
+// an embedded expression, such as an f-string interpolation. Spans stay
+// absolute, so diagnostics keep their original positions. The caller is
+// responsible for having validated the whole file as UTF-8.
+func LexExpr(file *source.File, start, end int) ([]token.Token, []diag.Diagnostic) {
+	l := &lexer{file: file, src: file.Data()[:end], pos: start}
+	l.run()
+	return l.tokens, l.diags
+}
+
 // lexer holds the scanner state for one file.
 type lexer struct {
 	file   *source.File

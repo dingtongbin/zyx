@@ -32,6 +32,8 @@ const (
 	FString
 	// ByteStr is a byte string literal; Token.Str holds the raw bytes.
 	ByteStr
+	// CBlock is an inline C block `c { ... }`; the span covers it verbatim.
+	CBlock
 
 	// The language keywords, in source spelling.
 	Package
@@ -102,6 +104,9 @@ const (
 	Comma
 	Dot
 	Colon
+	// Semicolon is a `;` inside brackets, where it is part of the
+	// enclosing construct rather than a statement break.
+	Semicolon
 	Assign
 	AddAssign
 	SubAssign
@@ -138,6 +143,7 @@ var kindNames = [NumKinds]string{
 	Str:          "str",
 	FString:      "fstring",
 	ByteStr:      "bytestring",
+	CBlock:       "cblock",
 	Package:      "package",
 	Import:       "import",
 	Const:        "const",
@@ -204,6 +210,7 @@ var kindNames = [NumKinds]string{
 	Comma:        ",",
 	Dot:          ".",
 	Colon:        ":",
+	Semicolon:    ";",
 	Assign:       "=",
 	AddAssign:    "+=",
 	SubAssign:    "-=",

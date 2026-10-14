@@ -149,13 +149,12 @@ func TestMultiLineLiteralWithLineEndingBrace(t *testing.T) {
 	})
 }
 
-func TestSemicolonInsideBracketsIsInvisible(t *testing.T) {
-	src := "c { for (i; j) }\n"
-	toks, diags := lexSrc(t, src)
+func TestSemicolonInsideBracketsIsAToken(t *testing.T) {
+	toks, diags := lexSrc(t, "[u8; 4]\n")
 	assertClean(t, diags)
 	assertKinds(t, kindsOf(toks), []token.Kind{
-		token.C, token.LBrace, token.For, token.LParen, token.Ident,
-		token.Ident, token.RParen, token.RBrace, token.Newline,
+		token.LBrack, token.Ident, token.Semicolon, token.Int, token.RBrack,
+		token.Newline,
 	})
 }
 
