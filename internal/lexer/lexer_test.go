@@ -66,7 +66,8 @@ func assertClean(t *testing.T, diags []diag.Diagnostic) {
 func TestKeywordsLexAsKeywordKinds(t *testing.T) {
 	want := []token.Kind{
 		token.Package, token.Import, token.Const, token.Var, token.Type,
-		token.Func, token.Struct, token.Enum, token.Interface, token.Impl,
+		token.Func, token.Struct, token.Union, token.Enum, token.Interface,
+		token.Impl,
 		token.SelfLower, token.SelfUpper, token.New, token.If, token.Else,
 		token.Match, token.For, token.In, token.Break, token.Continue,
 		token.Return, token.Defer, token.Region, token.Is, token.Try,

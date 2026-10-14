@@ -94,6 +94,24 @@ func (n *InterfaceDecl) Span() source.Span { return n.Sp }
 
 func (n *InterfaceDecl) declNode() {}
 
+// UnionDecl declares a C union. It is always C layout: every member starts
+// at offset 0 and the size is the largest member rounded up to its
+// alignment.
+type UnionDecl struct {
+	Sp source.Span
+	// Doc is the attached doc comment, if any.
+	Doc *Doc
+	// Name is the type identifier.
+	Name *Ident
+	// Fields holds the members in source order.
+	Fields []*FieldDecl
+}
+
+// Span returns the declaration source range.
+func (n *UnionDecl) Span() source.Span { return n.Sp }
+
+func (n *UnionDecl) declNode() {}
+
 // ImplBlock declares one interface implementation inside a type body.
 type ImplBlock struct {
 	Sp source.Span

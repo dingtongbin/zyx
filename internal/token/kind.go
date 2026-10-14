@@ -41,6 +41,7 @@ const (
 	Type
 	Func
 	Struct
+	Union
 	Enum
 	Interface
 	Impl
@@ -148,6 +149,7 @@ var kindNames = [NumKinds]string{
 	Type:         "type",
 	Func:         "func",
 	Struct:       "struct",
+	Union:        "union",
 	Enum:         "enum",
 	Interface:    "interface",
 	Impl:         "impl",
@@ -247,6 +249,7 @@ var keywords = map[string]Kind{
 	"type":          Type,
 	"func":          Func,
 	"struct":        Struct,
+	"union":         Union,
 	"enum":          Enum,
 	"interface":     Interface,
 	"impl":          Impl,

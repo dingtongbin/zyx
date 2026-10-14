@@ -79,6 +79,13 @@ func walk(n Node, f func(Node) bool) {
 		}
 		walkTypeParams(v.TypeParams, f)
 		walkDecls(v.Members, f)
+	case *UnionDecl:
+		if v.Name != nil {
+			Walk(v.Name, f)
+		}
+		for _, fld := range v.Fields {
+			Walk(fld, f)
+		}
 	case *VariantDecl:
 		if v.Name != nil {
 			Walk(v.Name, f)

@@ -71,9 +71,13 @@ func (p *parser) parseDecl() ast.Decl {
 		return p.parseFunc(doc, start)
 	case token.Extern:
 		start, doc := p.tok.Span, p.takeDoc()
-		if p.peek(1).Kind == token.Struct {
+		switch p.peek(1).Kind {
+		case token.Struct:
 			p.advance()
 			return p.parseStruct(true, start, doc)
+		case token.Union:
+			p.advance()
+			return p.parseUnion(start, doc)
 		}
 		return p.parseFunc(doc, start)
 	case token.Import:
@@ -265,6 +269,36 @@ func (p *parser) parseStruct(extern bool, start source.Span, doc *ast.Doc) *ast.
 	d.TypeParams = p.parseTypeParams()
 	p.expect(token.LBrace)
 	d.Members = p.parseTypeMembers(memberStruct)
+	p.expect(token.RBrace)
+	d.Sp = p.spanFrom(start)
+	return d
+}
+
+// parseUnion parses `extern union Name { fields }`. A union is always C
+// layout: every member starts at offset 0.
+func (p *parser) parseUnion(start source.Span, doc *ast.Doc) *ast.UnionDecl {
+	d := &ast.UnionDecl{Doc: doc, Sp: start}
+	p.advance() // union
+	d.Name = p.name()
+	p.expect(token.LBrace)
+	for p.tok.Kind != token.RBrace && p.tok.Kind != token.EOF {
+		if p.at(token.Newline) || p.at(token.Semicolon) {
+			p.advance()
+			continue
+		}
+		before := p.pos
+		if p.at(token.Ident) {
+			d.Fields = append(d.Fields, p.parseField())
+		} else {
+			p.errorHelpAt(p.tok, diag.CodeUnexpectedToken,
+				"write a field", "unexpected %s in a union body", describe(p.tok))
+			p.advance()
+		}
+		if p.pos == before {
+			p.advance()
+		}
+		p.skipSeparators()
+	}
 	p.expect(token.RBrace)
 	d.Sp = p.spanFrom(start)
 	return d

@@ -2,10 +2,10 @@ package token
 
 import "testing"
 
-// keywordSpellings lists the 39 keywords of the language in source spelling.
+// keywordSpellings lists the 40 keywords of the language in source spelling.
 var keywordSpellings = []string{
-	"package", "import", "const", "var", "type", "func", "struct", "enum",
-	"interface", "impl", "self", "Self", "new", "if", "else", "match",
+	"package", "import", "const", "var", "type", "func", "struct", "union",
+	"enum", "interface", "impl", "self", "Self", "new", "if", "else", "match",
 	"for", "in", "break", "continue", "return", "defer", "region", "is",
 	"try", "comptime", "spawn", "spawn_watched", "chan", "select", "recv",
 	"send", "timeout", "default", "extern", "c", "fast", "true", "false",

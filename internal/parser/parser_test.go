@@ -603,6 +603,19 @@ var h: Array<i64> = [1]
 	}
 }
 
+func TestExternUnion(t *testing.T) {
+	src := "package main\nimport c \"sys/epoll.h\"\nextern union epoll_data_t {\n\tptr: raw\n\tfd: i32\n\tu64v: u64\n}\n"
+	f, diags := parseSrc(t, src)
+	assertClean(t, diags)
+	u, ok := findNode(f, isType[*ast.UnionDecl]).(*ast.UnionDecl)
+	if !ok {
+		t.Fatal("no union declaration")
+	}
+	if u.Name.Name != "epoll_data_t" || len(u.Fields) != 3 {
+		t.Fatalf("union %q has %d fields, want 3", u.Name.Name, len(u.Fields))
+	}
+}
+
 func TestAddressOfForCCalls(t *testing.T) {
 	src := "package main\nimport c \"sys/socket.h\"\nfunc f(fd: i32, buf: Array<u8>) {\n\tvar on: i32 = 1\n\tc.setsockopt(fd, c.SOL_SOCKET, c.SO_REUSEADDR, &on, 4)\n\tc.read(fd, &buf[0], 64)\n}\n"
 	f, diags := parseSrc(t, src)
