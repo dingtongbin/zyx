@@ -1,0 +1,3 @@
+// Checker diagnostics.
+
+package check

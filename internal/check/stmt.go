@@ -1,0 +1,3 @@
+// Statement checking.
+
+package check

@@ -1,0 +1,1 @@
+/* C ABI helpers shared by generated code. */
