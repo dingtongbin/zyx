@@ -127,6 +127,7 @@ func (c *checker) checkStmt(s ast.Stmt) {
 		c.inComptime = true
 		c.checkBlock(v.Body)
 		c.inComptime = prev
+		c.execComptimeBlock(v.Body)
 	case *ast.MatchStmt:
 		c.checkMatch(v)
 	case *ast.SelectStmt:
@@ -191,30 +192,43 @@ func (c *checker) checkFor(v *ast.ForStmt) {
 // checkForIn checks `for x in xs` and `for k, v in m`, which bind the
 // element type of the iterable.
 func (c *checker) checkForIn(v *ast.ForStmt) {
-	iter := c.checkExpr(v.Iter, nil)
 	var elem *types.Type
-	if iter != nil && iter.Kind != types.Invalid {
-		switch iter.Kind {
-		case types.KindStr:
-			elem = types.Char
-		case types.KindArray, types.KindSlice:
-			elem = iter.Elem
-		case types.KindContainer:
-			switch iter.Name {
-			case "Array", "Set":
-				elem = arg(iter, 0)
-			case "Map":
-				elem = types.TupleOf(arg(iter, 0), arg(iter, 1))
-			}
-		}
-		if elem == nil {
-			c.errorHelp(diag.CodeNotIterable, v.Iter.Span(),
-				"iterate a container, a fixed-size array, str, or a range",
-				"%s is not iterable", iter)
-		}
+	if r, ok := v.Iter.(*ast.RangeExpr); ok {
+		// A range is only a value here, so its bounds decide the binding.
+		lo := c.checkExpr(r.Lo, nil)
+		c.checkExpr(r.Hi, lo)
+		elem = lo
+	} else {
+		iter := c.checkExpr(v.Iter, nil)
+		elem = c.iterableElem(iter, v.Iter)
 	}
 	c.bindLoop(v.Bindings, elem)
 	c.checkStmt(v.Body)
+}
+
+// iterableElem returns the element type a loop binds, or nil after
+// reporting a subject that cannot be iterated.
+func (c *checker) iterableElem(iter *types.Type, subject ast.Expr) *types.Type {
+	if iter == nil || iter.Kind == types.Invalid {
+		return nil
+	}
+	switch iter.Kind {
+	case types.KindStr:
+		return types.Char
+	case types.KindArray, types.KindSlice:
+		return iter.Elem
+	case types.KindContainer:
+		switch iter.Name {
+		case "Array", "Set":
+			return arg(iter, 0)
+		case "Map":
+			return types.TupleOf(arg(iter, 0), arg(iter, 1))
+		}
+	}
+	c.errorHelp(diag.CodeNotIterable, subject.Span(),
+		"iterate a container, a fixed-size array, str, or a range",
+		"%s is not iterable", iter)
+	return nil
 }
 
 // bindLoop binds the names of an iteration to the element type.
@@ -379,8 +393,8 @@ func (c *checker) checkLocalConst(v *ast.ConstDecl) {
 	c.inComptime = true
 	want := c.buildType(v.Type)
 	got := c.checkExpr(v.Value, want)
-	c.inComptime = prev
 	val := c.requireConst(v.Value, "a constant initializer")
+	c.inComptime = prev
 	if want == nil {
 		if val != nil && val.Type != nil {
 			c.bindName(v.Name, val.Type)
@@ -404,8 +418,8 @@ func (c *checker) checkConstInit(v *ast.ConstDecl) {
 	c.inComptime = true
 	t := c.buildType(v.Type)
 	got := c.checkExpr(v.Value, t)
-	c.inComptime = prev
 	val := c.constValue(c.symOf(v.Name))
+	c.inComptime = prev
 	if val != nil && v.Name != nil {
 		c.out.Consts[v.Name.Name] = val
 	}
@@ -432,8 +446,8 @@ func (c *checker) checkVarInit(v *ast.VarDecl) {
 	c.inComptime = true
 	t := c.buildType(v.Type)
 	got := c.checkExpr(v.Value, t)
-	c.inComptime = prev
 	val := c.requireConst(v.Value, "a top-level var initializer")
+	c.inComptime = prev
 	if len(v.Names) == 1 && val != nil {
 		c.out.Consts[v.Names[0].Name] = val
 		if sym := c.symOf(v.Names[0]); sym != nil {
@@ -465,8 +479,8 @@ func (c *checker) checkMemberInit(d *Decl, v *ast.ConstDecl) {
 	c.inComptime = true
 	t := c.buildType(v.Type)
 	got := c.checkExpr(v.Value, t)
-	c.inComptime = prev
 	val := c.constValue(c.symOf(v.Name))
+	c.inComptime = prev
 	switch {
 	case t != nil && !c.accepts(t, v.Value, got):
 		c.errorHelp(diag.CodeTypeMismatch, v.Value.Span(),

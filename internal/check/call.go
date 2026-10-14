@@ -16,6 +16,12 @@ import (
 
 // checkCall checks a call and returns its result type.
 func (c *checker) checkCall(v *ast.CallExpr, want *types.Type) *types.Type {
+	// A call to a compile-time function must be evaluated at compile time.
+	if _, sym := c.comptimeCallee(v.Fn); sym != nil && !c.inComptime {
+		c.errorHelp(diag.CodeComptimeOnly, v.Sp,
+			"call it from a comptime context",
+			"%s is a compile-time function", sym.Name)
+	}
 	// A callee that names a type is an explicit conversion.
 	if t := c.calleeType(v.Fn); t != nil {
 		return c.checkConvert(t, firstArg(v), v.Sp)

@@ -1851,6 +1851,250 @@ comptime func Width<T>() -> usize => meta.size_of(T)
 	wantClean(t, diags)
 }
 
+func TestComptimeFunction(t *testing.T) {
+	src := `package server
+
+comptime func Square(n: i64) -> i64 => n * n
+
+const Nine = Square(3)
+const Sum = Square(3) + 1
+`
+	out, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	if got := out.Consts["Nine"]; got == nil || got.Int != 9 {
+		t.Errorf("Nine = %v, want 9", got)
+	}
+	if got := out.Consts["Sum"]; got == nil || got.Int != 10 {
+		t.Errorf("Sum = %v, want 10", got)
+	}
+}
+
+func TestComptimeStatements(t *testing.T) {
+	src := `package server
+
+comptime func SumTo(n: i64) -> i64 {
+	var total: i64 = 0
+	for i in 0..n {
+		total = total + i
+	}
+	return total
+}
+
+comptime func Count(items: Array<str>) -> i64 {
+	var n: i64 = 0
+	for item in items {
+		if item == "" {
+			continue
+		}
+		n = n + 1
+	}
+	return n
+}
+
+comptime func Name(kind: i32) -> str {
+	match kind {
+		0 => { return "zero" }
+		_ => { return "other" }
+	}
+}
+
+const Total = SumTo(5)
+const NonEmpty = Count(["a", "", "b"])
+const Zero = Name(0)
+const Other = Name(7)
+`
+	out, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	if got := out.Consts["Total"]; got == nil || got.Int != 10 {
+		t.Errorf("Total = %v, want 10", got)
+	}
+	if got := out.Consts["NonEmpty"]; got == nil || got.Int != 2 {
+		t.Errorf("NonEmpty = %v, want 2", got)
+	}
+	if got := out.Consts["Zero"]; got == nil || got.Str != "zero" {
+		t.Errorf("Zero = %v, want zero", got)
+	}
+	if got := out.Consts["Other"]; got == nil || got.Str != "other" {
+		t.Errorf("Other = %v, want other", got)
+	}
+}
+
+func TestComptimeRecursion(t *testing.T) {
+	src := `package server
+
+comptime func Factorial(n: i64) -> i64 {
+	if n <= 1 {
+		return 1
+	}
+	return n * Factorial(n - 1)
+}
+
+const Six = Factorial(3)
+`
+	out, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	if got := out.Consts["Six"]; got == nil || got.Int != 6 {
+		t.Errorf("Six = %v, want 6", got)
+	}
+}
+
+func TestComptimeWhileLoop(t *testing.T) {
+	src := `package server
+
+comptime func Halve(n: i64) -> i64 {
+	var steps: i64 = 0
+	for n > 1 {
+		n = n / 2
+		steps = steps + 1
+	}
+	return steps
+}
+
+const Steps = Halve(16)
+`
+	out, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	if got := out.Consts["Steps"]; got == nil || got.Int != 4 {
+		t.Errorf("Steps = %v, want 4", got)
+	}
+}
+
+func TestComptimeJSONField(t *testing.T) {
+	// The example of the language reference: a compile-time function reads
+	// a type body constant through meta.attr.
+	src := `package server
+
+struct User {
+	name: str
+	const json = Map { "name": "userName" }
+}
+
+comptime func JsonField(T: type, field: str) -> str {
+	var m = meta.attr(T, "json")
+	return m.Get(field).UnwrapOr(field)
+}
+
+const Name = JsonField(User, "name")
+const Missing = JsonField(User, "age")
+`
+	out, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	if got := out.Consts["Name"]; got == nil || got.Str != "userName" {
+		t.Errorf("Name = %v, want userName", got)
+	}
+	if got := out.Consts["Missing"]; got == nil || got.Str != "age" {
+		t.Errorf("Missing = %v, want age", got)
+	}
+}
+
+func TestComptimeLayoutThroughFunction(t *testing.T) {
+	src := `package server
+
+extern struct Cfg {
+	port: u16
+	backlog: i32
+}
+
+comptime func Offset(field: str) -> usize => meta.offset_of(Cfg, field)
+
+const PortAt = Offset("port")
+const BacklogAt = Offset("backlog")
+`
+	out, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	if got := out.Consts["PortAt"]; got == nil || got.Int != 0 {
+		t.Errorf("PortAt = %v, want 0", got)
+	}
+	if got := out.Consts["BacklogAt"]; got == nil || got.Int != 4 {
+		t.Errorf("BacklogAt = %v, want 4", got)
+	}
+}
+
+func TestComptimeBlockInFunction(t *testing.T) {
+	src := `package server
+
+struct Cfg {
+	n: i32
+	const Size = meta.size_of(i32)
+}
+
+func f() -> i64 {
+	comptime {
+		var s = Cfg.Size
+		if s > 0 {
+			var doubled = s * 2
+		}
+	}
+	return 0
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+func TestComptimeCallAtRuntime(t *testing.T) {
+	src := `package server
+
+comptime func Width() -> i64 => 4
+
+func f() -> i64 => Width()
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeComptimeOnly)
+}
+
+func TestComptimeFunctionValue(t *testing.T) {
+	src := `package server
+
+comptime func Width() -> i64 => 4
+
+func f() -> i64 {
+	var g = func Width
+	return g()
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeComptimeOnly)
+}
+
+func TestComptimeLandingRule(t *testing.T) {
+	// A constant whose type cannot live in static storage is only usable
+	// inside a comptime context.
+	src := `package server
+
+func f() -> usize {
+	const table = Map { "k": 1 }
+	return table.Len()
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeComptimeOnly)
+}
+
+func TestComptimeLandingAllowed(t *testing.T) {
+	src := `package server
+
+const Greeting = "hello"
+
+struct Cfg {
+	const Size = meta.size_of(i32)
+}
+
+func f() -> i64 {
+	const limit = 4
+	comptime {
+		var s = Cfg.Size
+		if s > 0 {
+			var doubled = limit * 2
+		}
+	}
+	return limit
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
 func TestRealisticDeclarations(t *testing.T) {
 	rdep, cdep := checkedDep(t, "std/net", `package net
 

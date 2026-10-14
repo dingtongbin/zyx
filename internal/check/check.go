@@ -225,6 +225,8 @@ type checker struct {
 	target toolchain.Target
 	// consts caches the value of every constant, keyed by symbol id.
 	consts map[string]*Value
+	// frames holds the compile-time call frames, innermost last.
+	frames []*frame
 }
 
 // newChecker returns a checker with the package's output maps in place.

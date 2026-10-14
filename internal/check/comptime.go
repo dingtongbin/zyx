@@ -96,7 +96,14 @@ func (c *checker) eval(e ast.Expr) *Value {
 	case *ast.Literal:
 		return c.evalLiteral(v)
 	case *ast.Ident:
-		return c.constValue(c.symOf(v))
+		if v := c.local(v); v != nil {
+			return v
+		}
+		sym := c.symOf(v)
+		if sym != nil && isTypeSymbol(sym) {
+			return &Value{Type: types.TypeValue, TypeVal: c.typeOfSymbol(sym)}
+		}
+		return c.constValue(sym)
 	case *ast.UnaryExpr:
 		return c.evalUnary(v)
 	case *ast.BinaryExpr:
@@ -112,11 +119,68 @@ func (c *checker) eval(e ast.Expr) *Value {
 	case *ast.AggregateLitExpr:
 		return c.evalAggregate(v)
 	case *ast.SelectorExpr:
+		if v2 := c.evalTypeConst(v); v2 != nil {
+			return v2
+		}
 		return c.evalSelector(v)
 	case *ast.TupleIndexExpr:
 		return c.evalTupleIndex(v)
 	case *ast.IndexExpr:
 		return c.evalIndex(v)
+	case *ast.TryExpr:
+		return c.eval(v.X)
+	case *ast.IsExpr:
+		return c.evalIs(v)
+	case *ast.NewExpr:
+		return c.evalNew(v)
+	case *ast.FastExpr:
+		return c.eval(v.X)
+	}
+	return nil
+}
+
+// evalIs evaluates `x is T` on a constant value, whose type is known at
+// compile time.
+func (c *checker) evalIs(v *ast.IsExpr) *Value {
+	t := c.out.Nodes[v.X]
+	if t == nil {
+		return nil
+	}
+	return boolValue(types.Identical(t, c.buildType(v.Type)))
+}
+
+// evalNew evaluates `new T(args)` for a container, or for a struct whose
+// init runs at compile time.
+func (c *checker) evalNew(v *ast.NewExpr) *Value {
+	typ := c.buildType(v.Type)
+	if typ == nil {
+		return nil
+	}
+	if typ.Kind == types.KindContainer {
+		return &Value{Type: typ}
+	}
+	f := c.initDecl(typ)
+	if f == nil {
+		return nil
+	}
+	return c.callComptime(f, nil, v.Args)
+}
+
+// initDecl returns the init declaration of a struct.
+func (c *checker) initDecl(t *types.Type) *ast.FuncDecl {
+	d := c.declOf(t)
+	if d == nil || d.Sym == nil {
+		return nil
+	}
+	sd, ok := d.Sym.Decl.(*ast.StructDecl)
+	if !ok {
+		return nil
+	}
+	for _, m := range sd.Members {
+		f, ok := m.(*ast.FuncDecl)
+		if ok && f.Name != nil && f.Name.Name == "init" {
+			return f
+		}
 	}
 	return nil
 }
@@ -274,6 +338,20 @@ func (c *checker) evalAggregate(v *ast.AggregateLitExpr) *Value {
 		return out
 	}
 	return nil
+}
+
+// evalTypeConst evaluates `Type.Const`, which reads a constant declared in
+// a type body.
+func (c *checker) evalTypeConst(v *ast.SelectorExpr) *Value {
+	id, ok := v.X.(*ast.Ident)
+	if !ok || !isTypeSymbol(c.symOf(id)) {
+		return nil
+	}
+	con := c.memberConst(c.typeOfSymbol(c.symOf(id)), v.Name.Name)
+	if con == nil {
+		return nil
+	}
+	return c.constValue(con.Sym)
 }
 
 // evalSelector evaluates a field access on a constant struct.
@@ -536,8 +614,20 @@ func bitWidth(t *types.Type) uint64 {
 	return 8
 }
 
-// evalCall evaluates a conversion, a dur constructor, or a meta query.
+// evalCall evaluates a conversion, a compile-time call, a dur constructor,
+// a variant, or a meta query.
 func (c *checker) evalCall(v *ast.CallExpr) *Value {
+	// A call to a compile-time function runs its body, which is only
+	// meaningful in a comptime context.
+	if f, sym := c.comptimeCallee(v.Fn); f != nil {
+		if !c.inComptime {
+			c.errorHelp(diag.CodeComptimeOnly, v.Sp,
+				"call it from a comptime context",
+				"%s is a compile-time function", sym.Name)
+			return nil
+		}
+		return c.callComptime(f, sym, v.Args)
+	}
 	if id, ok := v.Fn.(*ast.Ident); ok {
 		if isTypeSymbol(c.symOf(id)) {
 			return c.evalConvert(c.out.Nodes[v], v.Args)
@@ -834,10 +924,14 @@ func (c *checker) evalMeta(sel *ast.SelectorExpr, v *ast.CallExpr) *Value {
 	return nil
 }
 
-// argType returns the type an argument of a meta query names.
+// argType returns the type an argument of a meta query names: either a
+// type written in the argument or a compile-time value that holds a type.
 func (c *checker) argType(v *ast.CallExpr, i int) *types.Type {
 	if i >= len(v.Args) {
 		return nil
+	}
+	if val := c.eval(v.Args[i]); val != nil && val.TypeVal != nil {
+		return val.TypeVal
 	}
 	return c.buildType(typeExprOf(v.Args[i]))
 }
@@ -1022,4 +1116,582 @@ func (c *checker) requireConst(e ast.Expr, what string) *Value {
 			"%s must be a compile-time constant", what)
 	}
 	return v
+}
+
+// maxComptimeDepth bounds the nesting of compile-time calls, so a runaway
+// recursion reports instead of hanging the compiler.
+const maxComptimeDepth = 256
+
+// A frame is one activation of a compile-time function or block.
+type frame struct {
+	locals    map[string]*Value
+	defers    []ast.Expr
+	result    *Value
+	returned  bool
+	broken    bool
+	continued bool
+	label     string
+}
+
+// frame returns the innermost compile-time frame, or nil.
+func (c *checker) frame() *frame {
+	if len(c.frames) == 0 {
+		return nil
+	}
+	return c.frames[len(c.frames)-1]
+}
+
+// jumped reports whether the innermost frame is leaving its block.
+func (c *checker) jumped() bool {
+	fr := c.frame()
+	return fr != nil && (fr.returned || fr.broken || fr.continued)
+}
+
+// local returns the value of a local or parameter, searching the frames
+// from the innermost outward.
+func (c *checker) local(id *ast.Ident) *Value {
+	if id == nil || len(c.frames) == 0 {
+		return nil
+	}
+	sym := c.symOf(id)
+	if sym == nil {
+		return nil
+	}
+	for i := len(c.frames) - 1; i >= 0; i-- {
+		if v, ok := c.frames[i].locals[sym.ID]; ok {
+			return v
+		}
+	}
+	return nil
+}
+
+// bindLocal records the value of a local in the innermost frame.
+func (c *checker) bindLocal(id *ast.Ident, v *Value) {
+	fr := c.frame()
+	if fr == nil || id == nil || v == nil {
+		return
+	}
+	if sym := c.symOf(id); sym != nil {
+		fr.locals[sym.ID] = v
+	}
+}
+
+// comptimeCallee returns the compile-time function a callee names.
+func (c *checker) comptimeCallee(fn ast.Expr) (*ast.FuncDecl, *resolve.Symbol) {
+	id, ok := fn.(*ast.Ident)
+	if !ok {
+		return nil, nil
+	}
+	sym := c.symOf(id)
+	if sym == nil {
+		return nil, nil
+	}
+	f, ok := sym.Decl.(*ast.FuncDecl)
+	if !ok || !f.Quals.Comptime {
+		return nil, nil
+	}
+	return f, sym
+}
+
+// callComptime runs a compile-time function on constant arguments.
+func (c *checker) callComptime(f *ast.FuncDecl, sym *resolve.Symbol, args []ast.Expr) *Value {
+	if f == nil {
+		return nil
+	}
+	if len(c.frames) >= maxComptimeDepth {
+		c.errorHelp(diag.CodeComptimeRequired, nameSpan(f),
+			"reduce the depth of the recursion",
+			"compile-time calls nest deeper than %d frames", maxComptimeDepth)
+		return nil
+	}
+	fr := &frame{locals: map[string]*Value{}}
+	for i, p := range f.Params {
+		if p.Name == nil || p.Name.Name == "_" {
+			continue
+		}
+		var arg *Value
+		switch {
+		case i < len(args):
+			arg = c.eval(args[i])
+		case p.Default != nil:
+			arg = c.eval(p.Default)
+		}
+		if arg == nil {
+			return nil
+		}
+		if psym := c.symOf(p.Name); psym != nil {
+			fr.locals[psym.ID] = arg
+		}
+	}
+	c.frames = append(c.frames, fr)
+	switch {
+	case f.Body != nil:
+		c.execBlock(f.Body)
+	case f.BodyExpr != nil:
+		fr.result = c.eval(f.BodyExpr)
+	}
+	c.frames = c.frames[:len(c.frames)-1]
+	c.runDefers(fr)
+	return fr.result
+}
+
+// runDefers runs the deferred calls of a frame in reverse order.
+func (c *checker) runDefers(fr *frame) {
+	for i := len(fr.defers) - 1; i >= 0; i-- {
+		c.eval(fr.defers[i])
+	}
+	fr.defers = nil
+}
+
+// execComptimeBlock runs a `comptime { }` block in a frame of its own, so
+// its locals live at compile time only.
+func (c *checker) execComptimeBlock(b *ast.BlockStmt) {
+	fr := &frame{locals: map[string]*Value{}}
+	c.frames = append(c.frames, fr)
+	c.execBlock(b)
+	c.frames = c.frames[:len(c.frames)-1]
+	c.runDefers(fr)
+}
+
+// execBlock runs the statements of a block.
+func (c *checker) execBlock(b *ast.BlockStmt) {
+	if b == nil {
+		return
+	}
+	for _, s := range b.Stmts {
+		if c.jumped() {
+			return
+		}
+		c.execStmt(s)
+	}
+}
+
+// execStmt runs one statement at compile time.
+func (c *checker) execStmt(s ast.Stmt) {
+	switch v := s.(type) {
+	case nil:
+	case *ast.BlockStmt:
+		c.execBlock(v)
+	case *ast.ExprStmt:
+		c.eval(v.X)
+	case *ast.VarDecl:
+		c.execBinding(v.Names, v.Value)
+	case *ast.ConstDecl:
+		c.execBinding([]*ast.Ident{v.Name}, v.Value)
+	case *ast.AssignStmt:
+		c.execAssign(v)
+	case *ast.IfStmt:
+		c.execIf(v)
+	case *ast.ForStmt:
+		c.execFor(v)
+	case *ast.BreakStmt:
+		c.jump(true, false, labelOf(v.Label))
+	case *ast.ContinueStmt:
+		c.jump(false, true, labelOf(v.Label))
+	case *ast.ReturnStmt:
+		c.execReturn(v)
+	case *ast.DeferStmt:
+		if fr := c.frame(); fr != nil {
+			fr.defers = append(fr.defers, v.Call)
+		}
+	case *ast.RegionStmt:
+		// A region has no meaning at compile time; its body still runs.
+		c.execBlock(v.Body)
+	case *ast.ComptimeBlockStmt:
+		c.execBlock(v.Body)
+	case *ast.MatchStmt:
+		c.execMatch(v)
+	case *ast.SelectStmt:
+		c.errorHelp(diag.CodeComptimeOnly, v.Sp,
+			"remove the select", "select is a run-time operation")
+	}
+}
+
+// execBinding binds the names of a declaration to a constant value.
+func (c *checker) execBinding(names []*ast.Ident, value ast.Expr) {
+	v := c.eval(value)
+	if v == nil {
+		return
+	}
+	if len(names) == 1 {
+		c.bindLocal(names[0], v)
+		return
+	}
+	for i, n := range names {
+		if i < len(v.Elems) {
+			c.bindLocal(n, v.Elems[i])
+		}
+	}
+}
+
+// execAssign assigns to a local, a field, or an element.
+func (c *checker) execAssign(v *ast.AssignStmt) {
+	if v.Op != token.Assign {
+		old := c.eval(v.Target)
+		rhs := c.eval(v.Value)
+		if old == nil || rhs == nil {
+			return
+		}
+		next := c.evalBinary(baseOp(v.Op), old, rhs, v.Sp)
+		if next == nil {
+			return
+		}
+		c.store(v.Target, next)
+		return
+	}
+	next := c.eval(v.Value)
+	if next == nil {
+		return
+	}
+	c.store(v.Target, next)
+}
+
+// baseOp returns the operator a compound assignment applies.
+func baseOp(k token.Kind) token.Kind {
+	switch k {
+	case token.AddAssign:
+		return token.Plus
+	case token.SubAssign:
+		return token.Minus
+	case token.MulAssign:
+		return token.Star
+	case token.DivAssign:
+		return token.Slash
+	case token.ModAssign:
+		return token.Percent
+	case token.AndAssign:
+		return token.Amp
+	case token.OrAssign:
+		return token.Pipe
+	case token.XorAssign:
+		return token.Caret
+	case token.ShlAssign:
+		return token.Shl
+	case token.ShrAssign:
+		return token.Shr
+	}
+	return token.Invalid
+}
+
+// store writes a value to a local, a field, or an element. A struct value
+// is shared, so a field write through one name is visible through another.
+func (c *checker) store(target ast.Expr, v *Value) {
+	switch t := target.(type) {
+	case *ast.Ident:
+		c.bindLocal(t, v)
+	case *ast.SelectorExpr:
+		recv := c.eval(t.X)
+		if recv == nil {
+			return
+		}
+		for i := range recv.Fields {
+			if recv.Fields[i].Name == t.Name.Name {
+				recv.Fields[i].Value = v
+				return
+			}
+		}
+	case *ast.IndexExpr:
+		recv := c.eval(t.X)
+		idx := c.eval(t.Index)
+		if recv == nil || idx == nil || idx.Int >= uint64(len(recv.Elems)) {
+			return
+		}
+		recv.Elems[idx.Int] = v
+	}
+}
+
+// execIf runs the branch a constant condition selects.
+func (c *checker) execIf(v *ast.IfStmt) {
+	cond := c.eval(v.Cond)
+	if cond == nil || cond.Type == nil || !cond.Type.IsBool() {
+		return
+	}
+	if cond.Bool {
+		c.execStmt(v.Then)
+		return
+	}
+	c.execStmt(v.Else)
+}
+
+// execFor runs a loop at compile time.
+func (c *checker) execFor(v *ast.ForStmt) {
+	label := labelOf(v.Label)
+	if len(v.Bindings) > 0 {
+		c.execForIn(v, label)
+		return
+	}
+	for {
+		if v.Iter != nil {
+			cond := c.eval(v.Iter)
+			if cond == nil || cond.Type == nil || !cond.Type.IsBool() || !cond.Bool {
+				return
+			}
+		}
+		c.execStmt(v.Body)
+		if !c.catchJump(label) {
+			return
+		}
+	}
+}
+
+// execForIn runs `for x in xs` at compile time.
+func (c *checker) execForIn(v *ast.ForStmt, label string) {
+	if r, ok := v.Iter.(*ast.RangeExpr); ok {
+		lo, hi := c.eval(r.Lo), c.eval(r.Hi)
+		if lo == nil || hi == nil || lo.Type == nil || !lo.Type.IsInteger() {
+			return
+		}
+		for i := lo.Int; i < hi.Int; i++ {
+			c.bindLoopValue(v.Bindings, intValue(lo.Type, i))
+			c.execStmt(v.Body)
+			if !c.catchJump(label) {
+				return
+			}
+		}
+		return
+	}
+	iter := c.eval(v.Iter)
+	if iter == nil {
+		return
+	}
+	for _, e := range c.iterationValues(iter) {
+		c.bindLoopValue(v.Bindings, e)
+		c.execStmt(v.Body)
+		if !c.catchJump(label) {
+			return
+		}
+	}
+}
+
+// iterationValues returns the values a loop yields.
+func (c *checker) iterationValues(iter *Value) []*Value {
+	if iter.Type != nil && iter.Type.IsStr() {
+		out := make([]*Value, 0, len(iter.Str))
+		for _, r := range iter.Str {
+			out = append(out, intValue(types.Char, uint64(r)))
+		}
+		return out
+	}
+	if iter.Keys != nil {
+		out := make([]*Value, 0, len(iter.Keys))
+		for i, k := range iter.Keys {
+			out = append(out, &Value{
+				Type:  types.TupleOf(k.Type, iter.Elems[i].Type),
+				Elems: []*Value{k, iter.Elems[i]},
+			})
+		}
+		return out
+	}
+	return iter.Elems
+}
+
+// bindLoopValue binds the names of an iteration to one element.
+func (c *checker) bindLoopValue(names []*ast.Ident, elem *Value) {
+	if len(names) == 1 {
+		c.bindLocal(names[0], elem)
+		return
+	}
+	for i, n := range names {
+		if i < len(elem.Elems) {
+			c.bindLocal(n, elem.Elems[i])
+		}
+	}
+}
+
+// catchJump consumes a jump that targets this loop and reports whether the
+// loop should keep running. A jump that names another label belongs to an
+// enclosing loop and is left in place.
+func (c *checker) catchJump(label string) bool {
+	fr := c.frame()
+	if fr == nil {
+		return false
+	}
+	switch {
+	case fr.returned:
+		return false
+	case fr.broken:
+		if fr.label != "" && fr.label != label {
+			return false
+		}
+		fr.broken, fr.label = false, ""
+		return false
+	case fr.continued:
+		if fr.label != "" && fr.label != label {
+			return false
+		}
+		fr.continued, fr.label = false, ""
+		return true
+	}
+	return true
+}
+
+// jump records a break or continue in the current frame.
+func (c *checker) jump(broken, continued bool, label string) {
+	fr := c.frame()
+	if fr == nil {
+		return
+	}
+	fr.broken, fr.continued, fr.label = broken, continued, label
+}
+
+// labelOf returns the name of a loop label, or the empty string.
+func labelOf(id *ast.Ident) string {
+	if id == nil {
+		return ""
+	}
+	return id.Name
+}
+
+// execReturn records the result of a compile-time function.
+func (c *checker) execReturn(v *ast.ReturnStmt) {
+	fr := c.frame()
+	if fr == nil {
+		return
+	}
+	switch len(v.Values) {
+	case 0:
+		fr.result = nil
+	case 1:
+		fr.result = c.eval(v.Values[0])
+	default:
+		elems := make([]*Value, 0, len(v.Values))
+		for _, e := range v.Values {
+			val := c.eval(e)
+			if val == nil {
+				return
+			}
+			elems = append(elems, val)
+		}
+		fr.result = &Value{Type: types.TupleOf(), Elems: elems}
+	}
+	fr.returned = true
+}
+
+// execMatch runs the first arm whose pattern matches the constant subject.
+func (c *checker) execMatch(v *ast.MatchStmt) {
+	subject := c.eval(v.Subject)
+	if subject == nil {
+		return
+	}
+	for _, arm := range v.Arms {
+		bindings, ok := c.matchValue(arm.Pattern, subject)
+		if !ok {
+			continue
+		}
+		fr := c.frame()
+		saved := c.pushBindings(fr, bindings)
+		if arm.Guard != nil {
+			guard := c.eval(arm.Guard)
+			if guard == nil || guard.Type == nil || !guard.Type.IsBool() || !guard.Bool {
+				c.popBindings(fr, saved)
+				continue
+			}
+		}
+		c.execStmt(arm.Body)
+		return
+	}
+}
+
+// pushBindings records the pattern bindings in a frame and returns what
+// they displaced.
+func (c *checker) pushBindings(fr *frame, bindings map[string]*Value) map[string]*Value {
+	if fr == nil || len(bindings) == 0 {
+		return nil
+	}
+	saved := make(map[string]*Value, len(bindings))
+	for name, val := range bindings {
+		saved[name] = fr.locals[name]
+		fr.locals[name] = val
+	}
+	return saved
+}
+
+// popBindings restores what an arm's bindings displaced.
+func (c *checker) popBindings(fr *frame, saved map[string]*Value) {
+	if fr == nil {
+		return
+	}
+	for name, val := range saved {
+		if val == nil {
+			delete(fr.locals, name)
+			continue
+		}
+		fr.locals[name] = val
+	}
+}
+
+// matchValue matches a constant value against a pattern and returns the
+// bindings the arm introduces.
+func (c *checker) matchValue(p ast.Pattern, v *Value) (map[string]*Value, bool) {
+	bindings := map[string]*Value{}
+	if c.matchInto(p, v, bindings) {
+		return bindings, true
+	}
+	return nil, false
+}
+
+// matchInto matches one pattern, recording the names it binds.
+func (c *checker) matchInto(p ast.Pattern, v *Value, out map[string]*Value) bool {
+	switch pat := p.(type) {
+	case nil:
+		return false
+	case *ast.WildcardPattern:
+		return true
+	case *ast.BindPattern:
+		return c.matchBind(pat, v, out)
+	case *ast.LitPattern:
+		lit := c.evalLiteral(pat.X)
+		return lit != nil && equalValue(lit, v)
+	case *ast.VariantPattern:
+		if pat.Name == nil || v.Str != pat.Name.Name {
+			return false
+		}
+		for i, sub := range pat.Payload {
+			if i >= len(v.Elems) || !c.matchInto(sub, v.Elems[i], out) {
+				return false
+			}
+		}
+		return true
+	case *ast.TuplePattern:
+		if len(pat.Elems) != len(v.Elems) {
+			return false
+		}
+		for i, sub := range pat.Elems {
+			if !c.matchInto(sub, v.Elems[i], out) {
+				return false
+			}
+		}
+		return true
+	case *ast.OrPattern:
+		for _, alt := range pat.Patterns {
+			if c.matchInto(alt, v, out) {
+				return true
+			}
+		}
+		return false
+	case *ast.RangePattern:
+		lo, hi := c.eval(pat.Lo), c.eval(pat.Hi)
+		if lo == nil || hi == nil || v.Type == nil || !v.Type.IsInteger() && !v.Type.IsChar() {
+			return false
+		}
+		return v.Int >= lo.Int && v.Int < hi.Int
+	}
+	return false
+}
+
+// matchBind matches a bare name: it is a variant when the subject's type is
+// an enum with a variant of that name, and a binding otherwise.
+func (c *checker) matchBind(pat *ast.BindPattern, v *Value, out map[string]*Value) bool {
+	if pat.Name == nil {
+		return false
+	}
+	if v.Type != nil && v.Type.Kind == types.KindEnum {
+		if d := c.declOf(v.Type); d != nil && d.Variant(pat.Name.Name) != nil {
+			return v.Str == pat.Name.Name
+		}
+	}
+	if sym := c.symOf(pat.Name); sym != nil {
+		out[sym.ID] = v
+	}
+	return true
 }

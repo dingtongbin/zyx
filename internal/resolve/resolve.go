@@ -585,7 +585,7 @@ func (r *resolver) resolveFunc(f *ast.FuncDecl, sym *Symbol, recv *ast.Ident) {
 	}
 	for _, p := range f.Params {
 		if p.Name != nil && p.Name.Name != "_" {
-			r.bindLocal(p.Name, KindParam)
+			r.bindLocalIn(p.Name, KindParam, !isTypeLevelParam(p))
 		}
 	}
 	r.resolveType(f.Result)
@@ -659,6 +659,13 @@ func (r *resolver) resolveTypeDecl(sym *Symbol, params []*ast.TypeParam, members
 	}
 
 	r.typeSym, r.scope, r.exported = prevType, prevScope, prevExported
+}
+
+// isTypeLevelParam reports whether a parameter takes a type rather than a
+// value, which the language writes with an uppercase name.
+func isTypeLevelParam(p *ast.Param) bool {
+	t, ok := p.Type.(*ast.TypeName)
+	return ok && t.Qual == nil && t.Name != nil && t.Name.Name == "type"
 }
 
 // resolveImpl resolves an impl block: the type parameters it restates, the

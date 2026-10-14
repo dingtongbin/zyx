@@ -27,7 +27,7 @@ func (c *checker) exprType(e ast.Expr, want *types.Type) *types.Type {
 	case nil:
 		return nil
 	case *ast.Ident:
-		return c.identType(v)
+		return c.identType(v, want)
 	case *ast.Literal:
 		return c.literalType(v, want)
 	case *ast.BinaryExpr:
@@ -72,14 +72,22 @@ func (c *checker) exprType(e ast.Expr, want *types.Type) *types.Type {
 	return nil
 }
 
-// identType returns the type a name denotes.
-func (c *checker) identType(id *ast.Ident) *types.Type {
+// identType returns the type a name denotes. A type written where a type
+// value is expected stands for that value, which is how a compile-time
+// function takes a `T: type` parameter.
+func (c *checker) identType(id *ast.Ident, want *types.Type) *types.Type {
 	if id.Name == "self" {
 		return c.self
 	}
 	sym := c.symOf(id)
 	if sym == nil {
 		return nil
+	}
+	c.checkStaticUse(sym, id)
+	// A type written where a type value is expected stands for that value.
+	if isTypeSymbol(sym) && want != nil && want.IsTypeValue() {
+		c.out.Nodes[id] = types.TypeValue
+		return types.TypeValue
 	}
 	if t, ok := c.bySym[sym.ID]; ok {
 		return t
@@ -88,6 +96,26 @@ func (c *checker) identType(id *ast.Ident) *types.Type {
 		return c.typeOfSymbol(sym)
 	}
 	return nil
+}
+
+// checkStaticUse reports a runtime reference to a constant or variable
+// whose type only a comptime context can consume.
+func (c *checker) checkStaticUse(sym *resolve.Symbol, id *ast.Ident) {
+	if c.inComptime || sym == nil {
+		return
+	}
+	switch sym.Kind {
+	case resolve.KindConst, resolve.KindVar:
+	default:
+		return
+	}
+	t := c.bySym[sym.ID]
+	if t == nil || staticStorageOK(t) {
+		return
+	}
+	c.errorHelp(diag.CodeComptimeOnly, id.Sp,
+		"consume the value inside a comptime context",
+		"%s holds %s, which only a comptime context can consume", id.Name, t)
 }
 
 // literalType returns the type of a literal. A numeric literal takes the
@@ -382,10 +410,27 @@ func (c *checker) selectorType(v *ast.SelectorExpr) *types.Type {
 		c.out.Nodes[v.Name] = sig
 		return sig
 	}
+	if con := c.memberConst(recv, v.Name.Name); con != nil {
+		c.out.Nodes[v.Name] = con.Type
+		return con.Type
+	}
 	c.errorHelp(diag.CodeNoField, v.Name.Sp,
 		"check the field or method name",
 		"%s has no field or method %q", recv, v.Name.Name)
 	return nil
+}
+
+// memberConst returns the constant a type body declares under a name.
+func (c *checker) memberConst(t *types.Type, name string) *Const {
+	d := c.declOf(t)
+	if d == nil {
+		return nil
+	}
+	con, ok := d.Consts[name]
+	if !ok {
+		return nil
+	}
+	return con
 }
 
 // fieldType returns a field of a receiver and its type, with the receiver's
@@ -447,21 +492,32 @@ func (c *checker) qualifiedValue(v *ast.SelectorExpr, pkg *resolve.Symbol) *type
 	return t
 }
 
-// variantValue returns the type of `Enum.Variant` in value position, which
-// is only allowed for a variant without a payload.
+// variantValue returns the type of `Type.Name` in value position: a variant
+// without a payload, or a constant the type body declares.
 func (c *checker) variantValue(v *ast.SelectorExpr, sym *resolve.Symbol) *types.Type {
-	enum := c.typeOfSymbol(sym)
-	d := c.declOf(enum)
-	if enum == nil || d == nil {
+	typ := c.typeOfSymbol(sym)
+	if typ == nil {
 		return nil
 	}
-	if variant := d.Variant(v.Name.Name); variant != nil && len(variant.Payload) == 0 {
-		c.out.Nodes[v.Name] = enum
-		return enum
+	if d := c.declOf(typ); d != nil {
+		if variant := d.Variant(v.Name.Name); variant != nil {
+			if len(variant.Payload) > 0 {
+				c.errorHelp(diag.CodeEnumLiteral, v.Name.Sp,
+					"construct the variant with arguments, or match on it",
+					"%s.%s needs a construction expression", typ.Name, v.Name.Name)
+				return nil
+			}
+			c.out.Nodes[v.Name] = typ
+			return typ
+		}
 	}
-	c.errorHelp(diag.CodeEnumLiteral, v.Name.Sp,
-		"construct the variant with arguments, or match on it",
-		"%s.%s needs a construction expression", enum.Name, v.Name.Name)
+	if con := c.memberConst(typ, v.Name.Name); con != nil {
+		c.out.Nodes[v.Name] = con.Type
+		return con.Type
+	}
+	c.errorHelp(diag.CodeNoField, v.Name.Sp,
+		"check the member name",
+		"%s has no member %q", typ, v.Name.Name)
 	return nil
 }
 
@@ -603,6 +659,13 @@ func (c *checker) spawnType(v *ast.SpawnExpr) *types.Type {
 			"wrap the spawn in a region block",
 			"spawn is only allowed inside a region")
 	}
+	if call, ok := v.X.(*ast.CallExpr); ok {
+		if _, sym := c.comptimeCallee(call.Fn); sym != nil {
+			c.errorHelp(diag.CodeComptimeOnly, v.Sp,
+				"spawn a run-time function",
+				"%s is a compile-time function", sym.Name)
+		}
+	}
 	r := c.checkExpr(v.X, nil)
 	c.checkExpr(v.Watcher, nil)
 	if r == nil || r.Kind == types.Invalid {
@@ -645,6 +708,12 @@ func (c *checker) funcRefType(v *ast.FuncRefExpr) *types.Type {
 		c.errorHelp(diag.CodeTypeMismatch, v.Sp,
 			"call the generic function directly, so its arguments can be inferred",
 			"a generic function has no function value")
+		return nil
+	}
+	if f, ok := c.symOf(v.Name).Decl.(*ast.FuncDecl); ok && f.Quals.Comptime {
+		c.errorHelp(diag.CodeComptimeOnly, v.Name.Sp,
+			"call the function directly, so it can be evaluated",
+			"a compile-time function has no function value")
 		return nil
 	}
 	c.out.Nodes[v.Name] = sig
