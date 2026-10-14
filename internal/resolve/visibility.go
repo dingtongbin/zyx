@@ -44,3 +44,15 @@ func (r *resolver) checkExportedType(sym *Symbol, id *ast.Ident) {
 	r.diags = append(r.diags, d.WithHelp(
 		"export the type, or use it only in private declarations"))
 }
+
+// checkLocalName reports a local binding or parameter that starts with an
+// uppercase letter. Local names are always private, so an uppercase one
+// would read as exported.
+func (r *resolver) checkLocalName(id *ast.Ident) {
+	if !Public(id.Name) {
+		return
+	}
+	r.diags = append(r.diags, diag.New(diag.CodeUppercaseLocal, id.Sp,
+		"local name %q starts with an uppercase letter", id.Name).
+		WithHelp("local names are private; write them in snake_case"))
+}

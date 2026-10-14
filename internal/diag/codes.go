@@ -110,4 +110,14 @@ const (
 	// CodeCNamespace reports use of the `c` namespace in a file that does
 	// not import a C header.
 	CodeCNamespace Code = "E3015"
+	// CodeUppercaseLocal reports a local binding or parameter whose name
+	// starts with an uppercase letter. Only package-level names may be
+	// exported.
+	CodeUppercaseLocal Code = "E3016"
+	// CodeMainPackage reports a declaration of main outside the command
+	// package.
+	CodeMainPackage Code = "E3017"
+	// CodeImportRelative reports an import path that is not a full module
+	// path. The language has no relative imports.
+	CodeImportRelative Code = "E3018"
 )

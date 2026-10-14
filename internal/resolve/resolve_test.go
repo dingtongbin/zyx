@@ -7,6 +7,7 @@ import (
 	"zyx/internal/diag"
 	"zyx/internal/parser"
 	"zyx/internal/source"
+	"zyx/internal/types"
 )
 
 // parse parses one source string and fails the test on syntax errors.
@@ -287,6 +288,23 @@ const str = 1
 `
 	_, diags := resolve(t, "server", nil, src)
 	wantCode(t, diags, diag.CodePredeclaredName)
+}
+
+// TestPredeclaredUniverse guards the single source of truth for the
+// predeclared names: the type names come from the types package, and the
+// namespaces and global function are listed by resolution.
+func TestPredeclaredUniverse(t *testing.T) {
+	names := append(types.Names(), "meta", "dur", "panic")
+	for _, name := range names {
+		if name == "type" {
+			continue // `type` is a keyword, so it never reaches resolution
+		}
+		src := "package server\n\nfunc f() {\n\tvar " + name + " = 1\n}\n"
+		_, diags := resolve(t, "server", nil, src)
+		if len(diags) == 0 {
+			t.Errorf("%s: binding a predeclared name went unreported", name)
+		}
+	}
 }
 
 func TestPrivateMemberAcrossPackages(t *testing.T) {
@@ -785,7 +803,7 @@ func Drain(s: Server) {
 func Run(s: Server, job: i32) {
 }
 
-func main() {
+func Start() {
 }
 `
 	info, diags := resolve(t, "server", stubImports{"std/net": netFixture(t)}, src)
@@ -804,7 +822,7 @@ func main() {
 		"server.Handle",
 		"server.Drain",
 		"server.Run",
-		"server.main",
+		"server.Start",
 	} {
 		if !hasSymbol(info, id) {
 			t.Errorf("missing symbol %q", id)
@@ -827,4 +845,76 @@ func Handle() {
 	if len(diags) != 0 {
 		t.Fatalf("unexpected diagnostics: %v", codes(diags))
 	}
+}
+
+func TestUppercaseLocalName(t *testing.T) {
+	cases := map[string]string{
+		"binding": `package server
+
+func Work() {
+	var Foo = 1
+}
+`,
+		"parameter": `package server
+
+func Work(Foo: i32) {
+}
+`,
+		"loop binding": `package server
+
+func Work() {
+	for Item in 0..4 {
+	}
+}
+`,
+		"select binding": `package server
+
+func Work(ch: chan<i32>) {
+	select {
+		recv(ch) -> Value, ok {
+		}
+	}
+}
+`,
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, diags := resolve(t, "server", nil, src)
+			wantCode(t, diags, diag.CodeUppercaseLocal)
+		})
+	}
+}
+
+func TestMainOutsideCommandPackage(t *testing.T) {
+	src := `package server
+
+func main() {
+}
+`
+	_, diags := resolve(t, "server", nil, src)
+	wantCode(t, diags, diag.CodeMainPackage)
+}
+
+func TestMainInsideCommandPackage(t *testing.T) {
+	src := `package main
+
+func main() {
+}
+`
+	_, diags := resolve(t, "main", nil, src)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", codes(diags))
+	}
+}
+
+func TestRelativeImport(t *testing.T) {
+	src := `package server
+
+import "./other"
+
+func Work() {
+}
+`
+	_, diags := resolve(t, "server", nil, src)
+	wantCode(t, diags, diag.CodeImportRelative)
 }

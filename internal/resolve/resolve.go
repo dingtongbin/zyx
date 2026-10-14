@@ -22,6 +22,7 @@ import (
 	"zyx/internal/ast"
 	"zyx/internal/diag"
 	"zyx/internal/source"
+	"zyx/internal/types"
 )
 
 // A Package is one package's parsed source files. Every file must declare
@@ -80,18 +81,11 @@ func Resolve(pkg *Package, imports Imports) (*Info, []diag.Diagnostic) {
 	return r.info, r.diags
 }
 
-// predeclared lists the names every package starts with: the built-in value
-// and view types, the pre-imported types, the built-in interfaces, the
-// pre-imported namespaces, and the single global function.
-var predeclared = []string{
-	"i8", "i16", "i32", "i64", "i128",
-	"u8", "u16", "u32", "u64", "u128", "usize",
-	"f32", "f64", "bool", "char", "str", "raw",
-	"Option", "Result", "Array", "Map", "Set", "PriorityQueue", "BlockingQueue",
-	"Duration", "PanicError", "JoinHandle", "Value",
-	"Eq", "Hash", "Show", "SyncSafe",
-	"meta", "dur", "panic",
-}
+// predeclaredNonTypes lists the predeclared names that are not types: the
+// two comptime namespaces and the single global function. The type names
+// come from the types package, which owns the predeclared type table, so
+// the universe and the type model cannot drift apart.
+var predeclaredNonTypes = []string{"meta", "dur", "panic"}
 
 // fileScope holds the import bindings of one file. Imports are file
 // scoped, matching the package rules the language copies from Go.
@@ -165,16 +159,24 @@ func newResolver(pkg *Package, imports Imports) *resolver {
 	}
 	r.info = &Info{Path: r.path, Defs: map[ast.Node]*Symbol{}}
 	r.universe = newScope(nil, scopeUniverse)
-	for _, name := range predeclared {
-		r.universe.names[name] = &Symbol{
-			ID:     name,
-			Name:   name,
-			Kind:   KindBuiltin,
-			Public: true,
-		}
+	for _, name := range types.Names() {
+		r.declareBuiltin(name)
+	}
+	for _, name := range predeclaredNonTypes {
+		r.declareBuiltin(name)
 	}
 	r.pkgScope = newScope(r.universe, scopePackage)
 	return r
+}
+
+// declareBuiltin adds one predeclared name to the universe scope.
+func (r *resolver) declareBuiltin(name string) {
+	r.universe.names[name] = &Symbol{
+		ID:     name,
+		Name:   name,
+		Kind:   KindBuiltin,
+		Public: true,
+	}
 }
 
 // run performs the resolution passes in order.
@@ -258,10 +260,20 @@ func (r *resolver) declare(d ast.Decl) {
 		r.declareTop(v.Name, KindType, v)
 	case *ast.FuncDecl:
 		sym := r.declareTop(v.Name, KindFunc, v)
-		if sym != nil && sym.Name == "init" {
+		if sym == nil {
+			break
+		}
+		switch sym.Name {
+		case "init":
 			r.diags = append(r.diags, diag.New(diag.CodeDuplicateName, v.Name.Sp,
 				"init is reserved for the constructor declared inside a struct body").
 				WithHelp("rename the function, or move init into a struct body"))
+		case "main":
+			if r.name != "" && r.name != "main" {
+				r.diags = append(r.diags, diag.New(diag.CodeMainPackage, v.Name.Sp,
+					"main is the program entry point and belongs to package main").
+					WithHelp("rename the function, or move it into package main"))
+			}
 		}
 	case *ast.StructDecl:
 		r.addType(r.declareTop(v.Name, KindType, v))
@@ -440,6 +452,12 @@ func (r *resolver) buildFileScopes() {
 
 // lookupImport returns the public surface of an imported package.
 func (r *resolver) lookupImport(imp *ast.ImportDecl) (*Interface, bool) {
+	if !isModulePath(imp.Path) {
+		r.diags = append(r.diags, diag.New(diag.CodeImportRelative, imp.PathSp,
+			"import path %q is not a full module path", imp.Path).
+			WithHelp("write the module path and directory, such as std/net"))
+		return nil, false
+	}
 	if r.imports == nil {
 		r.reportImport(imp)
 		return nil, false
@@ -450,6 +468,18 @@ func (r *resolver) lookupImport(imp *ast.ImportDecl) (*Interface, bool) {
 		return nil, false
 	}
 	return itf, true
+}
+
+// isModulePath reports whether an import path is a full module path. The
+// language has no relative or absolute file imports.
+func isModulePath(path string) bool {
+	if path == "" {
+		return false
+	}
+	if strings.HasPrefix(path, ".") || strings.HasPrefix(path, "/") {
+		return false
+	}
+	return !strings.ContainsAny(path, "\\:")
 }
 
 // reportImport reports an import path that no resolver could satisfy.
@@ -688,6 +718,7 @@ func (r *resolver) bindLocal(id *ast.Ident, kind SymbolKind) *Symbol {
 		}
 		r.diags = append(r.diags, d.WithHelp("rename the binding"))
 	}
+	r.checkLocalName(id)
 	r.localN++
 	sym := &Symbol{
 		ID:    localID(r.funcSym, r.localN),
