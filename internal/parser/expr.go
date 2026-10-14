@@ -388,7 +388,7 @@ func (p *parser) parseAggregate(name *ast.Ident) ast.Expr {
 	lit := &ast.AggregateLitExpr{Sp: start, Name: name}
 	p.advance() // {
 	p.enterDelimiter()
-	p.skipNewlines()
+	p.skipLineBreaks()
 	for p.tok.Kind != token.RBrace && p.tok.Kind != token.EOF {
 		before := p.pos
 		e := &ast.AggregateEntry{Sp: p.tok.Span}
@@ -404,9 +404,9 @@ func (p *parser) parseAggregate(name *ast.Ident) ast.Expr {
 		if p.pos == before {
 			p.advance()
 		}
-		p.skipNewlines()
+		p.skipLineBreaks()
 		p.accept(token.Comma)
-		p.skipNewlines()
+		p.skipLineBreaks()
 	}
 	p.leaveDelimiter()
 	p.expect(token.RBrace)
@@ -440,7 +440,7 @@ func (p *parser) parseInterpolation(sp source.Span) ast.Expr {
 	sub.skipComments()
 	sub.tok = sub.toks[sub.pos]
 	x := sub.parseExpr()
-	sub.skipNewlines()
+	sub.skipLineBreaks()
 	sub.expect(token.EOF)
 	sub.reportPendingDocs()
 	p.diags = append(p.diags, sub.diags...)

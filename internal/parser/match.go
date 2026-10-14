@@ -17,7 +17,7 @@ func (p *parser) parseMatch() *ast.MatchStmt {
 	s.Subject = p.parseExpr()
 	p.leaveHeader()
 	p.expect(token.LBrace)
-	p.skipNewlines()
+	p.skipSeparators()
 	for p.tok.Kind != token.RBrace && p.tok.Kind != token.EOF {
 		before := p.pos
 		if arm := p.parseMatchArm(); arm != nil {
@@ -26,7 +26,7 @@ func (p *parser) parseMatch() *ast.MatchStmt {
 		if p.pos == before {
 			p.advance()
 		}
-		p.skipNewlines()
+		p.skipSeparators()
 	}
 	p.expect(token.RBrace)
 	s.Sp = p.spanFrom(start)
@@ -61,7 +61,7 @@ func (p *parser) parseSelect() *ast.SelectStmt {
 	s := &ast.SelectStmt{Sp: start}
 	p.advance() // select
 	p.expect(token.LBrace)
-	p.skipNewlines()
+	p.skipSeparators()
 	for p.tok.Kind != token.RBrace && p.tok.Kind != token.EOF {
 		before := p.pos
 		if arm := p.parseSelectArm(); arm != nil {
@@ -70,7 +70,7 @@ func (p *parser) parseSelect() *ast.SelectStmt {
 		if p.pos == before {
 			p.advance()
 		}
-		p.skipNewlines()
+		p.skipSeparators()
 	}
 	p.expect(token.RBrace)
 	s.Sp = p.spanFrom(start)

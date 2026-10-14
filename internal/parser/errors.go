@@ -66,10 +66,13 @@ func (p *parser) expectGt() {
 // sync skips through the end of the current statement so parsing can resume
 // at the next one.
 func (p *parser) sync() {
-	for p.tok.Kind != token.EOF && p.tok.Kind != token.Newline && p.tok.Kind != token.RBrace {
+	for p.tok.Kind != token.EOF && p.tok.Kind != token.Newline &&
+		p.tok.Kind != token.Semicolon && p.tok.Kind != token.RBrace {
 		p.advance()
 	}
-	p.accept(token.Newline)
+	if p.tok.Kind == token.Newline || p.tok.Kind == token.Semicolon {
+		p.advance()
+	}
 }
 
 // describe names a token in a diagnostic.

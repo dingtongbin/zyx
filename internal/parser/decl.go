@@ -293,7 +293,7 @@ func (p *parser) parseInterface() *ast.InterfaceDecl {
 	d.TypeParams = p.parseTypeParams()
 	p.expect(token.LBrace)
 	for p.tok.Kind != token.RBrace && p.tok.Kind != token.EOF {
-		if p.at(token.Newline) {
+		if p.at(token.Newline) || p.at(token.Semicolon) {
 			p.advance()
 			continue
 		}
@@ -310,7 +310,7 @@ func (p *parser) parseInterface() *ast.InterfaceDecl {
 		if p.pos == before {
 			p.advance()
 		}
-		p.skipNewlines()
+		p.skipSeparators()
 	}
 	p.expect(token.RBrace)
 	d.Sp = p.spanFrom(start)
@@ -330,7 +330,7 @@ const (
 func (p *parser) parseTypeMembers(kind memberKind) []ast.Decl {
 	var members []ast.Decl
 	for p.tok.Kind != token.RBrace && p.tok.Kind != token.EOF {
-		if p.at(token.Newline) {
+		if p.at(token.Newline) || p.at(token.Semicolon) {
 			p.advance()
 			continue
 		}
@@ -358,7 +358,7 @@ func (p *parser) parseTypeMembers(kind memberKind) []ast.Decl {
 		if p.pos == before {
 			p.advance()
 		}
-		p.skipNewlines()
+		p.skipSeparators()
 	}
 	return members
 }
@@ -402,7 +402,7 @@ func (p *parser) parseImpl() *ast.ImplBlock {
 	b.Interface = p.parseType()
 	p.expect(token.LBrace)
 	for p.tok.Kind != token.RBrace && p.tok.Kind != token.EOF {
-		if p.at(token.Newline) {
+		if p.at(token.Newline) || p.at(token.Semicolon) {
 			p.advance()
 			continue
 		}
@@ -419,7 +419,7 @@ func (p *parser) parseImpl() *ast.ImplBlock {
 		if p.pos == before {
 			p.advance()
 		}
-		p.skipNewlines()
+		p.skipSeparators()
 	}
 	p.expect(token.RBrace)
 	b.Sp = p.spanFrom(start)

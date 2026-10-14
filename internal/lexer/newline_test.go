@@ -57,17 +57,20 @@ func TestLineTermination(t *testing.T) {
 		{
 			name: "semicolon separates statements",
 			src:  "a; b\n",
-			want: []token.Kind{token.Ident, token.Newline, token.Ident, token.Newline},
+			want: []token.Kind{token.Ident, token.Semicolon, token.Ident, token.Newline},
 		},
 		{
-			name: "repeated semicolons collapse",
+			name: "consecutive semicolons are harmless",
 			src:  "a;;b\n",
-			want: []token.Kind{token.Ident, token.Newline, token.Ident, token.Newline},
+			want: []token.Kind{
+				token.Ident, token.Semicolon, token.Semicolon, token.Ident,
+				token.Newline,
+			},
 		},
 		{
-			name: "semicolon plus newline does not double",
+			name: "semicolon ends the line",
 			src:  "a;\nb\n",
-			want: []token.Kind{token.Ident, token.Newline, token.Ident, token.Newline},
+			want: []token.Kind{token.Ident, token.Semicolon, token.Ident, token.Newline},
 		},
 		{
 			name: "comment before the break",

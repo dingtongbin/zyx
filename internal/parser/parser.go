@@ -98,8 +98,17 @@ func (p *parser) accept(k token.Kind) bool {
 	return true
 }
 
-// skipNewlines consumes statement terminators.
-func (p *parser) skipNewlines() {
+// skipSeparators consumes statement separators: line breaks and semicolons,
+// which the language treats as equivalent.
+func (p *parser) skipSeparators() {
+	for p.tok.Kind == token.Newline || p.tok.Kind == token.Semicolon {
+		p.advance()
+	}
+}
+
+// skipLineBreaks consumes line breaks only. It is used inside bracket lists,
+// where a semicolon is not a separator.
+func (p *parser) skipLineBreaks() {
 	for p.tok.Kind == token.Newline {
 		p.advance()
 	}
@@ -115,15 +124,15 @@ func (p *parser) spanFrom(start source.Span) source.Span {
 // remaining top-level declarations.
 func (p *parser) parseFile() *ast.File {
 	f := &ast.File{Sp: source.Span{File: p.file, Start: 0, End: p.file.Len()}}
-	p.skipNewlines()
+	p.skipSeparators()
 	f.Package = p.parsePackage()
-	p.skipNewlines()
+	p.skipSeparators()
 	for p.tok.Kind == token.Import {
 		f.Imports = append(f.Imports, p.parseImport())
-		p.skipNewlines()
+		p.skipSeparators()
 	}
 	for p.tok.Kind != token.EOF {
-		if p.tok.Kind == token.Newline {
+		if p.tok.Kind == token.Newline || p.tok.Kind == token.Semicolon {
 			p.advance()
 			continue
 		}
@@ -134,7 +143,7 @@ func (p *parser) parseFile() *ast.File {
 		if p.pos == before {
 			p.advance()
 		}
-		p.skipNewlines()
+		p.skipSeparators()
 	}
 	return f
 }

@@ -511,6 +511,35 @@ func F(a: i64, b: i64 = 2) -> i64 {
 	})
 }
 
+func TestSemicolonSeparatesStatements(t *testing.T) {
+	src := "package main\nfunc f() {\n\tg(); h();\n\tvar a: [u8; 4] = [0] * 4;\n\tg()\n}\n"
+	f, diags := parseSrc(t, src)
+	assertClean(t, diags)
+	block, ok := findNode(f, isType[*ast.BlockStmt]).(*ast.BlockStmt)
+	if !ok {
+		t.Fatal("no block")
+	}
+	if len(block.Stmts) != 4 {
+		t.Fatalf("statements = %d, want 4", len(block.Stmts))
+	}
+}
+
+func TestSemicolonInArgumentListIsRejected(t *testing.T) {
+	_, diags := parseSrc(t, "package main\nfunc f() {\n\tg(a; b)\n}\n")
+	if len(diags) == 0 {
+		t.Fatal("semicolon inside an argument list was accepted")
+	}
+}
+
+func TestSemicolonBetweenTopLevelDecls(t *testing.T) {
+	src := "package main;\nconst A = 1;\nvar B = 2;\nfunc f() {}\n"
+	f, diags := parseSrc(t, src)
+	assertClean(t, diags)
+	if len(f.Decls) != 3 {
+		t.Fatalf("decls = %d, want 3", len(f.Decls))
+	}
+}
+
 func TestMidLineBodiesAndDelimiters(t *testing.T) {
 	src := "package main\nfunc f() {\nif x { return }\nfor { break }\ng(Point { x: 1 })\nvar p = Point { q: Point { x: 1 } }\n}\n"
 	f, diags := parseSrc(t, src)

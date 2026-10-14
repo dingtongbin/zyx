@@ -13,7 +13,7 @@ func (p *parser) parseBlock() *ast.BlockStmt {
 	start := p.tok.Span
 	b := &ast.BlockStmt{Sp: start}
 	p.expect(token.LBrace)
-	p.skipNewlines()
+	p.skipSeparators()
 	for p.tok.Kind != token.RBrace && p.tok.Kind != token.EOF {
 		before := p.pos
 		if s := p.parseStmt(); s != nil {
@@ -22,7 +22,7 @@ func (p *parser) parseBlock() *ast.BlockStmt {
 		if p.pos == before {
 			p.advance()
 		}
-		p.skipNewlines()
+		p.skipSeparators()
 	}
 	p.expect(token.RBrace)
 	b.Sp = p.spanFrom(start)
@@ -228,7 +228,7 @@ func (p *parser) parseReturn() *ast.ReturnStmt {
 	s := &ast.ReturnStmt{Sp: start}
 	p.advance()
 	switch p.tok.Kind {
-	case token.Newline, token.RBrace, token.EOF, token.Colon:
+	case token.Newline, token.Semicolon, token.RBrace, token.EOF, token.Colon:
 	default:
 		s.Values = append(s.Values, p.parseExpr())
 		for p.accept(token.Comma) {

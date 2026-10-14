@@ -33,16 +33,13 @@ func (l *lexer) lineEnd(start, end int) {
 	l.emitNewline(start, end)
 }
 
-// semicolon treats ";" as a statement break at the top level. Inside
-// brackets it is a token of its own, because the array type `[T; N]` needs
-// to see it.
+// semicolon emits a statement separator. A `;` is a token everywhere,
+// because the array type `[T; N]` needs to see it; the parser reads it as
+// equivalent to a line break. The separator ends the line, so no line break
+// token follows it.
 func (l *lexer) semicolon(start, end int) {
-	if l.depth > 0 {
-		l.emitSig(token.Token{Kind: token.Semicolon, Span: l.span(start, end)})
-		return
-	}
+	l.emit(token.Token{Kind: token.Semicolon, Span: l.span(start, end)})
 	l.hasSig = false
-	l.emitNewline(start, end)
 }
 
 // emitNewline appends a Newline token unless the stream already ends in
