@@ -204,19 +204,21 @@ const (
 	// CodeMissingReturn reports a function whose declared result is not
 	// produced on every path.
 	CodeMissingReturn Code = "E4031"
-	// CodeMainReturn reports a return value in main, which returns nothing.
-	CodeMainReturn Code = "E4032"
 	// CodeInterpolation reports an f-string interpolation whose type cannot
 	// be shown.
-	CodeInterpolation Code = "E4033"
+	CodeInterpolation Code = "E4032"
 	// CodeIndex reports an index or slice that the receiver's type does not
 	// support.
-	CodeIndex Code = "E4034"
+	CodeIndex Code = "E4033"
 	// CodeBuiltinMethodValue reports taking a method value of a built-in
 	// method, which only supports direct calls.
-	CodeBuiltinMethodValue Code = "E4035"
+	CodeBuiltinMethodValue Code = "E4034"
 	// CodeClone reports clone on a type without reference members.
-	CodeClone Code = "E4036"
+	CodeClone Code = "E4035"
+	// CodeAddrOf reports `&x` outside the argument list of a C call.
+	CodeAddrOf Code = "E4036"
+	// CodeMissingArm reports a match that leaves values uncovered.
+	CodeMissingArm Code = "E4037"
 )
 
 // Concurrency diagnostics occupy the E6001-E6099 range.

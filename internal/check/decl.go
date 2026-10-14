@@ -17,19 +17,93 @@ import (
 // interface. An interface declared in source uses <declaration>$Self.
 const selfParam = "Self"
 
-// builtinInterfaces gives the methods of the predeclared interfaces. Their
-// Self parameter is the implementer.
-var builtinInterfaces = map[string]map[string]*types.Type{
-	"Eq": {
-		"Eq": types.FuncOf(types.Bool, types.Param(selfParam, selfParam)),
-	},
-	"Hash": {
-		"Hash": types.FuncOf(types.Uint64),
-	},
-	"Show": {
-		"Show": types.FuncOf(types.Str),
-	},
-	"SyncSafe": {},
+// builtinDecls gives the members of the pre-imported types: the variants of
+// the enums, the fields of PanicError, and the methods of the interfaces and
+// handles. Those types have no source declaration, so their members live
+// here and the checker reads them through declOf.
+var builtinDecls = buildBuiltinDecls()
+
+// buildBuiltinDecls builds the member table of the pre-imported types.
+func buildBuiltinDecls() map[string]*Decl {
+	optionT := types.Param("Option$T", "T")
+	resultT := types.Param("Result$T", "T")
+	resultE := types.Param("Result$E", "E")
+	handleR := types.Param("JoinHandle$R", "R")
+	self := types.Param(selfParam, selfParam)
+	resultOf := func(ok, err *types.Type) *types.Type {
+		return types.Result.Instantiate(ok, err)
+	}
+	return map[string]*Decl{
+		"Option": {
+			Type:     types.Option,
+			Params:   []*types.Type{optionT},
+			Variants: []*Variant{{Name: "None"}, {Name: "Some", Payload: []*types.Type{optionT}}},
+			Methods: map[string]*types.Type{
+				"IsSome":   types.FuncOf(types.Bool),
+				"IsNone":   types.FuncOf(types.Bool),
+				"Unwrap":   types.FuncOf(optionT),
+				"UnwrapOr": types.FuncOf(optionT, optionT),
+			},
+		},
+		"Result": {
+			Type:   types.Result,
+			Params: []*types.Type{resultT, resultE},
+			Variants: []*Variant{
+				{Name: "Ok", Payload: []*types.Type{resultT}},
+				{Name: "Err", Payload: []*types.Type{resultE}},
+			},
+			Methods: map[string]*types.Type{
+				"IsOk":     types.FuncOf(types.Bool),
+				"IsErr":    types.FuncOf(types.Bool),
+				"Unwrap":   types.FuncOf(resultT),
+				"UnwrapOr": types.FuncOf(resultT, resultT),
+				"Ok":       types.FuncOf(types.Option.Instantiate(resultT)),
+				"Err":      types.FuncOf(types.Option.Instantiate(resultE)),
+			},
+		},
+		"JoinHandle": {
+			Type:   types.JoinHandle,
+			Params: []*types.Type{handleR},
+			Methods: map[string]*types.Type{
+				"Join":    types.FuncOf(resultOf(handleR, types.PanicError)),
+				"TryJoin": types.FuncOf(types.Option.Instantiate(resultOf(handleR, types.PanicError))),
+			},
+		},
+		"Value": {
+			Type: types.Value,
+			Variants: []*Variant{
+				{Name: "Null"},
+				{Name: "Bool", Payload: []*types.Type{types.Bool}},
+				{Name: "Num", Payload: []*types.Type{types.Float64}},
+				{Name: "Str", Payload: []*types.Type{types.Str}},
+				{Name: "Arr", Payload: []*types.Type{types.Array.Instantiate(types.Value)}},
+				{Name: "Obj", Payload: []*types.Type{types.Map.Instantiate(types.Str, types.Value)}},
+			},
+		},
+		"PanicError": {
+			Type: types.PanicError,
+			Fields: []*Field{
+				{Name: "Msg", Type: types.Str},
+				{Name: "Location", Type: types.Str},
+			},
+		},
+		"Eq": {
+			Type:    types.Eq,
+			Methods: map[string]*types.Type{"Eq": types.FuncOf(types.Bool, self)},
+		},
+		"Hash": {
+			Type:    types.Hash,
+			Methods: map[string]*types.Type{"Hash": types.FuncOf(types.Uint64)},
+		},
+		"Show": {
+			Type:    types.Show,
+			Methods: map[string]*types.Type{"Show": types.FuncOf(types.Str)},
+		},
+		"SyncSafe": {
+			Type:    types.SyncSafe,
+			Methods: map[string]*types.Type{},
+		},
+	}
 }
 
 // funcContext describes where a function declaration appears.
@@ -326,6 +400,7 @@ func (c *checker) checkEnum(v *ast.EnumDecl) {
 					Name:    x.Name.Name,
 					Payload: payload,
 				})
+				d.variant[x.Name.Name] = d.Variants[len(d.Variants)-1]
 				c.recordDecl(x.Name, d.Type)
 			case *ast.ConstDecl:
 				c.checkMemberConst(d, x)
@@ -582,14 +657,11 @@ func (c *checker) rawInterfaceMethods(iface *types.Type) map[string]*types.Type 
 	if d := c.declOf(iface); d != nil {
 		return d.Methods
 	}
-	if iface.Pkg == "" {
-		return builtinInterfaces[iface.Name]
-	}
 	return nil
 }
 
 // declOf returns the checked declaration of a named type, whether it is
-// declared here or imported.
+// declared here, imported, or pre-imported.
 func (c *checker) declOf(t *types.Type) *Decl {
 	if t == nil || !t.IsNamed() {
 		return nil
@@ -597,7 +669,10 @@ func (c *checker) declOf(t *types.Type) *Decl {
 	if d, ok := c.out.Declared[t.ID]; ok {
 		return d
 	}
-	if c.imports == nil || t.Pkg == "" {
+	if t.Pkg == "" {
+		return builtinDecls[t.ID]
+	}
+	if c.imports == nil {
 		return nil
 	}
 	itf, ok := c.imports.Lookup(t.Pkg)

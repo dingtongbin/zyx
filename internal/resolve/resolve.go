@@ -731,6 +731,13 @@ func receiverFor(f *ast.FuncDecl) *ast.Ident {
 // bindLocal creates a local, parameter, or receiver symbol. The symbol id
 // counts declarations inside the enclosing function from one.
 func (r *resolver) bindLocal(id *ast.Ident, kind SymbolKind) *Symbol {
+	return r.bindLocalIn(id, kind, true)
+}
+
+// bindLocalIn creates a local symbol. checkName applies the capitalization
+// rule for locals, which a pattern binding skips because its name may be a
+// variant of the matched enum, and a variant is uppercase by convention.
+func (r *resolver) bindLocalIn(id *ast.Ident, kind SymbolKind, checkName bool) *Symbol {
 	if id == nil || id.Name == "_" {
 		return nil
 	}
@@ -742,7 +749,9 @@ func (r *resolver) bindLocal(id *ast.Ident, kind SymbolKind) *Symbol {
 		}
 		r.diags = append(r.diags, d.WithHelp("rename the binding"))
 	}
-	r.checkLocalName(id)
+	if checkName {
+		r.checkLocalName(id)
+	}
 	r.localN++
 	sym := &Symbol{
 		ID:    localID(r.funcSym, r.localN),

@@ -612,7 +612,7 @@ func (r *resolver) resolvePattern(p ast.Pattern, shared map[string]*Symbol) {
 			r.info.Defs[v.Name] = sym
 			return
 		}
-		r.bindLocal(v.Name, KindLocal)
+		r.bindLocalIn(v.Name, KindLocal, false)
 	case *ast.VariantPattern:
 		// The variant is named without a prefix and belongs to the matched
 		// type, so the checker binds it.
@@ -649,7 +649,7 @@ func (r *resolver) resolveOr(v *ast.OrPattern) {
 	}
 	shared := make(map[string]*Symbol, len(names))
 	for _, name := range names {
-		shared[name] = r.bindLocal(first[name], KindLocal)
+		shared[name] = r.bindLocalIn(first[name], KindLocal, false)
 	}
 	for _, alt := range v.Patterns {
 		r.resolvePattern(alt, shared)

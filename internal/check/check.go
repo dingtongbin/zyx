@@ -26,6 +26,10 @@ import (
 	"zyx/internal/types"
 )
 
+// void is the type of an expression that produces no value, such as a call
+// to a function with no result.
+var void = &types.Type{Kind: types.Invalid}
+
 // Imports supplies the checked surface of imported packages. The caller
 // checks imported packages first, so the graph is traversed in dependency
 // order.
@@ -69,8 +73,9 @@ type Decl struct {
 	// its declaration requires.
 	ParamConstraints map[string][]*types.Type
 
-	field map[string]*Field
-	impl  map[string]bool
+	field   map[string]*Field
+	variant map[string]*Variant
+	impl    map[string]bool
 }
 
 // An Impl records one checked impl block.
@@ -92,7 +97,31 @@ func (d *Decl) Field(name string) *Field {
 	if d == nil {
 		return nil
 	}
-	return d.field[name]
+	if f, ok := d.field[name]; ok {
+		return f
+	}
+	for _, f := range d.Fields {
+		if f.Name == name {
+			return f
+		}
+	}
+	return nil
+}
+
+// Variant returns the enum variant with the given name, or nil.
+func (d *Decl) Variant(name string) *Variant {
+	if d == nil {
+		return nil
+	}
+	if v, ok := d.variant[name]; ok {
+		return v
+	}
+	for _, v := range d.Variants {
+		if v.Name == name {
+			return v
+		}
+	}
+	return nil
 }
 
 // A Field is one checked struct or union field.
@@ -172,6 +201,14 @@ type checker struct {
 	// declOrder holds the checked type declarations in source order, so
 	// later passes produce diagnostics in a stable order.
 	declOrder []*Decl
+	// result is the result type of the function whose body is checked.
+	result *types.Type
+	// inComptime marks a comptime context.
+	inComptime bool
+	// inRegion counts the enclosing region blocks, which spawn requires.
+	inRegion int
+	// addrOK marks a C call argument list, where &x is allowed.
+	addrOK bool
 }
 
 // newChecker returns a checker with the package's output maps in place.
@@ -203,6 +240,7 @@ func (c *checker) run() {
 	c.declareTypes()
 	c.checkDecls()
 	c.checkImpls()
+	c.checkBodies()
 	c.buildInterface()
 }
 
@@ -249,6 +287,7 @@ func (c *checker) declareNamed(id *ast.Ident, kind types.Kind, params []*ast.Typ
 		Consts:           map[string]*types.Type{},
 		ParamConstraints: map[string][]*types.Type{},
 		field:            map[string]*Field{},
+		variant:          map[string]*Variant{},
 		impl:             map[string]bool{},
 	}
 	c.out.Declared[sym.ID] = d
@@ -506,23 +545,18 @@ func (c *checker) arrayLength(e ast.Expr) uint64 {
 			"an array length must be a constant integer")
 		return 0
 	}
-	n, err := strconv.ParseUint(strings.ReplaceAll(lit.Value, "_", ""), 0, 64)
-	if err != nil {
-		c.errorHelp(diag.CodeArrayLength, lit.Sp,
-			"write a plain integer, such as [u8; 16]",
-			"array length %q is out of range", lit.Value)
-		return 0
-	}
 	c.out.Nodes[lit] = types.Usize
-	return n
+	return parseCount(lit.Value)
 }
 
-// spanOf returns the span of an expression, or a zero span when it is nil.
-func spanOf(e ast.Expr) source.Span {
-	if e == nil {
-		return source.Span{}
+// parseCount reads the digits of a constant integer literal, dropping the
+// digit separators the language allows.
+func parseCount(text string) uint64 {
+	n, err := strconv.ParseUint(strings.ReplaceAll(text, "_", ""), 0, 64)
+	if err != nil {
+		return 0
 	}
-	return e.Span()
+	return n
 }
 
 // symOf returns the symbol resolution bound to an identifier.

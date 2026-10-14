@@ -85,11 +85,20 @@ func wantCode(t *testing.T, diags []diag.Diagnostic, code diag.Code) {
 	t.Fatalf("want %s, got %v", code, codes(diags))
 }
 
+// messages renders the diagnostics with their messages, for test output.
+func messages(diags []diag.Diagnostic) []string {
+	out := make([]string, 0, len(diags))
+	for _, d := range diags {
+		out = append(out, string(d.Code)+": "+d.Message)
+	}
+	return out
+}
+
 // wantClean fails when a package reports any diagnostic.
 func wantClean(t *testing.T, diags []diag.Diagnostic) {
 	t.Helper()
 	if len(diags) != 0 {
-		t.Fatalf("unexpected diagnostics: %v", codes(diags))
+		t.Fatalf("unexpected diagnostics: %v", messages(diags))
 	}
 }
 
@@ -788,6 +797,862 @@ func Make(b: box.Box<i64>) -> box.Box<i64> {
 	if got := out.Decls["Make"].String(); got != "func(box.Box<i64>) -> box.Box<i64>" {
 		t.Errorf("Make = %q, want func(box.Box<i64>) -> box.Box<i64>", got)
 	}
+}
+
+func TestArithmeticOperands(t *testing.T) {
+	cases := map[string]string{
+		"mixed widths": `package server
+
+func f(a: i32, b: i64) -> i32 => a + b
+`,
+		"text ordering": `package server
+
+func f(a: str, b: str) -> bool => a < b
+`,
+		"unsigned negation": `package server
+
+func f(a: u32) -> u32 => -a
+`,
+		"negate an integer": `package server
+
+func f(a: i32) -> bool => !a
+`,
+		"bits on a float": `package server
+
+func f(a: f64) -> f64 => a & a
+`,
+		"arithmetic on text": `package server
+
+func f(a: str, b: str) -> str => a - b
+`,
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, diags := checkSource(t, "server", nil, nil, src)
+			wantCode(t, diags, diag.CodeTypeMismatch)
+		})
+	}
+}
+
+func TestLiteralTyping(t *testing.T) {
+	src := `package server
+
+func Narrow() -> u8 {
+	var x: u8 = 5
+	return x
+}
+
+func Widen(a: i32) -> i32 => 1 + a
+
+func Suffixed() -> i8 => 42i8
+
+func Default() -> i64 => 7
+`
+	out, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	for name, want := range map[string]string{
+		"Narrow":   "func() -> u8",
+		"Widen":    "func(i32) -> i32",
+		"Suffixed": "func() -> i8",
+		"Default":  "func() -> i64",
+	} {
+		if got := out.Decls[name].String(); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestCallArguments(t *testing.T) {
+	cases := map[string]struct {
+		src  string
+		code diag.Code
+	}{
+		"too few": {`package server
+
+func g(a: i32, b: i32) -> i32 => a + b
+
+func f() -> i32 => g(1)
+`, diag.CodeArgCount},
+		"too many": {`package server
+
+func g(a: i32) -> i32 => a
+
+func f() -> i32 => g(1, 2)
+`, diag.CodeArgCount},
+		"wrong type": {`package server
+
+func g(a: i32) -> i32 => a
+
+func f() -> i32 => g("s")
+`, diag.CodeTypeMismatch},
+		"defaults allow fewer": {`package server
+
+func g(a: i32, b: i32 = 2) -> i32 => a + b
+
+func f() -> i32 => g(1)
+`, ""},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, diags := checkSource(t, "server", nil, nil, c.src)
+			if c.code == "" {
+				wantClean(t, diags)
+				return
+			}
+			wantCode(t, diags, c.code)
+		})
+	}
+}
+
+func TestGenericInference(t *testing.T) {
+	src := `package server
+
+func Identity<T>(v: T) -> T {
+	return v
+}
+
+func Numbers() -> i64 => Identity(5)
+
+func Texts() -> str => Identity("s")
+
+func Narrow() -> i32 => Identity(5)
+`
+	out, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	if got := out.Decls["Numbers"].String(); got != "func() -> i64" {
+		t.Errorf("Numbers = %q, want func() -> i64", got)
+	}
+}
+
+func TestGenericInferenceFails(t *testing.T) {
+	src := `package server
+
+func Empty<T>() -> Array<T> {
+	return new Array<T>(0)
+}
+
+func f() -> Array<i64> {
+	var xs = Empty()
+	return xs
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeTypeArity)
+}
+
+func TestContainerMethods(t *testing.T) {
+	src := `package server
+
+func Fill() -> usize {
+	var xs = new Array<i64>(8)
+	xs.Push(1)
+	xs.Push(2)
+	var first = xs.Get(0)
+	if first.IsSome() {
+		return xs.Len()
+	}
+	return 0
+}
+`
+	out, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	if out.Decls["Fill"] == nil {
+		t.Error("Fill is not declared")
+	}
+}
+
+func TestContainerMethodTypeError(t *testing.T) {
+	src := `package server
+
+func f() {
+	var xs = new Array<i64>(8)
+	xs.Push("s")
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeTypeMismatch)
+}
+
+func TestUnknownMethod(t *testing.T) {
+	src := `package server
+
+func f() {
+	var xs = new Array<i64>(8)
+	xs.PushAll(1)
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeNoMethod)
+}
+
+func TestConversion(t *testing.T) {
+	cases := map[string]struct {
+		src  string
+		code diag.Code
+	}{
+		"numeric": {`package server
+
+func f(a: i32) -> i64 => i64(a)
+`, ""},
+		"char": {`package server
+
+func f(a: char) -> u32 => u32(a)
+`, ""},
+		"bool is excluded": {`package server
+
+func f(a: bool) -> i32 => i32(a)
+`, diag.CodeNoConversion},
+		"text is excluded": {`package server
+
+func f(a: str) -> i32 => i32(a)
+`, diag.CodeNoConversion},
+		"char is not numeric": {`package server
+
+func f(a: char) -> i32 => i32(a)
+`, diag.CodeNoConversion},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, diags := checkSource(t, "server", nil, nil, c.src)
+			if c.code == "" {
+				wantClean(t, diags)
+				return
+			}
+			wantCode(t, diags, c.code)
+		})
+	}
+}
+
+func TestNew(t *testing.T) {
+	src := `package server
+
+struct Point {
+	x: i32
+	func init(x: i32) -> Self => Point { x: x }
+}
+
+func Build() -> Point => new Point(3)
+
+func Empty() -> Array<i64> => new Array<i64>(16)
+
+func Table() -> Map<str, i64> => new Map<str, i64>()
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+func TestNewWithoutInit(t *testing.T) {
+	src := `package server
+
+struct Point {
+	x: i32
+}
+
+func Build() -> Point => new Point(3)
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeTypeMismatch)
+}
+
+func TestStructLiteralFields(t *testing.T) {
+	cases := map[string]struct {
+		src  string
+		code diag.Code
+	}{
+		"missing": {`package server
+
+struct Point {
+	x: i32
+	y: i32
+}
+
+func f() -> Point => Point { x: 1 }
+`, diag.CodeMissingField},
+		"duplicate": {`package server
+
+struct Point {
+	x: i32
+}
+
+func f() -> Point => Point { x: 1, x: 2 }
+`, diag.CodeDuplicateField},
+		"unknown": {`package server
+
+struct Point {
+	x: i32
+}
+
+func f() -> Point => Point { z: 1 }
+`, diag.CodeNoField},
+		"wrong type": {`package server
+
+struct Point {
+	x: i32
+}
+
+func f() -> Point => Point { x: "s" }
+`, diag.CodeTypeMismatch},
+		"enum literal": {`package server
+
+enum Color {
+	Red
+}
+
+func f() -> Color => Color { }
+`, diag.CodeEnumLiteral},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, diags := checkSource(t, "server", nil, nil, c.src)
+			wantCode(t, diags, c.code)
+		})
+	}
+}
+
+func TestMapAndSetLiteral(t *testing.T) {
+	src := `package server
+
+func Scores() -> Map<str, i64> => Map { "alice": 90, "bob": 85 }
+
+func Ids() -> Set<i32> => Set { 1, 2, 3 }
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+func TestMapLiteralWrongValue(t *testing.T) {
+	src := `package server
+
+func Scores() -> Map<str, i64> => Map { "alice": "high" }
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeTypeMismatch)
+}
+
+func TestIndexAndSlice(t *testing.T) {
+	src := `package server
+
+func Bytes(s: str) -> u8 => s[0]
+
+func Head(xs: [i32; 4]) -> i32 => xs[0]
+
+func Part(s: str) -> str => s[0..2]
+
+func View(xs: Array<i32>) -> [i32] => xs[0..2]
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+func TestIndexError(t *testing.T) {
+	src := `package server
+
+struct Point {
+	x: i32
+}
+
+func f(p: Point) -> i32 => p[0]
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeIndex)
+}
+
+func TestTryPropagation(t *testing.T) {
+	src := `package server
+
+func parse(s: str) -> Result<i32, str> => Result.Ok(0)
+
+func Work(s: str) -> Result<i32, str> {
+	var n = try parse(s)
+	return Result.Ok(n)
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+func TestTryMismatch(t *testing.T) {
+	src := `package server
+
+func parse(s: str) -> Result<i32, str> => Result.Ok(0)
+
+func Work(s: str) -> Result<i32, PanicError> {
+	var n = try parse(s)
+	return Result.Ok(n)
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeTryResult)
+}
+
+func TestSpawnNeedsRegion(t *testing.T) {
+	src := `package server
+
+func Work() {
+	spawn Handle()
+}
+
+func Handle() {
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeSpawnOutsideRegion)
+}
+
+func TestSpawnInsideRegion(t *testing.T) {
+	src := `package server
+
+func Work() -> JoinHandle<i32> {
+	region {
+		return spawn Compute()
+	}
+}
+
+func Compute() -> i32 => 0
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+func TestSelectArms(t *testing.T) {
+	src := `package server
+
+func Work(ch: chan<i32>) {
+	select {
+		recv(ch) -> v, ok {
+			if !ok {
+				return
+			}
+		}
+		timeout(dur.sec(1)) {
+		}
+		default {
+		}
+	}
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeSelectArms)
+}
+
+func TestMatchExhaustiveness(t *testing.T) {
+	src := `package server
+
+enum Color {
+	Red
+	Green
+}
+
+func Name(col: Color) -> str {
+	match col {
+		Red => { return "red" }
+	}
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeMissingArm)
+}
+
+func TestMatchComplete(t *testing.T) {
+	src := `package server
+
+enum Color {
+	Red
+	Green
+}
+
+func Name(col: Color) -> str {
+	match col {
+		Red => { return "red" }
+		Green => { return "green" }
+	}
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+func TestMatchOnOption(t *testing.T) {
+	src := `package server
+
+func UnwrapOrZero(o: Option<i64>) -> i64 {
+	match o {
+		Some(v) => { return v }
+		None => { return 0 }
+	}
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+func TestMatchWildcard(t *testing.T) {
+	src := `package server
+
+func Sign(n: i32) -> i32 {
+	match n {
+		0 => { return 0 }
+		_ => { return 1 }
+	}
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+func TestReturnPaths(t *testing.T) {
+	cases := map[string]struct {
+		src  string
+		code diag.Code
+	}{
+		"missing": {`package server
+
+func f(a: i32) -> i32 {
+	if a > 0 {
+		return 1
+	}
+}
+`, diag.CodeMissingReturn},
+		"wrong type": {`package server
+
+func f() -> i32 => "s"
+`, diag.CodeReturnType},
+		"value in a void function": {`package server
+
+func f() {
+	return 1
+}
+`, diag.CodeReturnType},
+		"both branches": {`package server
+
+func f(a: i32) -> i32 {
+	if a > 0 {
+		return 1
+	} else {
+		return 2
+	}
+}
+`, ""},
+		"panic path": {`package server
+
+func f(a: i32) -> i32 {
+	if a > 0 {
+		return 1
+	}
+	panic("no")
+}
+`, ""},
+		"match paths": {`package server
+
+enum Flag {
+	On
+	Off
+}
+
+func f(flag: Flag) -> i32 {
+	match flag {
+		On => { return 1 }
+		Off => { return 0 }
+	}
+}
+`, ""},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, diags := checkSource(t, "server", nil, nil, c.src)
+			if c.code == "" {
+				wantClean(t, diags)
+				return
+			}
+			wantCode(t, diags, c.code)
+		})
+	}
+}
+
+func TestForIn(t *testing.T) {
+	src := `package server
+
+func Sum(xs: Array<i32>) -> i32 {
+	var total: i32 = 0
+	for x in xs {
+		total = total + x
+	}
+	return total
+}
+
+func Count(m: Map<str, i64>) -> i64 {
+	var n: i64 = 0
+	for k, v in m {
+		n = n + v
+	}
+	return n
+}
+
+func Letters(s: str) -> i32 {
+	var n: i32 = 0
+	for ch in s {
+		n = n + 1
+	}
+	return n
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+func TestForInNotIterable(t *testing.T) {
+	src := `package server
+
+func f(n: i32) {
+	for x in n {
+	}
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeNotIterable)
+}
+
+func TestFStringInterpolation(t *testing.T) {
+	cases := map[string]struct {
+		src  string
+		code diag.Code
+	}{
+		"primitive": {`package server
+
+func f(n: i32) -> str => f"count = {n}"
+`, ""},
+		"struct needs Show": {`package server
+
+struct Point {
+	x: i32
+}
+
+func f(p: Point) -> str => f"point = {p}"
+`, diag.CodeInterpolation},
+		"with Show": {`package server
+
+struct Point {
+	x: i32
+	impl Show {
+		func Show() -> str => "point"
+	}
+}
+
+func f(p: Point) -> str => f"point = {p}"
+`, ""},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, diags := checkSource(t, "server", nil, nil, c.src)
+			if c.code == "" {
+				wantClean(t, diags)
+				return
+			}
+			wantCode(t, diags, c.code)
+		})
+	}
+}
+
+func TestComptimeOnlyNamespaces(t *testing.T) {
+	cases := map[string]struct {
+		src  string
+		code diag.Code
+	}{
+		"dur at run time": {`package server
+
+func f() -> Duration => dur.ms(100)
+`, diag.CodeComptimeOnly},
+		"meta at run time": {`package server
+
+func f() -> usize => meta.size_of(i64)
+`, diag.CodeComptimeOnly},
+		"dur in a constant": {`package server
+
+const Timeout = dur.sec(1)
+`, ""},
+		"meta in a constant": {`package server
+
+const Width = meta.size_of(i64)
+`, ""},
+		"unknown query": {`package server
+
+const Width = meta.width_of(i64)
+`, diag.CodeMetaName},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, diags := checkSource(t, "server", nil, nil, c.src)
+			if c.code == "" {
+				wantClean(t, diags)
+				return
+			}
+			wantCode(t, diags, c.code)
+		})
+	}
+}
+
+func TestClone(t *testing.T) {
+	cases := map[string]struct {
+		src  string
+		code diag.Code
+	}{
+		"struct with a view": {`package server
+
+struct Conn {
+	host: str
+}
+
+func f(conn: Conn) -> Conn => conn.clone()
+`, ""},
+		"plain integer": {`package server
+
+func f(n: i32) -> i32 => n.clone()
+`, diag.CodeClone},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, diags := checkSource(t, "server", nil, nil, c.src)
+			if c.code == "" {
+				wantClean(t, diags)
+				return
+			}
+			wantCode(t, diags, c.code)
+		})
+	}
+}
+
+func TestAddrOf(t *testing.T) {
+	cases := map[string]struct {
+		src  string
+		code diag.Code
+	}{
+		"in a C call": {`package server
+
+import c "stdio.h"
+
+func f() {
+	var n: i32 = 1
+	c.scanf(&n)
+}
+`, ""},
+		"outside a C call": {`package server
+
+func g(p: raw) {
+}
+
+func f() {
+	var n: i32 = 1
+	g(&n)
+}
+`, diag.CodeAddrOf},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, diags := checkSource(t, "server", nil, nil, c.src)
+			if c.code == "" {
+				wantClean(t, diags)
+				return
+			}
+			wantCode(t, diags, c.code)
+		})
+	}
+}
+
+func TestBuiltinMethodValue(t *testing.T) {
+	src := `package server
+
+func f() {
+	var xs = new Array<i64>(8)
+	var g = xs.Push
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeBuiltinMethodValue)
+}
+
+func TestVariantValue(t *testing.T) {
+	cases := map[string]struct {
+		src  string
+		code diag.Code
+	}{
+		"payload free": {`package server
+
+enum Color {
+	Red
+	Green
+}
+
+func f() -> Color => Color.Red
+`, ""},
+		"with a payload": {`package server
+
+func f() -> Result<i32, str> => Result.Ok
+`, diag.CodeEnumLiteral},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, diags := checkSource(t, "server", nil, nil, c.src)
+			if c.code == "" {
+				wantClean(t, diags)
+				return
+			}
+			wantCode(t, diags, c.code)
+		})
+	}
+}
+
+func TestRealisticBodies(t *testing.T) {
+	src := `package server
+
+const Limit = dur.ms(250)
+
+struct Server {
+	host: str
+	port: u16
+	func Label() -> str => f"{self.host}:{self.port}"
+}
+
+enum State {
+	Idle
+	Running(i32)
+	Stopped(str)
+}
+
+func Describe(s: State) -> str {
+	match s {
+		Idle => { return "idle" }
+		Running(n) => { return f"running {n}" }
+		Stopped(why) => { return why }
+	}
+}
+
+func Count(xs: Array<i32>) -> i32 {
+	var total: i32 = 0
+	for x in xs {
+		total = total + x
+	}
+	return total
+}
+
+func Run(s: Server, ch: chan<i32>) -> Result<i32, PanicError> {
+	region {
+		spawn Count(new Array<i32>(0))
+	}
+	select {
+		recv(ch) -> v, ok {
+			if !ok {
+				return Result.Ok(0)
+			}
+			return Result.Ok(v)
+		}
+		timeout(Limit) {
+			return Result.Ok(-1)
+		}
+	}
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
 }
 
 func TestRealisticDeclarations(t *testing.T) {
