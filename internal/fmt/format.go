@@ -63,6 +63,9 @@ func (p *printer) token(toks []token.Token, i int) {
 	text := t.Span.Text()
 	line, _ := t.Span.StartPos()
 
+	if t.Kind == token.EOF || t.Kind == token.Invalid {
+		return
+	}
 	if t.Kind == token.Newline {
 		if p.separates() {
 			p.newline()
@@ -89,7 +92,7 @@ func (p *printer) token(toks []token.Token, i int) {
 	if p.prev != nil && p.line > 0 && line > p.line+1 && p.indent == 0 && p.separates() {
 		p.newline()
 	}
-	if t.Kind == token.RBrace {
+	if t.Kind == token.RBrace && p.inBlock() {
 		p.newline()
 		if p.indent > 0 {
 			p.indent--
@@ -107,12 +110,19 @@ func (p *printer) token(toks []token.Token, i int) {
 			p.brackets--
 		}
 	case token.LBrace:
-		p.braces = append(p.braces, p.opensBlock(toks, i))
-		p.indent++
-		p.newline()
+		block := p.opensBlock(toks, i)
+		p.braces = append(p.braces, block)
+		if block {
+			p.indent++
+			p.newline()
+		}
 	case token.RBrace:
+		block := p.inBlock()
 		if n := len(p.braces); n > 0 {
 			p.braces = p.braces[:n-1]
+		}
+		if !block {
+			break
 		}
 		if i+1 < len(toks) && toks[i+1].Kind == token.Else {
 			p.space()
@@ -134,6 +144,12 @@ func (p *printer) token(toks []token.Token, i int) {
 	p.prev = &toks[i]
 	p.prevText = text
 	p.line = line
+}
+
+// inBlock reports whether the innermost open brace is a statement block.
+func (p *printer) inBlock() bool {
+	n := len(p.braces)
+	return n > 0 && p.braces[n-1]
 }
 
 // separates reports whether a line break at this point separates two
@@ -180,6 +196,11 @@ func (p *printer) needsSpace(toks []token.Token, i int, text string) bool {
 		return false
 	}
 	if p.angles > 0 && (kind == token.Lt || kind == token.Gt || kind == token.Comma) {
+		return false
+	}
+	if p.angles > 0 && p.prev.Kind == token.Lt {
+		// The first argument of a type argument list attaches to its
+		// opening bracket.
 		return false
 	}
 	if noSpaceAfter(p.prev.Kind) {
