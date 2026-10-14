@@ -1,0 +1,12 @@
+# 构建输出（zyx build 默认目录）
+/build/
+*.exe
+
+# 本地设计文档与开发规范（不入 git，仅本地使用）
+/desc/
+.opencode/
+AGENTS.md
+
+# OS
+Thumbs.db
+.DS_Store
