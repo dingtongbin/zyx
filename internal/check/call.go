@@ -369,15 +369,15 @@ func (c *checker) methodOf(recv *types.Type, name string) *types.Type {
 	}
 	if d := c.declOf(recv); d != nil {
 		if sig, ok := d.Methods[name]; ok {
-			return c.instantiateMethod(recv, d, sig)
+			return instantiateMethod(recv, d, sig)
 		}
 	}
-	return c.builtinMethod(recv, name)
+	return builtinMethod(recv, name)
 }
 
 // instantiateMethod substitutes a method signature's type parameters with
 // the receiver's type arguments.
-func (c *checker) instantiateMethod(recv *types.Type, d *Decl, sig *types.Type) *types.Type {
+func instantiateMethod(recv *types.Type, d *Decl, sig *types.Type) *types.Type {
 	if len(d.Params) == 0 || len(recv.Args) == 0 {
 		return sig
 	}
@@ -388,6 +388,21 @@ func (c *checker) instantiateMethod(recv *types.Type, d *Decl, sig *types.Type) 
 		}
 	}
 	return types.Substitute(sig, bindings)
+}
+
+// MethodOf returns the signature of the method named name on a receiver
+// type, whether the method is declared in source or built into the
+// language.
+func (p *Package) MethodOf(recv *types.Type, name string) *types.Type {
+	if recv == nil || recv.Kind == types.Invalid {
+		return nil
+	}
+	if d := p.Decl(recv); d != nil {
+		if sig, ok := d.Methods[name]; ok {
+			return instantiateMethod(recv, d, sig)
+		}
+	}
+	return builtinMethod(recv, name)
 }
 
 // containerMethods gives the methods of the pre-imported containers. Every
@@ -481,7 +496,7 @@ var containerMethods = map[string]map[string]func(*types.Type) *types.Type{
 
 // builtinMethod returns the signature of a method the language builds into a
 // type, or nil.
-func (c *checker) builtinMethod(recv *types.Type, name string) *types.Type {
+func builtinMethod(recv *types.Type, name string) *types.Type {
 	switch recv.Kind {
 	case types.KindChan:
 		switch name {

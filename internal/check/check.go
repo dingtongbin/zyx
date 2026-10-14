@@ -468,6 +468,7 @@ func (c *checker) buildTypeName(v *ast.TypeName) *types.Type {
 		return nil
 	}
 	if len(v.Args) == 0 {
+		c.out.Nodes[v] = base
 		return base
 	}
 	if base.Kind == types.KindTypeParam {

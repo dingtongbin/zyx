@@ -13,9 +13,14 @@ import (
 	"strings"
 
 	"zyx/internal/ast"
+	"zyx/internal/check"
+	"zyx/internal/coro"
 	"zyx/internal/diag"
+	"zyx/internal/marks"
+	"zyx/internal/resolve"
 	"zyx/internal/source"
 	"zyx/internal/toolchain"
+	"zyx/internal/zyxc"
 )
 
 // A Package is one package's collected sources.
@@ -246,6 +251,104 @@ func Importable(fromDir, toPath string) bool {
 		return true
 	}
 	return from == prefix || strings.HasPrefix(from, prefix+"/")
+}
+
+// A Result is the front-end result of one package.
+type Result struct {
+	// Package is the collected package.
+	Package *Package
+	// Resolved is the resolution result, nil when resolution failed.
+	Resolved *resolve.Info
+	// Checked is the type-check result, nil when checking failed.
+	Checked *check.Package
+	// Marks is the memory mark model, nil when marking failed.
+	Marks *marks.Info
+	// IR is the .zyxc tree, nil when the package did not reach emission.
+	IR *zyxc.File
+	// Text is the canonical .zyxc text.
+	Text []byte
+	// Diags holds every diagnostic the package reported.
+	Diags []diag.Diagnostic
+}
+
+// A Session runs the front end over a module tree.
+type Session struct {
+	// Loader collects the packages.
+	Loader *Loader
+}
+
+// FrontEnd runs the front end over the entry package and everything it
+// imports, in dependency order, and returns one result per package. A
+// package whose earlier stage failed keeps its diagnostics and stops there,
+// so the importer sees a missing interface rather than a cascade.
+func (s *Session) FrontEnd(entry string) ([]*Result, error) {
+	g, err := s.Loader.Load(entry)
+	if err != nil {
+		return nil, err
+	}
+	resolveIfaces := map[string]*resolve.Interface{}
+	checkIfaces := map[string]*check.Interface{}
+	out := make([]*Result, 0, len(g.Order))
+	for _, pkg := range g.Order {
+		res := s.frontEndPackage(pkg, resolveIfaces, checkIfaces)
+		out = append(out, res)
+		if res.Resolved != nil {
+			resolveIfaces[pkg.ImportPath] = res.Resolved.Interface
+		}
+		if res.Checked != nil {
+			checkIfaces[pkg.ImportPath] = res.Checked.Interface
+		}
+	}
+	return out, nil
+}
+
+// frontEndPackage runs every front-end stage over one package.
+func (s *Session) frontEndPackage(pkg *Package, resolveIfaces map[string]*resolve.Interface, checkIfaces map[string]*check.Interface) *Result {
+	res := &Result{Package: pkg}
+	res.Diags = append(res.Diags, pkg.Diags...)
+
+	rpkg := &resolve.Package{Path: pkg.ImportPath, Files: pkg.Syntax}
+	rinfo, rdiags := resolve.Resolve(rpkg, resolveDeps(resolveIfaces))
+	res.Resolved = rinfo
+	res.Diags = append(res.Diags, rdiags...)
+	if len(rdiags) != 0 {
+		return res
+	}
+
+	checked, cdiags := check.Check(rpkg, rinfo, checkDeps(checkIfaces), s.Loader.Target)
+	res.Checked = checked
+	res.Diags = append(res.Diags, cdiags...)
+	if len(cdiags) != 0 {
+		return res
+	}
+
+	cinfo := coro.Build(rpkg)
+	model, mdiags := marks.Build(rpkg, rinfo, checked, cinfo)
+	res.Marks = model
+	res.Diags = append(res.Diags, mdiags...)
+	if len(mdiags) != 0 {
+		return res
+	}
+
+	res.IR = zyxc.Build(rpkg, rinfo, checked, model, cinfo, s.Loader.Target.Triple)
+	res.Text = zyxc.Format(res.IR)
+	return res
+}
+
+// resolveDeps adapts a table of resolved interfaces to the resolver.
+type resolveDeps map[string]*resolve.Interface
+
+func (d resolveDeps) Lookup(path string) (*resolve.Interface, bool) {
+	itf, ok := d[path]
+	return itf, ok
+}
+
+// checkDeps adapts a table of checked interfaces to the checker.
+type checkDeps map[string]*check.Interface
+
+func (d checkDeps) Lookup(path string) (*check.Interface, bool) {
+	itf, ok := d[path]
+	return itf, ok
 }
 
 // sourceNames returns the source file names of a directory that take part

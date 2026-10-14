@@ -126,6 +126,9 @@ type builder struct {
 	lastUse map[*allocation]ast.Node
 	// escapes records how each allocation leaves the function.
 	escapes map[*allocation]escapeKind
+	// fast marks the operand of a `fast` C call, which runs on the current
+	// coroutine rather than through the blocking pool.
+	fast bool
 }
 
 // run walks every declaration of the package.
@@ -353,9 +356,15 @@ func (b *builder) expr(e ast.Expr) {
 		b.expr(v.X)
 	case *ast.SpawnExpr:
 		b.spawn(v)
+	// A C call reached through `fast` runs on the current coroutine, so it
+	// takes the fast mark instead of the blocking one.
 	case *ast.FastExpr:
-		b.info.Add(v, "c-fast", "")
+		prev := b.fast
+		b.fast = true
 		b.expr(v.X)
+		b.fast = prev
+		b.info.Add(v.X, "c-fast", "")
+		return
 	case *ast.LambdaExpr:
 		b.stmt(v.Body)
 		b.expr(v.BodyExpr)
@@ -368,7 +377,7 @@ func (b *builder) expr(e ast.Expr) {
 
 // call walks a call and marks a C call with its blocking classification.
 func (b *builder) call(v *ast.CallExpr) {
-	if b.isCCall(v) {
+	if b.isCCall(v) && !b.fast {
 		b.info.Add(v, "c-blocking", "")
 	}
 	for _, a := range v.Args {

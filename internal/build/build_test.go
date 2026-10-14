@@ -271,6 +271,56 @@ func TestFileFor(t *testing.T) {
 	}
 }
 
+func TestFrontEndRunsEveryStage(t *testing.T) {
+	l := loader(t, map[string]string{
+		"app/app.zyx":   "package app\n\nimport \"example.com/app/conn\"\n\nfunc Run(link: conn.Conn) -> i64 {\n\tlink.Close()\n\treturn 0\n}\n",
+		"conn/conn.zyx": "package conn\n\nstruct Conn {\n\thost: str\n\tfunc Close() {\n\t}\n}\n",
+	})
+	s := &Session{Loader: l}
+	results, err := s.FrontEnd("example.com/app/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("packages = %d, want 2", len(results))
+	}
+	for _, res := range results {
+		if len(res.Diags) != 0 {
+			t.Fatalf("%s: %v", res.Package.ImportPath, res.Diags)
+		}
+		if res.IR == nil || len(res.Text) == 0 {
+			t.Fatalf("%s: no intermediate representation", res.Package.ImportPath)
+		}
+	}
+	last := results[len(results)-1]
+	if last.Package.ImportPath != "example.com/app/app" {
+		t.Fatalf("last package = %s, want the entry", last.Package.ImportPath)
+	}
+	if !strings.Contains(string(last.Text), "mcall Close example.com/app/conn.Conn.Close") {
+		t.Errorf("the cross-package method reference is missing:\n%s", last.Text)
+	}
+}
+
+func TestFrontEndStopsAfterAFailure(t *testing.T) {
+	l := loader(t, map[string]string{
+		"app/app.zyx": "package app\n\nfunc f() -> i64 => missing\n",
+	})
+	s := &Session{Loader: l}
+	results, err := s.FrontEnd("example.com/app/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("packages = %d, want 1", len(results))
+	}
+	if len(results[0].Diags) == 0 {
+		t.Error("want a diagnostic")
+	}
+	if results[0].IR != nil {
+		t.Error("a package that failed must not reach emission")
+	}
+}
+
 func TestParseIsDeterministicAcrossManyFiles(t *testing.T) {
 	files := map[string]string{}
 	var want []string
