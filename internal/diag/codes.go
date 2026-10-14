@@ -30,9 +30,6 @@ const (
 	CodeNestedFString Code = "E1009"
 	// CodeEmptyInterpolation reports an interpolation with no expression.
 	CodeEmptyInterpolation Code = "E1010"
-	// CodeUnterminatedCBlock reports an inline C block left open at end of
-	// file.
-	CodeUnterminatedCBlock Code = "E1011"
 )
 
 // Syntax diagnostics occupy the E2001-E2099 range.

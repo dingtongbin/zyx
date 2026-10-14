@@ -199,20 +199,6 @@ func TestArrayLiteralWithoutRepeat(t *testing.T) {
 	}
 }
 
-func TestInlineCBlock(t *testing.T) {
-	src := "package main\nfunc f() -> u32 {\nreturn c {\nunsigned int h = 2166136261u;\nreturn h ? 1u : 0u;\n}\n}\n"
-	f, diags := parseSrc(t, src)
-	assertClean(t, diags)
-	blk, ok := findNode(f, isType[*ast.CBlockExpr]).(*ast.CBlockExpr)
-	if !ok {
-		t.Fatal("no inline C block node")
-	}
-	want := "\nunsigned int h = 2166136261u;\nreturn h ? 1u : 0u;\n"
-	if got := blk.Raw(); got != want {
-		t.Fatalf("raw C = %q, want %q", got, want)
-	}
-}
-
 func TestNestedTypeArgumentSplitting(t *testing.T) {
 	f, diags := parseSrc(t, "package main\nvar m = new Map<str, Array<u8>>()\nvar n = new Map<Array<u8>, str>()\n")
 	assertClean(t, diags)

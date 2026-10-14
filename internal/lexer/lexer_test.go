@@ -216,3 +216,46 @@ func TestByteOrderMarkIsIgnored(t *testing.T) {
 	assertClean(t, diags)
 	assertKinds(t, kindsOf(toks), []token.Kind{token.Ident, token.Newline})
 }
+
+func TestCKeywordOutsideBlocks(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []token.Kind
+	}{
+		{
+			name: "C call",
+			src:  "c.printf(\"x\")\n",
+			want: []token.Kind{
+				token.C, token.Dot, token.Ident, token.LParen,
+				token.Str, token.RParen, token.Newline,
+			},
+		},
+		{
+			name: "import c header",
+			src:  "import c \"stdio.h\"\n",
+			want: []token.Kind{token.Import, token.C, token.Str, token.Newline},
+		},
+		{
+			name: "C ABI definition",
+			src:  "c func OnAccept(fd: i32) {}\n",
+			want: []token.Kind{
+				token.C, token.Func, token.Ident, token.LParen, token.Ident,
+				token.Colon, token.Ident, token.RParen, token.LBrace,
+				token.RBrace, token.Newline,
+			},
+		},
+		{
+			name: "identifier starting with c",
+			src:  "count\n",
+			want: []token.Kind{token.Ident, token.Newline},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			toks, diags := lexSrc(t, c.src)
+			assertClean(t, diags)
+			assertKinds(t, kindsOf(toks), c.want)
+		})
+	}
+}

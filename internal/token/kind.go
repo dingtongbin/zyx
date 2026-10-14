@@ -32,8 +32,6 @@ const (
 	FString
 	// ByteStr is a byte string literal; Token.Str holds the raw bytes.
 	ByteStr
-	// CBlock is an inline C block `c { ... }`; the span covers it verbatim.
-	CBlock
 
 	// The language keywords, in source spelling.
 	Package
@@ -143,7 +141,6 @@ var kindNames = [NumKinds]string{
 	Str:          "str",
 	FString:      "fstring",
 	ByteStr:      "bytestring",
-	CBlock:       "cblock",
 	Package:      "package",
 	Import:       "import",
 	Const:        "const",

@@ -20,7 +20,7 @@ func Walk(n Node, f func(Node) bool) {
 func walk(n Node, f func(Node) bool) {
 	switch v := n.(type) {
 	// Leaves.
-	case *Ident, *Literal, *ImportDecl, *CBlockExpr, *WildcardPattern:
+	case *Ident, *Literal, *ImportDecl, *WildcardPattern:
 		return
 
 	// Files.

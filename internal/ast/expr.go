@@ -295,23 +295,6 @@ type AggregateEntry struct {
 // Span returns the entry source range.
 func (n *AggregateEntry) Span() source.Span { return n.Sp }
 
-// CBlockExpr is an inline C block. The lexer captures the whole `c { ... }`
-// as one token, and the parser keeps the C source between the braces
-// verbatim for clang.
-type CBlockExpr struct {
-	Sp source.Span
-	// Body covers the C source between the braces.
-	Body source.Span
-}
-
-// Span returns the block source range, covering the whole `c { ... }`.
-func (n *CBlockExpr) Span() source.Span { return n.Sp }
-
-func (n *CBlockExpr) exprNode() {}
-
-// Raw returns the C source text between the braces.
-func (n *CBlockExpr) Raw() string { return n.Body.Text() }
-
 // FastExpr marks a C call that runs directly on the current coroutine:
 // `fast c.f(...)`.
 type FastExpr struct {

@@ -237,27 +237,11 @@ func (p *parser) parsePrimary() ast.Expr {
 		return p.parseNew()
 	case token.Func:
 		return p.parseFuncExpr()
-	case token.CBlock:
-		blk := &ast.CBlockExpr{Sp: start, Body: cblockBody(start)}
-		p.advance()
-		return blk
 	}
 	p.errorHelpAt(p.tok, diag.CodeUnexpectedToken,
 		"write an expression here", "expected an expression, found %s", describe(p.tok))
 	p.advance()
 	return &ast.Ident{Sp: p.spanFrom(start)}
-}
-
-// cblockBody returns the span of the C source between the braces of an
-// inline C block token.
-func cblockBody(sp source.Span) source.Span {
-	text := sp.Text()
-	open := strings.IndexByte(text, '{')
-	close := strings.LastIndexByte(text, '}')
-	if open < 0 || close < open {
-		return source.Span{File: sp.File, Start: sp.End, End: sp.End}
-	}
-	return source.Span{File: sp.File, Start: sp.Start + open + 1, End: sp.Start + close}
 }
 
 // literalValue returns the payload a literal node keeps: decoded text for
@@ -477,7 +461,7 @@ func isAssignTarget(x ast.Expr) bool {
 // a spawn, a `fast` call, or an inline C block.
 func isExprStatement(x ast.Expr) bool {
 	switch v := x.(type) {
-	case *ast.CallExpr, *ast.SpawnExpr, *ast.CBlockExpr:
+	case *ast.CallExpr, *ast.SpawnExpr:
 		return true
 	case *ast.FastExpr:
 		return isCallExpr(v.X)
