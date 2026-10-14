@@ -353,17 +353,18 @@ func (r *resolver) declareMember(owner *Symbol, m ast.Decl) {
 	case *ast.ConstDecl:
 		r.declareMemberName(owner, v.Name, KindConst, v)
 	case *ast.FuncDecl:
-		r.declareMethod(owner, v)
+		r.declareMethod(owner, v, false)
 	case *ast.ImplBlock:
 		for _, f := range v.Methods {
-			r.declareMethod(owner, f)
+			r.declareMethod(owner, f, true)
 		}
 	}
 }
 
 // declareMethod records a method and applies the rules that reserve main and
-// init.
-func (r *resolver) declareMethod(owner *Symbol, f *ast.FuncDecl) {
+// init. inImpl marks a method declared by an impl block, where init is not
+// a constructor.
+func (r *resolver) declareMethod(owner *Symbol, f *ast.FuncDecl, inImpl bool) {
 	sym := r.declareMemberName(owner, f.Name, KindMethod, f)
 	if sym == nil {
 		return
@@ -374,9 +375,10 @@ func (r *resolver) declareMethod(owner *Symbol, f *ast.FuncDecl) {
 			"main is the program entry point and cannot be a method").
 			WithHelp("rename the method"))
 	case "init":
-		if _, ok := owner.Decl.(*ast.StructDecl); !ok {
+		_, isStruct := owner.Decl.(*ast.StructDecl)
+		if !isStruct || inImpl {
 			r.diags = append(r.diags, diag.New(diag.CodeDuplicateName, f.Name.Sp,
-				"init is only allowed inside a struct body").
+				"init is only allowed as a direct member of a struct body").
 				WithHelp("rename the method"))
 		}
 	}
@@ -428,7 +430,7 @@ func (r *resolver) buildFileScopes() {
 				continue
 			}
 			sym := &Symbol{
-				ID:     itf.Name,
+				ID:     imp.Path,
 				Name:   itf.Name,
 				Kind:   KindPackage,
 				Public: true,
@@ -650,16 +652,29 @@ func (r *resolver) resolveTypeDecl(sym *Symbol, params []*ast.TypeParam, members
 				r.resolveExpr(v.Value)
 			})
 		case *ast.FuncDecl:
-			r.resolveFunc(v, r.sym(v.Name), selfIdent(v))
+			r.resolveFunc(v, r.sym(v.Name), receiverFor(v))
 		case *ast.ImplBlock:
-			r.resolveType(v.Interface)
-			for _, f := range v.Methods {
-				r.resolveFunc(f, r.sym(f.Name), selfIdent(f))
-			}
+			r.resolveImpl(ts, v)
 		}
 	}
 
 	r.typeSym, r.scope, r.exported = prevType, prevScope, prevExported
+}
+
+// resolveImpl resolves an impl block: the type parameters it restates, the
+// interface it names, and its methods. A restated parameter takes the
+// identity of the declaration's parameter, because the two denote the same
+// type.
+func (r *resolver) resolveImpl(parent *scope, v *ast.ImplBlock) {
+	bs := newScope(parent, scopeBlock)
+	prev := r.scope
+	r.scope = bs
+	r.declareTypeParams(v.TypeParams, r.typeSym)
+	r.resolveType(v.Interface)
+	for _, f := range v.Methods {
+		r.resolveFunc(f, r.sym(f.Name), selfIdent(f))
+	}
+	r.scope = prev
 }
 
 // resolveInterface resolves the signatures of an interface body.
@@ -702,6 +717,15 @@ func (r *resolver) resolveUnion(sym *Symbol, v *ast.UnionDecl) {
 // method's position so diagnostics about self point at the declaration.
 func selfIdent(f *ast.FuncDecl) *ast.Ident {
 	return &ast.Ident{Sp: f.Name.Sp, Name: "self"}
+}
+
+// receiverFor returns the implicit receiver of a method. init constructs a
+// value rather than reading one, so it has no receiver.
+func receiverFor(f *ast.FuncDecl) *ast.Ident {
+	if f.Name != nil && f.Name.Name == "init" {
+		return nil
+	}
+	return selfIdent(f)
 }
 
 // bindLocal creates a local, parameter, or receiver symbol. The symbol id

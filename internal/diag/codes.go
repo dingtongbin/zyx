@@ -121,3 +121,61 @@ const (
 	// path. The language has no relative imports.
 	CodeImportRelative Code = "E3018"
 )
+
+// Type diagnostics occupy the E4001-E4099 range.
+const (
+	// CodeTypeMismatch reports a type that does not match the one its
+	// position requires.
+	CodeTypeMismatch Code = "E4001"
+	// CodeNoConversion reports an explicit conversion the language does not
+	// allow.
+	CodeNoConversion Code = "E4002"
+	// CodeTypeArity reports the wrong number of type arguments, or type
+	// arguments on a type that declares no parameters.
+	CodeTypeArity Code = "E4003"
+	// CodeNotInterface reports an impl block or a constraint that names
+	// something other than an interface.
+	CodeNotInterface Code = "E4004"
+	// CodeMissingMethod reports an impl block that leaves an interface
+	// method unimplemented.
+	CodeMissingMethod Code = "E4005"
+	// CodeDuplicateImpl reports two impl blocks for one interface on one
+	// type.
+	CodeDuplicateImpl Code = "E4006"
+	// CodeExtraMethod reports an impl method the interface does not
+	// declare.
+	CodeExtraMethod Code = "E4007"
+	// CodeFieldRecursion reports a field that contains its own type through
+	// a tuple or a fixed-size array.
+	CodeFieldRecursion Code = "E4008"
+	// CodeFieldNotABI reports a field type that is not allowed across the C
+	// boundary.
+	CodeFieldNotABI Code = "E4009"
+	// CodeExternBody reports an extern function with a body.
+	CodeExternBody Code = "E4010"
+	// CodeMissingBody reports a function that needs a body and has none.
+	CodeMissingBody Code = "E4011"
+	// CodeVariadic reports a variadic parameter that is misplaced or not
+	// allowed on the function.
+	CodeVariadic Code = "E4012"
+	// CodeDefaultParam reports a default parameter in a position the
+	// language forbids.
+	CodeDefaultParam Code = "E4013"
+	// CodeInterfaceBody reports an interface method with a body.
+	CodeInterfaceBody Code = "E4014"
+	// CodeMethodTypeParams reports a method that declares type parameters.
+	CodeMethodTypeParams Code = "E4015"
+	// CodeMainSignature reports a main function with the wrong shape.
+	CodeMainSignature Code = "E4016"
+	// CodeInitSignature reports an init function with the wrong shape.
+	CodeInitSignature Code = "E4017"
+	// CodeConstraintWeakened reports an impl block that drops a constraint
+	// the declaration requires.
+	CodeConstraintWeakened Code = "E4018"
+	// CodeArrayLength reports an array length that is not a constant
+	// non-negative integer.
+	CodeArrayLength Code = "E4019"
+	// CodeTopLevelVar reports a top-level var whose initializer is not
+	// comptime or whose type cannot live in static storage.
+	CodeTopLevelVar Code = "E4020"
+)
