@@ -2125,6 +2125,90 @@ func f(n: i64) -> i64 {
 	wantClean(t, diags)
 }
 
+func TestEmptyExternUnion(t *testing.T) {
+	src := `package server
+
+extern union Nothing {
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeEmptyCLayout)
+}
+
+func TestBadConstraint(t *testing.T) {
+	cases := map[string]string{
+		"concrete type": `package server
+
+struct Pair<T: i64> {
+	first: T
+}
+`,
+		"struct": `package server
+
+struct Point {
+	x: i32
+}
+
+func f<T: Point>(v: T) {
+}
+`,
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, diags := checkSource(t, "server", nil, nil, src)
+			wantCode(t, diags, diag.CodeNotInterface)
+		})
+	}
+}
+
+func TestGoodConstraints(t *testing.T) {
+	src := `package server
+
+struct Pair<T: Eq> {
+	first: T
+}
+
+comptime func TypeName<T: type>() -> str => meta.name(T)
+
+func Keep<T: Eq + Hash>(v: T) -> T => v
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+func TestGenericStructLiteralInference(t *testing.T) {
+	src := `package server
+
+struct Pair<T> {
+	first: T
+	second: T
+}
+
+func Make() -> i64 {
+	var p = Pair { first: 1, second: 2 }
+	return p.first
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+func TestGenericStructLiteralUninferable(t *testing.T) {
+	src := `package server
+
+struct Holder<T, U> {
+	only: T
+}
+
+func Bad() -> i64 {
+	var h = Holder { only: 1 }
+	return 0
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeTypeArity)
+}
+
 func TestRealisticDeclarations(t *testing.T) {
 	rdep, cdep := checkedDep(t, "std/net", `package net
 

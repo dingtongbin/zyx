@@ -930,7 +930,7 @@ func (c *checker) aggregateType(v *ast.AggregateLitExpr, want *types.Type) *type
 			"%s is an enum", typ)
 	case d != nil && (typ.Kind == types.KindStruct || typ.Kind == types.KindExternStruct ||
 		typ.Kind == types.KindUnion):
-		c.checkStructLiteral(v, typ, d)
+		return c.checkStructLiteral(v, typ, d)
 	case typ.Kind == types.KindContainer && typ.Name == "Map":
 		return c.checkMapLiteral(v, typ)
 	case typ.Kind == types.KindContainer && typ.Name == "Set":
@@ -944,16 +944,20 @@ func (c *checker) aggregateType(v *ast.AggregateLitExpr, want *types.Type) *type
 }
 
 // checkStructLiteral checks `Point { x: 1 }`, which must list every field
-// exactly once.
-func (c *checker) checkStructLiteral(v *ast.AggregateLitExpr, typ *types.Type, d *Decl) {
+// exactly once. A literal written with a bare generic name infers its type
+// arguments from the field values.
+func (c *checker) checkStructLiteral(v *ast.AggregateLitExpr, typ *types.Type, d *Decl) *types.Type {
 	seen := map[string]bool{}
+	fields := make([]*Field, 0, len(v.Entries))
+	values := make([]*types.Type, 0, len(v.Entries))
 	for _, e := range v.Entries {
 		id, ok := e.Key.(*ast.Ident)
 		if !ok {
 			c.errorHelp(diag.CodeNoField, spanOf(e.Key),
 				"write the field name before the colon",
 				"a struct literal names fields")
-			c.checkExpr(e.Value, nil)
+			fields = append(fields, nil)
+			values = append(values, c.checkExpr(e.Value, nil))
 			continue
 		}
 		f := d.Field(id.Name)
@@ -961,7 +965,8 @@ func (c *checker) checkStructLiteral(v *ast.AggregateLitExpr, typ *types.Type, d
 			c.errorHelp(diag.CodeNoField, id.Sp,
 				"check the field name",
 				"%s has no field %q", typ, id.Name)
-			c.checkExpr(e.Value, nil)
+			fields = append(fields, nil)
+			values = append(values, c.checkExpr(e.Value, nil))
 			continue
 		}
 		if seen[id.Name] {
@@ -970,12 +975,25 @@ func (c *checker) checkStructLiteral(v *ast.AggregateLitExpr, typ *types.Type, d
 				"field %q is set twice", id.Name)
 		}
 		seen[id.Name] = true
-		want := c.substituteFor(typ, d, f.Type)
-		got := c.checkExpr(e.Value, want)
-		if !c.accepts(want, e.Value, got) {
+		var expect *types.Type
+		if !types.ContainsTypeParam(f.Type) {
+			expect = c.substituteFor(typ, d, f.Type)
+		}
+		fields = append(fields, f)
+		values = append(values, c.checkExpr(e.Value, expect))
+	}
+	if len(typ.Args) == 0 && len(d.Params) > 0 {
+		typ = c.inferStructArgs(v, typ, d, fields, values)
+	}
+	for i, e := range v.Entries {
+		if i >= len(fields) || fields[i] == nil || values[i] == nil {
+			continue
+		}
+		want := c.substituteFor(typ, d, fields[i].Type)
+		if !c.accepts(want, e.Value, values[i]) {
 			c.errorHelp(diag.CodeTypeMismatch, e.Value.Span(),
 				"assign a value of the field type",
-				"field %q is %s, want %s", id.Name, got, want)
+				"field %q is %s, want %s", fields[i].Name, values[i], want)
 		}
 	}
 	for _, f := range d.Fields {
@@ -985,6 +1003,41 @@ func (c *checker) checkStructLiteral(v *ast.AggregateLitExpr, typ *types.Type, d
 				"field %q is not set", f.Name)
 		}
 	}
+	return typ
+}
+
+// inferStructArgs binds the type parameters of a struct literal from the
+// types of its field values.
+func (c *checker) inferStructArgs(v *ast.AggregateLitExpr, typ *types.Type, d *Decl, fields []*Field, values []*types.Type) *types.Type {
+	bindings := map[string]*types.Type{}
+	for i, f := range fields {
+		if f == nil || i >= len(values) || values[i] == nil {
+			continue
+		}
+		b, ok := types.Bindings(f.Type, values[i])
+		if !ok {
+			continue
+		}
+		for k, val := range b {
+			if _, seen := bindings[k]; !seen {
+				bindings[k] = val
+			}
+		}
+	}
+	missing := false
+	for _, p := range d.Params {
+		if _, ok := bindings[p.ID]; !ok {
+			missing = true
+		}
+	}
+	inst := typ.Instantiate(orderedArgs(typ, d, bindings)...)
+	if missing {
+		c.errorHelp(diag.CodeTypeArity, v.Type.Span(),
+			"annotate the literal with its type arguments",
+			"cannot infer the type arguments of %s", typ.Name)
+	}
+	c.out.Nodes[v] = inst
+	return inst
 }
 
 // checkMapLiteral checks `Map { k: v }`. A literal that names the container

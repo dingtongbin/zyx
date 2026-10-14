@@ -326,10 +326,26 @@ func (c *checker) recordConstraints(d *Decl, params []*ast.TypeParam) {
 		}
 		ifaces := make([]*types.Type, 0, len(tp.Constraints))
 		for _, con := range tp.Constraints {
-			ifaces = append(ifaces, c.buildType(con))
+			ifaces = append(ifaces, c.constraintType(con))
 		}
 		d.ParamConstraints[tp.Name.Name] = ifaces
 	}
+}
+
+// constraintType builds one generic constraint, which must be an interface
+// or `type`.
+func (c *checker) constraintType(con ast.TypeExpr) *types.Type {
+	t := c.buildType(con)
+	if t == nil || t.Kind == types.Invalid {
+		return nil
+	}
+	if t.Kind == types.KindInterface || t.IsTypeValue() {
+		return t
+	}
+	c.errorHelp(diag.CodeNotInterface, con.Span(),
+		"constrain the parameter with an interface, or with type",
+		"%s is not a usable constraint", t)
+	return nil
 }
 
 // paramTypes returns the type of every declared type parameter, in order.

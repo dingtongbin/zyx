@@ -204,6 +204,11 @@ func isSyncPrimitive(t *types.Type) bool {
 
 // checkFreeFunc checks a top-level function.
 func (c *checker) checkFreeFunc(v *ast.FuncDecl) {
+	for _, tp := range v.TypeParams {
+		for _, con := range tp.Constraints {
+			c.constraintType(con)
+		}
+	}
 	c.withParams(v.TypeParams, func() {
 		t := c.funcType(v)
 		if sym := c.symOf(v.Name); sym != nil {
@@ -379,6 +384,11 @@ func (c *checker) checkUnion(v *ast.UnionDecl) {
 		c.checkABIField(f, t)
 	}
 	c.checkRecursion(d, v.Name)
+	if len(d.Fields) == 0 {
+		c.errorHelp(diag.CodeEmptyCLayout, v.Name.Sp,
+			"declare at least one member",
+			"an empty extern union has no C layout")
+	}
 }
 
 // checkEnum checks an enum body: variants, methods, impl blocks, and the
