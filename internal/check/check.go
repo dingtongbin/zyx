@@ -22,7 +22,7 @@ import (
 	"zyx/internal/diag"
 	"zyx/internal/resolve"
 	"zyx/internal/source"
-	"zyx/internal/token"
+	"zyx/internal/toolchain"
 	"zyx/internal/types"
 )
 
@@ -51,6 +51,15 @@ type Interface struct {
 	Declared map[string]*Decl
 }
 
+// A Const is one constant declared in a type body.
+type Const struct {
+	// Sym is the constant's symbol, so the checker can evaluate its value
+	// on demand.
+	Sym *resolve.Symbol
+	// Type is the constant's declared type.
+	Type *types.Type
+}
+
 // A Decl is the checked form of one type declaration.
 type Decl struct {
 	// Sym is the declaration symbol.
@@ -65,8 +74,8 @@ type Decl struct {
 	Variants []*Variant
 	// Methods maps each method name to its signature.
 	Methods map[string]*types.Type
-	// Consts maps each constant name to its declared type.
-	Consts map[string]*types.Type
+	// Consts maps each constant name to its declaration.
+	Consts map[string]*Const
 	// Impls holds the interfaces the type implements, in source order.
 	Impls []*Impl
 	// ParamConstraints maps each declared type parameter to the interfaces
@@ -162,13 +171,16 @@ type Package struct {
 	// Nodes maps each checked type expression and declaration name to its
 	// type.
 	Nodes map[ast.Node]*types.Type
+	// Consts maps each evaluated constant to its value.
+	Consts map[string]*Value
 	// Interface is the surface downstream packages consume.
 	Interface *Interface
 }
 
-// Check type-checks one package's declarations.
-func Check(pkg *resolve.Package, info *resolve.Info, imports Imports) (*Package, []diag.Diagnostic) {
-	c := newChecker(pkg, info, imports)
+// Check type-checks one package's declarations for a target. The target
+// decides the layout queries a compile-time expression may run.
+func Check(pkg *resolve.Package, info *resolve.Info, imports Imports, target toolchain.Target) (*Package, []diag.Diagnostic) {
+	c := newChecker(pkg, info, imports, target)
 	c.run()
 	return c.out, c.diags
 }
@@ -209,17 +221,23 @@ type checker struct {
 	inRegion int
 	// addrOK marks a C call argument list, where &x is allowed.
 	addrOK bool
+	// target is the target the package is checked for.
+	target toolchain.Target
+	// consts caches the value of every constant, keyed by symbol id.
+	consts map[string]*Value
 }
 
 // newChecker returns a checker with the package's output maps in place.
-func newChecker(pkg *resolve.Package, info *resolve.Info, imports Imports) *checker {
+func newChecker(pkg *resolve.Package, info *resolve.Info, imports Imports, target toolchain.Target) *checker {
 	c := &checker{
 		pkg:     pkg,
 		info:    info,
 		imports: imports,
 		path:    pkg.Path,
+		target:  target,
 		bySym:   map[string]*types.Type{},
 		aliases: map[*ast.TypeAlias]bool{},
+		consts:  map[string]*Value{},
 	}
 	c.out = &Package{
 		Path:     c.path,
@@ -227,6 +245,7 @@ func newChecker(pkg *resolve.Package, info *resolve.Info, imports Imports) *chec
 		Decls:    map[string]*types.Type{},
 		Declared: map[string]*Decl{},
 		Nodes:    map[ast.Node]*types.Type{},
+		Consts:   map[string]*Value{},
 	}
 	if info != nil {
 		c.out.Name = info.Name
@@ -284,7 +303,7 @@ func (c *checker) declareNamed(id *ast.Ident, kind types.Kind, params []*ast.Typ
 		Sym:              sym,
 		Type:             named,
 		Methods:          map[string]*types.Type{},
-		Consts:           map[string]*types.Type{},
+		Consts:           map[string]*Const{},
 		ParamConstraints: map[string][]*types.Type{},
 		field:            map[string]*Field{},
 		variant:          map[string]*Variant{},
@@ -535,18 +554,18 @@ func (c *checker) resolveAlias(v *ast.TypeAlias) *types.Type {
 	return t
 }
 
-// arrayLength evaluates the length of a fixed-size array. Only a constant
-// integer is accepted; general comptime evaluation runs in a later pass.
+// arrayLength evaluates the length of a fixed-size array. The length must
+// be a compile-time integer, which may be a constant rather than a literal.
 func (c *checker) arrayLength(e ast.Expr) uint64 {
-	lit, ok := e.(*ast.Literal)
-	if !ok || lit.Kind != token.Int || lit.Suffix != token.SuffixNone {
+	v := c.eval(e)
+	if v == nil || v.Type == nil || !v.Type.IsInteger() {
 		c.errorHelp(diag.CodeArrayLength, spanOf(e),
-			"write a plain integer, such as [u8; 16]",
+			"write a constant integer, such as [u8; 16] or [u8; N]",
 			"an array length must be a constant integer")
 		return 0
 	}
-	c.out.Nodes[lit] = types.Usize
-	return parseCount(lit.Value)
+	c.out.Nodes[e] = v.Type
+	return v.Int
 }
 
 // parseCount reads the digits of a constant integer literal, dropping the

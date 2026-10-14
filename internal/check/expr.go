@@ -663,6 +663,7 @@ func (c *checker) lambdaType(v *ast.LambdaExpr) *types.Type {
 		if p.Default != nil {
 			c.inComptime = true
 			c.checkExpr(p.Default, t)
+			c.requireConst(p.Default, "a default parameter value")
 			c.inComptime = false
 		}
 	}
@@ -701,6 +702,11 @@ func (c *checker) arrayLitType(v *ast.ArrayLitExpr, want *types.Type) *types.Typ
 		elem = types.Int64
 	}
 	if want != nil && want.Kind == types.KindArray {
+		if uint64(len(v.Elems)) != want.Len {
+			c.errorHelp(diag.CodeArrayLength, v.Sp,
+				"write one element per position",
+				"%s needs %d elements, got %d", want, want.Len, len(v.Elems))
+		}
 		return types.ArrayOf(elem, want.Len)
 	}
 	return types.Array.Instantiate(elem)
@@ -818,18 +824,18 @@ func elementExpectation(want *types.Type) *types.Type {
 	return nil
 }
 
-// constCount evaluates the repetition count of an array literal. Only a
-// constant integer is accepted.
+// constCount evaluates the repetition count of an array literal, which must
+// be a compile-time integer.
 func (c *checker) constCount(e ast.Expr) uint64 {
-	lit, ok := e.(*ast.Literal)
-	if !ok || lit.Kind != token.Int || lit.Suffix != token.SuffixNone {
+	v := c.eval(e)
+	if v == nil || v.Type == nil || !v.Type.IsInteger() {
 		c.errorHelp(diag.CodeArrayLength, spanOf(e),
-			"write a plain integer, such as [0] * 16",
+			"write a constant integer, such as [0] * 16",
 			"the repetition count must be a constant integer")
 		return 0
 	}
-	c.out.Nodes[e] = types.Usize
-	return parseCount(lit.Value)
+	c.out.Nodes[e] = v.Type
+	return v.Int
 }
 
 // aggregateType checks a construction literal.
@@ -857,9 +863,9 @@ func (c *checker) aggregateType(v *ast.AggregateLitExpr, want *types.Type) *type
 		typ.Kind == types.KindUnion):
 		c.checkStructLiteral(v, typ, d)
 	case typ.Kind == types.KindContainer && typ.Name == "Map":
-		c.checkMapLiteral(v, typ)
+		return c.checkMapLiteral(v, typ)
 	case typ.Kind == types.KindContainer && typ.Name == "Set":
-		c.checkSetLiteral(v, typ)
+		return c.checkSetLiteral(v, typ)
 	default:
 		c.errorHelp(diag.CodeTypeMismatch, v.Type.Span(),
 			"build a struct, a union, a Map, or a Set with a literal",
@@ -912,43 +918,77 @@ func (c *checker) checkStructLiteral(v *ast.AggregateLitExpr, typ *types.Type, d
 	}
 }
 
-// checkMapLiteral checks `Map { k: v }`.
-func (c *checker) checkMapLiteral(v *ast.AggregateLitExpr, typ *types.Type) {
-	key, val := arg(typ, 0), arg(typ, 1)
+// checkMapLiteral checks `Map { k: v }`. A literal that names the container
+// without type arguments infers them from its first entry, which is how
+// `Map { "k": 1 }` is written without an annotation.
+func (c *checker) checkMapLiteral(v *ast.AggregateLitExpr, typ *types.Type) *types.Type {
+	keys := make([]*types.Type, 0, len(v.Entries))
+	vals := make([]*types.Type, 0, len(v.Entries))
 	for _, e := range v.Entries {
 		if e.Key == nil {
 			c.errorHelp(diag.CodeTypeMismatch, spanOf(e.Value),
 				"write a key and a value", "a Map entry needs a key")
+			vals = append(vals, c.checkExpr(e.Value, nil))
+			keys = append(keys, nil)
 			continue
 		}
-		kt := c.checkExpr(e.Key, key)
-		if !c.accepts(key, e.Key, kt) {
+		keys = append(keys, c.checkExpr(e.Key, nil))
+		vals = append(vals, c.checkExpr(e.Value, nil))
+	}
+	if len(typ.Args) == 0 {
+		if len(keys) == 0 || keys[0] == nil || vals[0] == nil {
+			c.errorHelp(diag.CodeTypeMismatch, v.Sp,
+				"annotate the empty literal with its key and value types",
+				"an empty Map needs a type annotation")
+			return typ
+		}
+		typ = types.Map.Instantiate(keys[0], vals[0])
+		c.out.Nodes[v] = typ
+	}
+	key, val := arg(typ, 0), arg(typ, 1)
+	for i, e := range v.Entries {
+		if i < len(keys) && keys[i] != nil && !c.accepts(key, e.Key, keys[i]) {
 			c.errorHelp(diag.CodeTypeMismatch, e.Key.Span(),
 				"use a key of the map's key type",
-				"key is %s, want %s", kt, key)
+				"key is %s, want %s", keys[i], key)
 		}
-		vt := c.checkExpr(e.Value, val)
-		if !c.accepts(val, e.Value, vt) {
+		if i < len(vals) && vals[i] != nil && !c.accepts(val, e.Value, vals[i]) {
 			c.errorHelp(diag.CodeTypeMismatch, e.Value.Span(),
 				"use a value of the map's value type",
-				"value is %s, want %s", vt, val)
+				"value is %s, want %s", vals[i], val)
 		}
 	}
+	return typ
 }
 
-// checkSetLiteral checks `Set { a, b }`.
-func (c *checker) checkSetLiteral(v *ast.AggregateLitExpr, typ *types.Type) {
-	elem := arg(typ, 0)
+// checkSetLiteral checks `Set { a, b }`, which infers its element type from
+// the first element when the literal names the container without arguments.
+func (c *checker) checkSetLiteral(v *ast.AggregateLitExpr, typ *types.Type) *types.Type {
+	elems := make([]*types.Type, 0, len(v.Entries))
 	for _, e := range v.Entries {
 		if e.Key != nil {
 			c.errorHelp(diag.CodeTypeMismatch, e.Key.Span(),
 				"write the elements without keys", "a Set entry has no key")
 		}
-		t := c.checkExpr(e.Value, elem)
-		if !c.accepts(elem, e.Value, t) {
+		elems = append(elems, c.checkExpr(e.Value, nil))
+	}
+	if len(typ.Args) == 0 {
+		if len(elems) == 0 || elems[0] == nil {
+			c.errorHelp(diag.CodeTypeMismatch, v.Sp,
+				"annotate the empty literal with its element type",
+				"an empty Set needs a type annotation")
+			return typ
+		}
+		typ = types.Set.Instantiate(elems[0])
+		c.out.Nodes[v] = typ
+	}
+	elem := arg(typ, 0)
+	for i, e := range v.Entries {
+		if i < len(elems) && elems[i] != nil && !c.accepts(elem, e.Value, elems[i]) {
 			c.errorHelp(diag.CodeTypeMismatch, e.Value.Span(),
 				"use an element of the set's type",
-				"element is %s, want %s", t, elem)
+				"element is %s, want %s", elems[i], elem)
 		}
 	}
+	return typ
 }

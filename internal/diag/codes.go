@@ -242,4 +242,13 @@ const (
 	CodeComptimeOnly Code = "E7001"
 	// CodeMetaName reports an unknown name in the meta or dur namespace.
 	CodeMetaName Code = "E7002"
+	// CodeComptimeRequired reports a position that requires a compile-time
+	// constant and received something else.
+	CodeComptimeRequired Code = "E7003"
+)
+
+// Backend and link diagnostics occupy the E9001-E9099 range.
+const (
+	// CodeLayout reports a type whose static layout cannot be settled.
+	CodeLayout Code = "E9001"
 )

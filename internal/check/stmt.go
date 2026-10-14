@@ -73,6 +73,7 @@ func (c *checker) checkFuncBody(f *ast.FuncDecl, self *types.Type) {
 		if p.Default != nil {
 			c.inComptime = true
 			c.checkExpr(p.Default, t)
+			c.requireConst(p.Default, "a default parameter value")
 			c.inComptime = f.Quals.Comptime
 		}
 	}
@@ -379,7 +380,12 @@ func (c *checker) checkLocalConst(v *ast.ConstDecl) {
 	want := c.buildType(v.Type)
 	got := c.checkExpr(v.Value, want)
 	c.inComptime = prev
+	val := c.requireConst(v.Value, "a constant initializer")
 	if want == nil {
+		if val != nil && val.Type != nil {
+			c.bindName(v.Name, val.Type)
+			return
+		}
 		c.bindName(v.Name, got)
 		return
 	}
@@ -391,14 +397,24 @@ func (c *checker) checkLocalConst(v *ast.ConstDecl) {
 	c.bindName(v.Name, want)
 }
 
-// checkConstInit checks the initializer of a top-level constant.
+// checkConstInit checks the initializer of a top-level constant, which must
+// be a compile-time expression.
 func (c *checker) checkConstInit(v *ast.ConstDecl) {
 	prev := c.inComptime
 	c.inComptime = true
 	t := c.buildType(v.Type)
 	got := c.checkExpr(v.Value, t)
 	c.inComptime = prev
+	val := c.constValue(c.symOf(v.Name))
+	if val != nil && v.Name != nil {
+		c.out.Consts[v.Name.Name] = val
+	}
 	if t == nil {
+		// An unannotated constant takes the type of its value.
+		if val != nil && val.Type != nil {
+			c.bindName(v.Name, val.Type)
+			return
+		}
 		c.bindName(v.Name, got)
 		return
 	}
@@ -409,13 +425,21 @@ func (c *checker) checkConstInit(v *ast.ConstDecl) {
 	}
 }
 
-// checkVarInit checks the initializer of a top-level variable.
+// checkVarInit checks the initializer of a top-level variable, which lives
+// in static storage and must therefore be a compile-time expression.
 func (c *checker) checkVarInit(v *ast.VarDecl) {
 	prev := c.inComptime
 	c.inComptime = true
 	t := c.buildType(v.Type)
 	got := c.checkExpr(v.Value, t)
 	c.inComptime = prev
+	val := c.requireConst(v.Value, "a top-level var initializer")
+	if len(v.Names) == 1 && val != nil {
+		c.out.Consts[v.Names[0].Name] = val
+		if sym := c.symOf(v.Names[0]); sym != nil {
+			c.consts[sym.ID] = val
+		}
+	}
 	switch {
 	case t != nil:
 		if !c.accepts(t, v.Value, got) {
@@ -424,23 +448,34 @@ func (c *checker) checkVarInit(v *ast.VarDecl) {
 				"assigning %s to %s", got, t)
 		}
 	case len(v.Names) == 1:
+		if val != nil && val.Type != nil {
+			c.bindName(v.Names[0], val.Type)
+			return
+		}
 		c.bindName(v.Names[0], got)
 	default:
 		c.bindTuple(v.Names, v.Value, got)
 	}
 }
 
-// checkMemberInit checks a constant declared inside a type body.
+// checkMemberInit checks a constant declared inside a type body, which must
+// be a compile-time expression so meta.attr can read its value.
 func (c *checker) checkMemberInit(d *Decl, v *ast.ConstDecl) {
 	prev := c.inComptime
 	c.inComptime = true
 	t := c.buildType(v.Type)
 	got := c.checkExpr(v.Value, t)
 	c.inComptime = prev
-	if t != nil && !c.accepts(t, v.Value, got) {
+	val := c.constValue(c.symOf(v.Name))
+	switch {
+	case t != nil && !c.accepts(t, v.Value, got):
 		c.errorHelp(diag.CodeTypeMismatch, v.Value.Span(),
 			"assign a value of the declared type",
 			"assigning %s to %s", got, t)
+	case t == nil && val != nil && val.Type != nil:
+		if _, ok := d.Consts[v.Name.Name]; !ok {
+			d.Consts[v.Name.Name] = &Const{Sym: c.symOf(v.Name), Type: val.Type}
+		}
 	}
 }
 

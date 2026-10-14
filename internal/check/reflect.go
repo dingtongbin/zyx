@@ -146,5 +146,9 @@ func (c *checker) attrType(v *ast.CallExpr) *types.Type {
 	if d == nil {
 		return nil
 	}
-	return d.Consts[lit.Value]
+	con, ok := d.Consts[lit.Value]
+	if !ok {
+		return nil
+	}
+	return con.Type
 }

@@ -478,7 +478,7 @@ func (c *checker) checkMemberConst(d *Decl, v *ast.ConstDecl) {
 	if t == nil {
 		return
 	}
-	d.Consts[v.Name.Name] = t
+	d.Consts[v.Name.Name] = &Const{Sym: c.symOf(v.Name), Type: t}
 	c.recordDecl(v.Name, t)
 }
 

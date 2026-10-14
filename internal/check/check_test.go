@@ -8,6 +8,7 @@ import (
 	"zyx/internal/parser"
 	"zyx/internal/resolve"
 	"zyx/internal/source"
+	"zyx/internal/toolchain"
 )
 
 // parse parses one source string and fails the test on syntax errors.
@@ -39,7 +40,7 @@ func (d checkDeps) Lookup(path string) (*Interface, bool) {
 	return itf, ok
 }
 
-// checkSource resolves and checks one package.
+// checkSource resolves and checks one package for the host target.
 func checkSource(t *testing.T, path string, rimports resolve.Imports, cimports Imports, src string) (*Package, []diag.Diagnostic) {
 	t.Helper()
 	pkg := &resolve.Package{Path: path, Files: []*ast.File{parse(t, src)}}
@@ -47,7 +48,7 @@ func checkSource(t *testing.T, path string, rimports resolve.Imports, cimports I
 	if len(rdiags) != 0 {
 		t.Fatalf("resolve diagnostics: %v", rdiags)
 	}
-	return Check(pkg, info, cimports)
+	return Check(pkg, info, cimports, toolchain.HostTarget())
 }
 
 // checkedDep resolves and checks a dependency package.
@@ -58,7 +59,7 @@ func checkedDep(t *testing.T, path, src string) (*resolve.Interface, *Interface)
 	if len(rdiags) != 0 {
 		t.Fatalf("resolve %s: %v", path, rdiags)
 	}
-	out, cdiags := Check(pkg, info, nil)
+	out, cdiags := Check(pkg, info, nil, toolchain.HostTarget())
 	if len(cdiags) != 0 {
 		t.Fatalf("check %s: %v", path, cdiags)
 	}
@@ -265,13 +266,37 @@ struct S {
 }
 
 func TestArrayLength(t *testing.T) {
+	// A constant length is settled at compile time, and it may be written
+	// as an expression over constants.
 	src := `package server
 
-const n = 4
+const N = 4
 
 struct Buffer {
-	bytes: [u8; n]
+	bytes: [u8; N]
+	sums: [i32; N * 2]
 }
+
+var table: [i32; 3] = [1, 2, 3]
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+
+	// A length that is not a constant is rejected.
+	src = `package server
+
+func f(n: usize) {
+	var buf: [u8; n] = [0, 0, 0, 0]
+}
+`
+	_, diags = checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeArrayLength)
+}
+
+func TestArrayLiteralLength(t *testing.T) {
+	src := `package server
+
+var table: [i32; 3] = [1, 2]
 `
 	_, diags := checkSource(t, "server", nil, nil, src)
 	wantCode(t, diags, diag.CodeArrayLength)
@@ -1660,6 +1685,167 @@ func Run(s: Server, ch: chan<i32>) -> Result<i32, PanicError> {
 		}
 	}
 }
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+func TestComptimeConstants(t *testing.T) {
+	src := `package server
+
+const N = 4
+const M = N * 2
+const Name = "server"
+const Greeting = f"hi {Name} {N}"
+const Mask = (1 << 3) | 1
+
+struct Buffer {
+	bytes: [u8; N]
+	sums: [i32; M]
+}
+`
+	out, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	if got := out.Consts["N"]; got == nil || got.Int != 4 {
+		t.Errorf("N = %v, want 4", got)
+	}
+	if got := out.Consts["M"]; got == nil || got.Int != 8 {
+		t.Errorf("M = %v, want 8", got)
+	}
+	if got := out.Consts["Mask"]; got == nil || got.Int != 9 {
+		t.Errorf("Mask = %v, want 9", got)
+	}
+	if got := out.Consts["Name"]; got == nil || got.Str != "server" {
+		t.Errorf("Name = %v, want server", got)
+	}
+	if got := out.Consts["Greeting"]; got == nil || got.Str != "hi server 4" {
+		t.Errorf("Greeting = %v, want hi server 4", got)
+	}
+}
+
+func TestMetaLayoutQueries(t *testing.T) {
+	src := `package server
+
+extern struct Cfg {
+	port: u16
+	backlog: i32
+}
+
+const IntSize = meta.size_of(i64)
+const StrSize = meta.size_of(str)
+const IntAlign = meta.align_of(i64)
+const PortOffset = meta.offset_of(Cfg, "port")
+const BacklogOffset = meta.offset_of(Cfg, "backlog")
+const FieldCount = meta.field_count(Cfg)
+const FirstField = meta.field_name(Cfg, 0)
+const TypeName = meta.name(i64)
+const HasPort = meta.has_field(Cfg, "port")
+const HasZed = meta.has_field(Cfg, "zed")
+`
+	out, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	ptr := toolchain.HostTarget().Layout().PtrSize
+	cases := map[string]uint64{
+		"IntSize":       8,
+		"StrSize":       2 * ptr,
+		"IntAlign":      8,
+		"PortOffset":    0,
+		"BacklogOffset": 4,
+		"FieldCount":    2,
+	}
+	for name, want := range cases {
+		got := out.Consts[name]
+		if got == nil {
+			t.Errorf("%s: no value", name)
+			continue
+		}
+		if got.Int != want {
+			t.Errorf("%s = %d, want %d", name, got.Int, want)
+		}
+	}
+	if got := out.Consts["FirstField"]; got == nil || got.Str != "port" {
+		t.Errorf("FirstField = %v, want port", got)
+	}
+	if got := out.Consts["TypeName"]; got == nil || got.Str != "i64" {
+		t.Errorf("TypeName = %v, want i64", got)
+	}
+	if got := out.Consts["HasPort"]; got == nil || !got.Bool {
+		t.Errorf("HasPort = %v, want true", got)
+	}
+	if got := out.Consts["HasZed"]; got == nil || got.Bool {
+		t.Errorf("HasZed = %v, want false", got)
+	}
+}
+
+func TestMetaAttr(t *testing.T) {
+	src := `package server
+
+struct User {
+	name: str
+	const json = Map { "name": "userName" }
+}
+
+const Field = meta.attr(User, "json").Get("name").UnwrapOr("name")
+`
+	out, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	if got := out.Consts["Field"]; got == nil || got.Str != "userName" {
+		t.Errorf("Field = %v, want userName", got)
+	}
+}
+
+func TestComptimeRequired(t *testing.T) {
+	cases := map[string]string{
+		"constant": `package server
+
+func now() -> i64 => 0
+
+const T = now()
+`,
+		"top-level var": `package server
+
+func now() -> i64 => 0
+
+var started = now()
+`,
+		"default value": `package server
+
+func now() -> i64 => 0
+
+func g(a: i64 = now()) -> i64 => a
+`,
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, diags := checkSource(t, "server", nil, nil, src)
+			wantCode(t, diags, diag.CodeComptimeRequired)
+		})
+	}
+}
+
+func TestContainerLiteralInference(t *testing.T) {
+	src := `package server
+
+func Ids() -> Set<i64> => Set { 1, 2, 3 }
+
+func Scores() -> Map<str, i64> => Map { "alice": 90 }
+`
+	out, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	if got := out.Decls["Ids"].String(); got != "func() -> Set<i64>" {
+		t.Errorf("Ids = %q, want func() -> Set<i64>", got)
+	}
+	if got := out.Decls["Scores"].String(); got != "func() -> Map<str, i64>" {
+		t.Errorf("Scores = %q, want func() -> Map<str, i64>", got)
+	}
+}
+
+func TestDeferredLayoutQuery(t *testing.T) {
+	// A layout query on a type parameter is settled when the type is
+	// instantiated, so it reports nothing here.
+	src := `package server
+
+comptime func Width<T>() -> usize => meta.size_of(T)
 `
 	_, diags := checkSource(t, "server", nil, nil, src)
 	wantClean(t, diags)
