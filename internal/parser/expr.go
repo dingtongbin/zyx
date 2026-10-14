@@ -200,7 +200,7 @@ func (p *parser) parseTupleIndex(tok token.Token) int {
 }
 
 // parsePrimary parses a literal, a name, a parenthesized form, an array
-// literal, an allocation, a function value, or an inline C block.
+// literal, an allocation, or a function value.
 func (p *parser) parsePrimary() ast.Expr {
 	start := p.tok.Span
 	switch p.tok.Kind {

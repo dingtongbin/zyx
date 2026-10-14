@@ -20,7 +20,7 @@ func (n *BlockStmt) Span() source.Span { return n.Sp }
 func (n *BlockStmt) stmtNode() {}
 
 // ExprStmt evaluates an expression for its effects. The parser restricts
-// this statement to calls, spawn expressions, and c { } blocks.
+// this statement to calls, spawn expressions, fast calls, and try calls.
 type ExprStmt struct {
 	Sp source.Span
 	// X is the evaluated expression.

@@ -64,3 +64,50 @@ const (
 	// single-line body.
 	CodeDeclarationInSingleLineBody Code = "E2011"
 )
+
+// Name and visibility diagnostics occupy the E3001-E3099 range.
+const (
+	// CodeUndefinedName reports a reference to a name that is not declared
+	// or not reachable here.
+	CodeUndefinedName Code = "E3001"
+	// CodeDuplicateName reports two declarations of one name in the same
+	// scope, or an or-pattern whose alternatives bind different names.
+	CodeDuplicateName Code = "E3002"
+	// CodeShadowing reports a binding that collides with a package-level
+	// declaration or a predeclared name.
+	CodeShadowing Code = "E3003"
+	// CodePredeclaredName reports a top-level declaration that redefines a
+	// predeclared name.
+	CodePredeclaredName Code = "E3004"
+	// CodePrivateName reports a reference to a private name from another
+	// package.
+	CodePrivateName Code = "E3005"
+	// CodeImportDuplicate reports two imports that share one package name
+	// in the same file.
+	CodeImportDuplicate Code = "E3006"
+	// CodeImportUnused reports an import that no declaration of the file
+	// uses.
+	CodeImportUnused Code = "E3007"
+	// CodeImportInvalid reports an import path that does not resolve.
+	CodeImportInvalid Code = "E3008"
+	// CodeExportedPrivateType reports a public declaration whose signature
+	// names a private type of the same package.
+	CodeExportedPrivateType Code = "E3009"
+	// CodeLabelUndefined reports a break or continue target that does not
+	// enclose the statement.
+	CodeLabelUndefined Code = "E3010"
+	// CodeLabelDuplicate reports two loops that share a label in one
+	// function.
+	CodeLabelDuplicate Code = "E3011"
+	// CodePackageName reports a package declaration that disagrees with the
+	// other files of the directory or with the import path.
+	CodePackageName Code = "E3012"
+	// CodeCapture reports a lambda that reads a local of an enclosing
+	// function, which the language forbids.
+	CodeCapture Code = "E3013"
+	// CodeNotAType reports a name used as a type that does not name a type.
+	CodeNotAType Code = "E3014"
+	// CodeCNamespace reports use of the `c` namespace in a file that does
+	// not import a C header.
+	CodeCNamespace Code = "E3015"
+)

@@ -240,7 +240,7 @@ func (k Kind) String() string {
 	return "kind(" + strconv.Itoa(int(k)) + ")"
 }
 
-// keywords maps the 39 language keywords to their kinds.
+// keywords maps the 40 language keywords to their kinds.
 var keywords = map[string]Kind{
 	"package":       Package,
 	"import":        Import,
