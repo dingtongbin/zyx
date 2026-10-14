@@ -281,12 +281,14 @@ func (n *ArrayRepeatExpr) Span() source.Span { return n.Sp }
 func (n *ArrayRepeatExpr) exprNode() {}
 
 // AggregateLitExpr is a construction literal: `Point { x: 1 }`,
-// `Map { "k": 1 }`, or `Set { 1, 2 }`.
+// `net.Point { x: 1 }`, `Map { "k": 1 }`, or `Set { 1, 2 }`. The head is a
+// type name, so a literal can construct a type of another package, such as
+// a C struct reached through `import c`.
 type AggregateLitExpr struct {
 	Sp source.Span
-	// Name is the constructed type name; the parser requires a single
-	// identifier followed by `{`.
-	Name *Ident
+	// Type is the constructed type. A struct or union literal writes field
+	// names as keys; a container literal writes ordinary expressions.
+	Type *TypeName
 	// Entries holds the entries; empty for `Name { }`.
 	Entries []*AggregateEntry
 }

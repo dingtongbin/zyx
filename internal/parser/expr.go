@@ -180,6 +180,16 @@ func (p *parser) parsePostfix() ast.Expr {
 				continue
 			}
 			name := p.name()
+			// `pkg.Name {` constructs a type of another package, so a
+			// qualified name followed by a brace is an aggregate literal.
+			if q, ok := x.(*ast.Ident); ok && p.at(token.LBrace) && p.aggregateAllowed() {
+				x = p.parseAggregate(&ast.TypeName{
+					Sp:   p.spanFrom(x.Span()),
+					Qual: q,
+					Name: name,
+				})
+				continue
+			}
 			x = &ast.SelectorExpr{Sp: p.spanFrom(x.Span()), X: x, Name: name}
 		default:
 			return x
@@ -226,7 +236,7 @@ func (p *parser) parsePrimary() ast.Expr {
 		id := &ast.Ident{Sp: start, Name: p.tok.Text()}
 		p.advance()
 		if p.at(token.LBrace) && p.aggregateAllowed() {
-			return p.parseAggregate(id)
+			return p.parseAggregate(&ast.TypeName{Sp: start, Name: id})
 		}
 		return id
 	case token.SelfLower, token.C:
@@ -371,9 +381,11 @@ func (p *parser) parseArgs() []ast.Expr {
 
 // parseAggregate parses the entries of `Name { ... }`. An entry is a bare
 // value or a `key: value` pair.
-func (p *parser) parseAggregate(name *ast.Ident) ast.Expr {
-	start := name.Sp
-	lit := &ast.AggregateLitExpr{Sp: start, Name: name}
+// parseAggregate parses the entries of `Type { ... }`. An entry is a bare
+// expression or a `key: value` pair.
+func (p *parser) parseAggregate(typ *ast.TypeName) ast.Expr {
+	start := typ.Sp
+	lit := &ast.AggregateLitExpr{Sp: start, Type: typ}
 	p.advance() // {
 	p.enterDelimiter()
 	p.skipLineBreaks()

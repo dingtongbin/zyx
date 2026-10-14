@@ -280,6 +280,47 @@ func TestAggregateLiteralAndBodyBlock(t *testing.T) {
 	}
 }
 
+func TestQualifiedAggregateLiteral(t *testing.T) {
+	src := `package main
+
+func f() -> net.Conn {
+	return net.Conn { host: "local" }
+}
+`
+	f, diags := parseSrc(t, src)
+	assertClean(t, diags)
+	lit, ok := findNode(f, isType[*ast.AggregateLitExpr]).(*ast.AggregateLitExpr)
+	if !ok {
+		t.Fatal("no aggregate literal")
+	}
+	if lit.Type == nil || lit.Type.Qual == nil || lit.Type.Qual.Name != "net" {
+		t.Fatalf("type = %v, want a qualified name", lit.Type)
+	}
+	if lit.Type.Name == nil || lit.Type.Name.Name != "Conn" {
+		t.Fatalf("type name = %v, want Conn", lit.Type.Name)
+	}
+}
+
+func TestCAggregateLiteral(t *testing.T) {
+	src := `package main
+
+import c "cfg.h"
+
+func f() -> c.Cfg {
+	return c.Cfg { port: 1 }
+}
+`
+	f, diags := parseSrc(t, src)
+	assertClean(t, diags)
+	lit, ok := findNode(f, isType[*ast.AggregateLitExpr]).(*ast.AggregateLitExpr)
+	if !ok {
+		t.Fatal("no aggregate literal")
+	}
+	if lit.Type == nil || lit.Type.Qual == nil || lit.Type.Qual.Name != "c" {
+		t.Fatalf("type = %v, want c.Cfg", lit.Type)
+	}
+}
+
 func TestLoopsAndLabels(t *testing.T) {
 	src := `package main
 func f() {

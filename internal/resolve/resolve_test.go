@@ -512,7 +512,11 @@ func Origin() -> Point => Point { x: 0, y: 0 }
 	}
 }
 
-func TestStructLiteralUnknownField(t *testing.T) {
+func TestStructLiteralFieldNamesAreNotResolved(t *testing.T) {
+	// A bare key of a construction literal is a field name when the literal
+	// builds a struct and an expression when it builds a container, and
+	// resolution cannot tell the two apart without the type. The checker
+	// validates field names, so an unknown one is not a name error.
 	src := `package server
 
 struct Point {
@@ -522,7 +526,40 @@ struct Point {
 func Origin() -> Point => Point { z: 0 }
 `
 	_, diags := resolve(t, "server", nil, src)
-	wantCode(t, diags, diag.CodeUndefinedName)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", codes(diags))
+	}
+}
+
+func TestQualifiedAggregateLiteral(t *testing.T) {
+	src := `package server
+
+import "std/net"
+
+func Work() -> net.Conn {
+	return net.Conn { }
+}
+`
+	imports := stubImports{"std/net": netFixture(t)}
+	_, diags := resolve(t, "server", imports, src)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", codes(diags))
+	}
+}
+
+func TestCAggregateLiteral(t *testing.T) {
+	src := `package server
+
+import c "cfg.h"
+
+func Work() -> c.Cfg {
+	return c.Cfg { }
+}
+`
+	_, diags := resolve(t, "server", nil, src)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", codes(diags))
+	}
 }
 
 func TestOrPatternBindingMismatch(t *testing.T) {

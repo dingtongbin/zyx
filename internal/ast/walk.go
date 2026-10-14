@@ -263,9 +263,7 @@ func walk(n Node, f func(Node) bool) {
 		Walk(v.Elem, f)
 		Walk(v.Count, f)
 	case *AggregateLitExpr:
-		if v.Name != nil {
-			Walk(v.Name, f)
-		}
+		Walk(v.Type, f)
 		for _, e := range v.Entries {
 			Walk(e, f)
 		}

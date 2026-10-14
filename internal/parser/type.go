@@ -25,7 +25,7 @@ func (p *parser) parseType() ast.TypeExpr {
 		elem := p.parseType()
 		p.expectGt()
 		return &ast.ChanType{Sp: p.spanFrom(start), Elem: elem}
-	case token.Ident, token.SelfUpper, token.Type:
+	case token.Ident, token.SelfUpper, token.Type, token.C:
 		return p.parseNamedType(start)
 	}
 	p.errorHelpAt(p.tok, diag.CodeUnexpectedToken,

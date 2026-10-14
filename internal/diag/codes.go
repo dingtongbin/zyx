@@ -178,4 +178,63 @@ const (
 	// CodeTopLevelVar reports a top-level var whose initializer is not
 	// comptime or whose type cannot live in static storage.
 	CodeTopLevelVar Code = "E4020"
+	// CodeTryResult reports a try whose operand is not a Result, or an
+	// enclosing function that cannot propagate the error.
+	CodeTryResult Code = "E4021"
+	// CodeNotCallable reports a callee that is not a function or method.
+	CodeNotCallable Code = "E4022"
+	// CodeArgCount reports a call with the wrong number of arguments.
+	CodeArgCount Code = "E4023"
+	// CodeNoMethod reports a method the receiver's type does not declare.
+	CodeNoMethod Code = "E4024"
+	// CodeNotIterable reports a for-in subject that cannot be iterated.
+	CodeNotIterable Code = "E4025"
+	// CodeNoField reports a member the receiver's type does not declare.
+	CodeNoField Code = "E4026"
+	// CodeEnumLiteral reports an enum built with an aggregate literal.
+	CodeEnumLiteral Code = "E4027"
+	// CodeMissingField reports a construction literal that leaves a field
+	// unset.
+	CodeMissingField Code = "E4028"
+	// CodeDuplicateField reports a construction literal that sets one field
+	// twice.
+	CodeDuplicateField Code = "E4029"
+	// CodeReturnType reports a return that does not match the result type.
+	CodeReturnType Code = "E4030"
+	// CodeMissingReturn reports a function whose declared result is not
+	// produced on every path.
+	CodeMissingReturn Code = "E4031"
+	// CodeMainReturn reports a return value in main, which returns nothing.
+	CodeMainReturn Code = "E4032"
+	// CodeInterpolation reports an f-string interpolation whose type cannot
+	// be shown.
+	CodeInterpolation Code = "E4033"
+	// CodeIndex reports an index or slice that the receiver's type does not
+	// support.
+	CodeIndex Code = "E4034"
+	// CodeBuiltinMethodValue reports taking a method value of a built-in
+	// method, which only supports direct calls.
+	CodeBuiltinMethodValue Code = "E4035"
+	// CodeClone reports clone on a type without reference members.
+	CodeClone Code = "E4036"
+)
+
+// Concurrency diagnostics occupy the E6001-E6099 range.
+const (
+	// CodeSpawnOutsideRegion reports a spawn that is not lexically inside a
+	// region block.
+	CodeSpawnOutsideRegion Code = "E6001"
+	// CodeSpawnComptime reports a spawn in a comptime context.
+	CodeSpawnComptime Code = "E6002"
+	// CodeSelectArms reports a select arm combination the language
+	// forbids.
+	CodeSelectArms Code = "E6003"
+)
+
+// Comptime diagnostics occupy the E7001-E7099 range.
+const (
+	// CodeComptimeOnly reports a comptime-only construct used at run time.
+	CodeComptimeOnly Code = "E7001"
+	// CodeMetaName reports an unknown name in the meta or dur namespace.
+	CodeMetaName Code = "E7002"
 )

@@ -210,94 +210,26 @@ func (r *resolver) resolveFuncRef(v *ast.FuncRefExpr) {
 	}
 }
 
-// resolveAggregate binds a construction literal. Field names are bound when
-// the constructed type is a struct or union; keys of the container
-// literals are ordinary expressions.
+// resolveAggregate binds a construction literal: the type name at its head
+// and the entry expressions. A bare identifier key is a field name when the
+// literal constructs a struct or union and an ordinary expression when it
+// constructs a container, and resolution cannot tell the two apart without
+// the type. It binds such a key only when the name is already in scope, and
+// the checker validates the field names against the type.
 func (r *resolver) resolveAggregate(v *ast.AggregateLitExpr) {
-	typ := r.bindName(v.Name)
-	fields := r.fieldCarrier(typ)
-	expressions := fields == nil && r.containerLike(typ)
+	r.resolveType(v.Type)
 	for _, e := range v.Entries {
 		if e.Key != nil {
-			if id, ok := e.Key.(*ast.Ident); ok && fields != nil {
-				r.bindFieldInit(fields, id)
-			} else if expressions || !isIdent(e.Key) {
+			if id, ok := e.Key.(*ast.Ident); ok {
+				if r.scope.lookup(id.Name) != nil {
+					r.resolveExpr(id)
+				}
+			} else {
 				r.resolveExpr(e.Key)
 			}
 		}
 		r.resolveExpr(e.Value)
 	}
-}
-
-// isIdent reports whether e is a bare name.
-func isIdent(e ast.Expr) bool {
-	_, ok := e.(*ast.Ident)
-	return ok
-}
-
-// bindFieldInit binds a field name written in a construction literal.
-func (r *resolver) bindFieldInit(typ *Symbol, id *ast.Ident) {
-	field := typ.Member(id.Name)
-	if field == nil {
-		r.diags = append(r.diags, diag.New(diag.CodeUndefinedName, id.Sp,
-			"%s has no field named %q", typ.Name, id.Name).
-			WithHelp("check the field name"))
-		return
-	}
-	r.info.Defs[id] = field
-}
-
-// fieldCarrier returns the struct or union symbol whose fields key an
-// aggregate literal, following transparent type aliases. It returns nil
-// for every other aggregate.
-func (r *resolver) fieldCarrier(sym *Symbol) *Symbol {
-	for depth := 0; depth < 16 && sym != nil; depth++ {
-		if sym.Kind != KindType {
-			return nil
-		}
-		switch d := sym.Decl.(type) {
-		case *ast.StructDecl, *ast.UnionDecl:
-			return sym
-		case *ast.TypeAlias:
-			sym = r.aliasTarget(d)
-		default:
-			return nil
-		}
-	}
-	return nil
-}
-
-// containerLike reports whether the aggregate's type is one of the
-// pre-imported containers, whose literal keys are expressions.
-func (r *resolver) containerLike(sym *Symbol) bool {
-	for depth := 0; depth < 16 && sym != nil; depth++ {
-		if sym.Kind == KindBuiltin {
-			switch sym.Name {
-			case "Array", "Map", "Set", "PriorityQueue", "BlockingQueue":
-				return true
-			}
-			return false
-		}
-		if sym.Kind != KindType {
-			return false
-		}
-		d, ok := sym.Decl.(*ast.TypeAlias)
-		if !ok {
-			return false
-		}
-		sym = r.aliasTarget(d)
-	}
-	return false
-}
-
-// aliasTarget returns the package-level type a transparent alias names, or
-// nil when the target is qualified or not a package-level name.
-func (r *resolver) aliasTarget(a *ast.TypeAlias) *Symbol {
-	t, ok := a.Type.(*ast.TypeName)
-	if !ok || t.Qual != nil || t.Name == nil {
-		return nil
-	}
-	return r.pkgScope.lookup(t.Name.Name)
 }
 
 // resolveLambda binds a lambda. The lambda is a function symbol of its own,
