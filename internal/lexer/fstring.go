@@ -24,16 +24,14 @@ func (l *lexer) scanFString() {
 			l.reportHelp(start, l.pos, diag.CodeUnterminatedLiteral,
 				"close the f-string with a double quote",
 				"unterminated f-string literal")
+			l.emitFString(start, parts, text)
 			return
 		}
 		c := l.src[l.pos]
 		switch {
 		case c == '"':
 			l.pos++
-			if text.Len() > 0 {
-				parts = append(parts, token.FStrPart{Kind: token.FStrText, Text: text.String()})
-			}
-			l.emitSig(token.Token{Kind: token.FString, Span: l.span(start, l.pos), Parts: parts})
+			l.emitFString(start, parts, text)
 			return
 		case c == '{':
 			if l.hasByteAt(l.pos+1, '{') {
@@ -48,6 +46,7 @@ func (l *lexer) scanFString() {
 			expr, closed := l.scanInterpolation()
 			parts = append(parts, token.FStrPart{Kind: token.FStrExpr, Span: expr})
 			if !closed {
+				l.emitFString(start, parts, text)
 				return
 			}
 		case c == '}':
@@ -70,6 +69,16 @@ func (l *lexer) scanFString() {
 			l.pos++
 		}
 	}
+}
+
+// emitFString appends the f-string literal built so far, with any trailing
+// text segment. A literal left open still yields one token, so the parser
+// sees a complete token stream after the lexer reports the error.
+func (l *lexer) emitFString(start int, parts []token.FStrPart, text strings.Builder) {
+	if text.Len() > 0 {
+		parts = append(parts, token.FStrPart{Kind: token.FStrText, Text: text.String()})
+	}
+	l.emitSig(token.Token{Kind: token.FString, Span: l.span(start, l.pos), Parts: parts})
 }
 
 // scanInterpolation scans the "{expr}" that starts at the opening brace in

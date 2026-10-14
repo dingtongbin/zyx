@@ -29,6 +29,7 @@ func (l *lexer) scanChar() {
 		l.reportHelp(start, l.pos, diag.CodeUnterminatedLiteral,
 			"close the character with a single quote",
 			"unterminated character literal")
+		l.emitSig(token.Token{Kind: token.Char, Span: l.span(start, l.pos)})
 		return
 	}
 	if l.src[l.pos] == '\'' {
@@ -54,7 +55,6 @@ func (l *lexer) scanChar() {
 		l.reportHelp(start, l.pos, diag.CodeUnterminatedLiteral,
 			"close the character with a single quote",
 			"unterminated character literal")
-		return
 	default:
 		for l.pos < len(l.src) && !l.hasByteAt(l.pos, '\'') && !l.atLineEnd() {
 			l.pos++
@@ -83,6 +83,7 @@ func (l *lexer) scanString() {
 			l.reportHelp(start, l.pos, diag.CodeUnterminatedLiteral,
 				"close the string with a double quote",
 				"unterminated string literal")
+			l.emitSig(token.Token{Kind: token.Str, Span: l.span(start, l.pos), Str: b.String()})
 			return
 		}
 		c := l.src[l.pos]
@@ -114,6 +115,7 @@ func (l *lexer) scanByteString() {
 			l.reportHelp(start, l.pos, diag.CodeUnterminatedLiteral,
 				"close the byte string with a double quote",
 				"unterminated byte string literal")
+			l.emitSig(token.Token{Kind: token.ByteStr, Span: l.span(start, l.pos), Str: b.String()})
 			return
 		}
 		c := l.src[l.pos]

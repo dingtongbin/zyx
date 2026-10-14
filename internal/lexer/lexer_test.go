@@ -218,6 +218,75 @@ func TestByteOrderMarkIsIgnored(t *testing.T) {
 	assertKinds(t, kindsOf(toks), []token.Kind{token.Ident, token.Newline})
 }
 
+// TestReferenceLiteralTable lexes every literal form the language reference
+// lists, so that table stays a faithful summary of the lexer.
+func TestReferenceLiteralTable(t *testing.T) {
+	src := `package main
+
+const Ints = [42, 0x2A, 0o52, 0b101010, 1_000_000]
+const Typed = [42i8, 42u64, 42usize]
+const Floats = [3.14, 2.0f32, 1e10f64]
+const Bools = [true, false]
+// utf8 handling test data
+const Chars = ['a', '\n', '中', '\u{4E2D}']
+const Text = "hello\n"
+const Interp = f"count = {n}, name = {user.name}\n"
+const Bytes = b"raw bytes"
+`
+	toks, diags := Lex(source.NewFile("main.zyx", []byte(src)))
+	assertClean(t, diags)
+	counts := map[token.Kind]int{}
+	for _, tok := range toks {
+		counts[tok.Kind]++
+	}
+	want := map[token.Kind]int{
+		token.Int:     8,
+		token.Float:   3,
+		token.Char:    4,
+		token.Str:     1,
+		token.FString: 1,
+		token.ByteStr: 1,
+		token.True:    1,
+		token.False:   1,
+	}
+	for kind, n := range want {
+		if counts[kind] != n {
+			t.Errorf("%s tokens = %d, want %d", kind, counts[kind], n)
+		}
+	}
+}
+
+// TestUnterminatedLiteralsStillYieldAToken keeps the token stream complete
+// after the lexer reports an unterminated literal, so the parser does not
+// cascade over a missing token.
+func TestUnterminatedLiteralsStillYieldAToken(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		kind token.Kind
+	}{
+		{"char", "'a\n", token.Char},
+		{"string", "\"abc\n", token.Str},
+		{"byte string", "b\"ab\n", token.ByteStr},
+		{"f-string", "f\"a{n}\n", token.FString},
+		{"interpolation", "f\"{n\n", token.FString},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			toks, diags := Lex(source.NewFile("main.zyx", []byte(c.src)))
+			if len(diags) == 0 {
+				t.Fatal("want a diagnostic")
+			}
+			for _, tok := range toks {
+				if tok.Kind == c.kind {
+					return
+				}
+			}
+			t.Errorf("no %s token in %v", c.kind, kindsOf(toks))
+		})
+	}
+}
+
 func TestCKeywordOutsideBlocks(t *testing.T) {
 	cases := []struct {
 		name string
