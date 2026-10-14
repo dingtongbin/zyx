@@ -1,0 +1,85 @@
+package main
+
+import "std/fmt"
+
+enum Shape {
+	Circle(f64)
+	Rect(f64, f64)
+	Empty
+
+	func Area() -> f64 {
+		match self {
+			Circle(r) => return r * r * 3.141592653589793
+			Rect(w, h) => return w * h
+			Empty => return 0.0
+		}
+	}
+}
+
+interface Speaker {
+	func Speak() -> str
+}
+
+struct Dog {
+	name: str
+
+	func Speak() -> str {
+		return "woof"
+	}
+}
+
+struct Pair<T> {
+	first: T
+	second: T
+}
+
+func divide(a: i64, b: i64) -> Result<i64, str> {
+	if b == 0 {
+		return Result.Err("division by zero")
+	}
+	return Result.Ok(a / b)
+}
+
+const limit = 10
+
+var counter = 0
+
+func main() {
+	var s = Shape.Circle(2.0)
+	fmt.PrintF64(s.Area())
+	fmt.PrintNl()
+
+	var p: Pair<i64> = Pair { first: 1, second: 2 }
+	fmt.PrintI64(p.first + p.second)
+	fmt.PrintNl()
+
+	var d = Dog { name: "rex" }
+	fmt.Println(d.Speak())
+
+	var q = divide(10, 2)
+	match q {
+		Ok(v) => {
+			fmt.PrintI64(v)
+		}
+		Err(e) => {
+			fmt.Println(e)
+		}
+	}
+	fmt.PrintNl()
+
+	var i = 0
+	defer fmt.Println("done")
+	for i < limit {
+		counter += i
+		i += 1
+	}
+
+	var name = "world"
+	fmt.Println(f"hello, {name}")
+
+	select {
+		default {
+			fmt.Println("nothing")
+		}
+	}
+}

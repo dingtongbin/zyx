@@ -1,0 +1,19 @@
+package main
+
+import "std/fmt"
+import "example.com/shapes/shapes"
+
+func areaOf(r: shapes.Rect) -> i64 {
+	return r.Area()
+}
+
+func main() {
+	var r = shapes.Make(6, 7)
+	fmt.PrintI64(r.Area())
+	fmt.PrintNl()
+	fmt.PrintI64(areaOf(r))
+	fmt.PrintNl()
+	r.Move(3, 4)
+	fmt.PrintI64(r.Corner())
+	fmt.PrintNl()
+}
