@@ -245,6 +245,9 @@ const (
 	// CodeComptimeRequired reports a position that requires a compile-time
 	// constant and received something else.
 	CodeComptimeRequired Code = "E7003"
+	// CodeComptimePanic reports a panic reached while evaluating a
+	// compile-time expression.
+	CodeComptimePanic Code = "E7004"
 )
 
 // Backend and link diagnostics occupy the E9001-E9099 range.

@@ -617,6 +617,12 @@ func bitWidth(t *types.Type) uint64 {
 // evalCall evaluates a conversion, a compile-time call, a dur constructor,
 // a variant, or a meta query.
 func (c *checker) evalCall(v *ast.CallExpr) *Value {
+	if c.isPanicCall(v) {
+		c.errorHelp(diag.CodeComptimePanic, v.Sp,
+			"guard the failing case",
+			"a compile-time expression panicked")
+		return nil
+	}
 	// A call to a compile-time function runs its body, which is only
 	// meaningful in a comptime context.
 	if f, sym := c.comptimeCallee(v.Fn); f != nil {
@@ -1174,6 +1180,12 @@ func (c *checker) bindLocal(id *ast.Ident, v *Value) {
 	if sym := c.symOf(id); sym != nil {
 		fr.locals[sym.ID] = v
 	}
+}
+
+// isPanicCall reports whether a call reaches the global panic.
+func (c *checker) isPanicCall(v *ast.CallExpr) bool {
+	id, ok := v.Fn.(*ast.Ident)
+	return ok && id.Name == "panic"
 }
 
 // comptimeCallee returns the compile-time function a callee names.

@@ -2095,6 +2095,36 @@ func f() -> i64 {
 	wantClean(t, diags)
 }
 
+func TestComptimePanic(t *testing.T) {
+	src := `package server
+
+comptime func Bad(n: i64) -> i64 {
+	if n < 0 {
+		panic("negative")
+	}
+	return n
+}
+
+const Outcome = Bad(-1)
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeComptimePanic)
+}
+
+func TestPanicIsNotAConversion(t *testing.T) {
+	src := `package server
+
+func f(n: i64) -> i64 {
+	if n < 0 {
+		panic("negative")
+	}
+	return n
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
 func TestRealisticDeclarations(t *testing.T) {
 	rdep, cdep := checkedDep(t, "std/net", `package net
 

@@ -47,8 +47,11 @@ func isTypeSymbol(sym *resolve.Symbol) bool {
 		return false
 	}
 	switch sym.Kind {
-	case resolve.KindType, resolve.KindTypeParam, resolve.KindBuiltin, resolve.KindCSymbol:
+	case resolve.KindType, resolve.KindTypeParam, resolve.KindCSymbol:
 		return true
+	case resolve.KindBuiltin:
+		// The predeclared namespace names are not types.
+		return sym.Name != "panic"
 	}
 	return false
 }
