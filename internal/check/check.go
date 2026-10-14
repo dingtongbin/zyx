@@ -175,6 +175,51 @@ type Package struct {
 	Consts map[string]*Value
 	// Interface is the surface downstream packages consume.
 	Interface *Interface
+
+	// imports resolves the surface of imported packages, so a consumer can
+	// look up a type of another package.
+	imports Imports
+}
+
+// Decl returns the checked declaration of a named type, whether it is
+// declared here, imported, or pre-imported.
+func (p *Package) Decl(t *types.Type) *Decl {
+	if t == nil || !t.IsNamed() {
+		return nil
+	}
+	if d, ok := p.Declared[t.ID]; ok {
+		return d
+	}
+	if p.imports == nil || t.Pkg == "" {
+		return nil
+	}
+	itf, ok := p.imports.Lookup(t.Pkg)
+	if !ok || itf == nil {
+		return nil
+	}
+	return itf.Declared[t.ID]
+}
+
+// SyncSafe reports whether a type may cross a coroutine boundary without a
+// copy: the predeclared handles and str, and any type with an explicit impl
+// of the marker interface.
+func (p *Package) SyncSafe(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	if builtinImplements(t, types.SyncSafe) {
+		return true
+	}
+	d := p.Decl(t)
+	if d == nil {
+		return false
+	}
+	for _, impl := range d.Impls {
+		if impl.Interface.ID == types.SyncSafe.ID {
+			return true
+		}
+	}
+	return false
 }
 
 // Check type-checks one package's declarations for a target. The target
@@ -248,6 +293,7 @@ func newChecker(pkg *resolve.Package, info *resolve.Info, imports Imports, targe
 		Declared: map[string]*Decl{},
 		Nodes:    map[ast.Node]*types.Type{},
 		Consts:   map[string]*Value{},
+		imports:  imports,
 	}
 	if info != nil {
 		c.out.Name = info.Name

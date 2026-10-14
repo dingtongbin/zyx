@@ -224,6 +224,13 @@ const (
 	CodeEmptyCLayout Code = "E4038"
 )
 
+// Memory and region diagnostics occupy the E5001-E5099 range.
+const (
+	// CodeViewLifetime reports a view stored where it outlives the
+	// container it borrows.
+	CodeViewLifetime Code = "E5001"
+)
+
 // Concurrency diagnostics occupy the E6001-E6099 range.
 const (
 	// CodeSpawnOutsideRegion reports a spawn that is not lexically inside a
