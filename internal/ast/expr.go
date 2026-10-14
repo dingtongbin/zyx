@@ -65,6 +65,20 @@ func (n *UnaryExpr) Span() source.Span { return n.Sp }
 
 func (n *UnaryExpr) exprNode() {}
 
+// AddrOfExpr takes the address of an lvalue as a C call argument: `&x`.
+// The result is a raw pointer valid only for the duration of that call, so
+// it cannot be stored, returned, compared, or sent across coroutines.
+type AddrOfExpr struct {
+	Sp source.Span
+	// X is the addressed lvalue.
+	X Expr
+}
+
+// Span returns the expression source range.
+func (n *AddrOfExpr) Span() source.Span { return n.Sp }
+
+func (n *AddrOfExpr) exprNode() {}
+
 // IsExpr tests an interface value: `x is T`.
 type IsExpr struct {
 	Sp source.Span

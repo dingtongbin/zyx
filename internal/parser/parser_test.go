@@ -447,6 +447,11 @@ func TestSyntaxErrors(t *testing.T) {
 			src:  "package main\ncomptime extern func F() {}\n",
 			want: []diag.Code{diag.CodeUnexpectedToken},
 		},
+		{
+			name: "address of outside a C call",
+			src:  "package main\nfunc F() {\n\t&x\n}\n",
+			want: []diag.Code{diag.CodeInvalidStatement},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -595,6 +600,38 @@ var h: Array<i64> = [1]
 		if !ok {
 			t.Errorf("no %s type in the tree", name)
 		}
+	}
+}
+
+func TestAddressOfForCCalls(t *testing.T) {
+	src := "package main\nimport c \"sys/socket.h\"\nfunc f(fd: i32, buf: Array<u8>) {\n\tvar on: i32 = 1\n\tc.setsockopt(fd, c.SOL_SOCKET, c.SO_REUSEADDR, &on, 4)\n\tc.read(fd, &buf[0], 64)\n}\n"
+	f, diags := parseSrc(t, src)
+	assertClean(t, diags)
+	if n, ok := findNode(f, isType[*ast.AddrOfExpr]).(*ast.AddrOfExpr); !ok {
+		t.Fatal("no address-of node")
+	} else if _, ok := n.X.(*ast.Ident); !ok {
+		t.Fatalf("addressed operand = %T, want an identifier", n.X)
+	}
+	var indexed bool
+	ast.Walk(f, func(n ast.Node) bool {
+		if a, ok := n.(*ast.AddrOfExpr); ok {
+			if _, ok := a.X.(*ast.IndexExpr); ok {
+				indexed = true
+			}
+		}
+		return true
+	})
+	if !indexed {
+		t.Fatal("no address-of applied to an index expression")
+	}
+}
+
+func TestTryCallAsStatement(t *testing.T) {
+	src := "package main\nfunc F() -> Result<i64, Error> {\n\ttry G()\n\treturn Result.Ok(1)\n}\n"
+	f, diags := parseSrc(t, src)
+	assertClean(t, diags)
+	if findNode(f, isType[*ast.TryExpr]) == nil {
+		t.Fatal("no try expression")
 	}
 }
 

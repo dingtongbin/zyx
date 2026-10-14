@@ -195,6 +195,8 @@ func walk(n Node, f func(Node) bool) {
 		Walk(v.Y, f)
 	case *UnaryExpr:
 		Walk(v.X, f)
+	case *AddrOfExpr:
+		Walk(v.X, f)
 	case *IsExpr:
 		Walk(v.X, f)
 		Walk(v.Type, f)
