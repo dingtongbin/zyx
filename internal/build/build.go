@@ -6,6 +6,7 @@ package build
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -349,6 +350,76 @@ type checkDeps map[string]*check.Interface
 func (d checkDeps) Lookup(path string) (*check.Interface, bool) {
 	itf, ok := d[path]
 	return itf, ok
+}
+
+// All returns the import paths of every package under a prefix, in byte
+// order. The prefix is either a module-relative path or a std path; an
+// empty prefix means the whole module.
+func (l *Loader) All(prefix string) ([]string, error) {
+	root, base := l.Root, l.ModulePath
+	if isStdPath(prefix) {
+		if l.StdRoot == "" {
+			return nil, fmt.Errorf("the standard library tree is not available")
+		}
+		root, base = l.StdRoot, "std"
+	} else if prefix != "" && prefix != "." {
+		if !strings.HasPrefix(prefix, l.ModulePath) {
+			return nil, fmt.Errorf("%s is outside module %s", prefix, l.ModulePath)
+		}
+		base = strings.TrimSuffix(prefix, "/")
+	}
+	rel := strings.TrimPrefix(strings.TrimPrefix(base, l.ModulePath), "/")
+	dir := filepath.Join(root, filepath.FromSlash(rel))
+
+	var out []string
+	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		name := entry.Name()
+		if path != dir && (strings.HasPrefix(name, ".") || name == "testdata" || name == "vendor") {
+			return filepath.SkipDir
+		}
+		has, err := hasSource(path)
+		if err != nil {
+			return err
+		}
+		if !has {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		importPath := base
+		if rel != "." {
+			importPath = base + "/" + filepath.ToSlash(rel)
+		}
+		out = append(out, importPath)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// hasSource reports whether a directory holds at least one .zyx file.
+func hasSource(dir string) (bool, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false, fmt.Errorf("cannot read %s: %w", dir, err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".zyx") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // sourceNames returns the source file names of a directory that take part

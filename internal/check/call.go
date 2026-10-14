@@ -171,6 +171,11 @@ func (c *checker) checkQualifiedCall(sel *ast.SelectorExpr, v *ast.CallExpr, pkg
 		return nil
 	}
 	sig := c.typeOfSymbol(member)
+	if sig == nil {
+		// A declaration of an imported package carries its type in that
+		// package's interface, not in this package's symbol table.
+		sig = c.importedType(pkg, sel.Name.Name)
+	}
 	if sig == nil || sig.Kind != types.KindFunc {
 		c.errorHelp(diag.CodeNotCallable, sel.Name.Sp,
 			"call a function",
