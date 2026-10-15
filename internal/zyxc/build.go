@@ -777,6 +777,15 @@ func (b *builder) staticType(e ast.Node) *types.Type {
 	return t
 }
 
+// lambdaID returns the symbol id of a lambda, which is a function of its own
+// and needs a name to be emitted under.
+func (b *builder) lambdaID(v *ast.LambdaExpr) string {
+	if sym := b.rinfo.Defs[v]; sym != nil {
+		return sym.ID
+	}
+	return ""
+}
+
 // firstName returns the first name of a binding list, or nil when the list is
 // empty.
 func firstName(names []*ast.Ident) *ast.Ident {
@@ -912,7 +921,7 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 		n := New("func-ref", b.symID(v.Name))
 		return b.at(n, v.Sp)
 	case *ast.LambdaExpr:
-		n := New("lambda", "")
+		n := New("lambda", b.lambdaID(v))
 		for _, p := range v.Params {
 			pn := New("param", nameOr(p.Name), b.typeText(b.cpkg.Nodes[p.Type]))
 			n.Child(b.at(pn, p.Sp))

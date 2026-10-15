@@ -1,0 +1,46 @@
+package main
+
+import "std/fmt"
+
+func sumFixed(xs: [i64;
+4]) -> i64 {
+    var total = 0
+    for x in xs {
+        total += x
+    }
+    return total
+}
+
+func sumSlice(xs: [i64]) -> i64 {
+    var total = 0
+    for x in xs {
+        total += x
+    }
+    return total
+}
+
+func sumRange(n: i64) -> i64 {
+    var total = 0
+    for i in 0 .. n {
+        total += i
+    }
+    return total
+}
+
+func apply(f: func(i64) -> i64, v: i64) -> i64 {
+    return f(v)
+}
+
+func main() {
+    var xs: [i64;
+    4] = [1, 2, 3, 4]
+    fmt.PrintI64(sumFixed(xs))
+    fmt.PrintNl()
+    fmt.PrintI64(sumSlice(xs [0 .. 4]))
+    fmt.PrintNl()
+    fmt.PrintI64(sumRange(5))
+    fmt.PrintNl()
+    var double = func(x: i64) -> i64 => x * 2
+    fmt.PrintI64(apply(double, 21))
+    fmt.PrintNl()
+}

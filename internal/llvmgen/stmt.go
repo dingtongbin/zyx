@@ -34,6 +34,8 @@ func (g *generator) stmt(module string, n *zyxc.Node) {
 		g.matchStmt(module, n)
 	case "for":
 		g.forStmt(module, n)
+	case "for-in":
+		g.forIn(module, n)
 	case "break":
 		g.breakStmt(n)
 	case "continue":

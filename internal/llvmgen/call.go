@@ -19,14 +19,60 @@ func (g *generator) call(module string, n *zyxc.Node) *value {
 	}
 	sym := g.calleeSymbol(callee)
 	if sym == "" {
-		g.fail(fmt.Errorf("llvmgen: %s is not a callable reference", callee.Kind))
+		// The callee is not a named reference, so it is a value the call
+		// reaches through: a lambda, or a parameter of function type.
+		return g.indirectCall(module, n, callee)
+	}
+	if decl := g.tab.decl(sym); decl != nil && decl.Kind == "func" {
+		return g.directCall(module, n, sym, nil)
+	}
+	if _, ok := g.fn.vars[sym]; ok {
+		return g.indirectCall(module, n, callee)
+	}
+	g.fail(fmt.Errorf("llvmgen: %s: %s is not a function", n.Pos, sym))
+	return nil
+}
+
+// indirectCall lowers a call through a function value. The signature the call
+// records settles the parameter and result types, so the call needs no
+// inference.
+func (g *generator) indirectCall(module string, n *zyxc.Node, callee *zyxc.Node) *value {
+	// A callee that is not a child of the call carries its own signature; a
+	// call that reaches through a qualifier or a receiver records it in the
+	// callee-type child instead.
+	sig := g.typeOfNode(callee.First("type"), module)
+	if sig == nil || sig.Kind != types.KindFunc {
+		sig = g.typeOfNode(n.First("callee-type"), module)
+	}
+	if sig == nil || sig.Kind != types.KindFunc {
+		g.fail(fmt.Errorf("llvmgen: the signature of the call to %s is not settled", callee.Kind))
 		return nil
 	}
-	if decl := g.tab.decl(sym); decl == nil || decl.Kind != "func" {
-		g.fail(fmt.Errorf("llvmgen: %s: %s is not a function", n.Pos, sym))
+	fn := g.load(g.expr(module, callee, nil))
+	if fn == nil {
 		return nil
 	}
-	return g.directCall(module, n, sym, nil)
+	args := g.argNodes(n)
+	if len(args) != len(sig.Elems) {
+		g.fail(fmt.Errorf("llvmgen: the call takes %d arguments, %d given", len(sig.Elems), len(args)))
+		return nil
+	}
+	var parts []string
+	for i, pt := range sig.Elems {
+		v := g.load(g.expr(module, args[i], pt))
+		if v == nil {
+			return nil
+		}
+		parts = append(parts, g.llPass(pt)+" "+v.text)
+	}
+	if sig.Result == nil {
+		g.emit("  call void %s(%s)", fn.text, strings.Join(parts, ", "))
+		return &value{ll: "void"}
+	}
+	retLL := g.llPass(sig.Result)
+	reg := g.newReg()
+	g.emit("  %s = call %s %s(%s)", reg, retLL, fn.text, strings.Join(parts, ", "))
+	return &value{text: reg, ll: retLL, typ: sig.Result}
 }
 
 // calleeSymbol returns the symbol a callee expression names.

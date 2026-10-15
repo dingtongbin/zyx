@@ -136,6 +136,8 @@ func (g *generator) expr(module string, n *zyxc.Node, want *types.Type) *value {
 		return g.index(module, n)
 	case "tindex":
 		return g.tupleIndex(module, n)
+	case "slice":
+		return g.sliceExpr(module, n)
 	case "struct-lit":
 		return g.structLit(module, n)
 	case "variant-lit":
@@ -154,6 +156,8 @@ func (g *generator) expr(module string, n *zyxc.Node, want *types.Type) *value {
 		return g.cCall(module, n)
 	case "func-ref":
 		return g.funcRef(n)
+	case "lambda":
+		return g.lambda(module, n)
 	case "addr":
 		return g.addressOf(module, n)
 	case "array-repeat":
@@ -669,6 +673,36 @@ func (g *generator) tupleIndex(module string, n *zyxc.Node) *value {
 	reg := g.newReg()
 	g.emit("  %s = extractvalue %s %s, %d", reg, g.llType(recv.typ), recv.text, index)
 	return &value{text: reg, ll: g.llPass(recv.typ.Elems[index]), typ: recv.typ.Elems[index]}
+}
+
+// sliceExpr lowers a view of a sequence: the address of the first element it
+// keeps and the number of elements.
+func (g *generator) sliceExpr(module string, n *zyxc.Node) *value {
+	recv := g.load(g.expr(module, g.wrapped(n, "recv"), nil))
+	lo := g.load(g.expr(module, g.wrapped(n, "lo"), types.Usize))
+	hi := g.load(g.expr(module, g.wrapped(n, "hi"), types.Usize))
+	if recv == nil || lo == nil || hi == nil {
+		return nil
+	}
+	if lo.ll != g.ptrInt() || hi.ll != g.ptrInt() {
+		g.fail(fmt.Errorf("llvmgen: a view is indexed by %s, want %s", lo.ll, g.ptrInt()))
+		return nil
+	}
+	elem := recv.typ.Elem
+	base := g.addrText(recv)
+	if recv.typ.Kind == types.KindSlice {
+		base, _ = g.splitFat(recv)
+	}
+	ptr := g.newReg()
+	g.emit("  %s = getelementptr inbounds %s, ptr %s, %s %s", ptr, g.llType(elem), base, lo.ll, lo.text)
+	count := g.newReg()
+	g.emit("  %s = sub %s %s, %s", count, lo.ll, hi.text, lo.text)
+	typ := types.SliceOf(elem)
+	fat := g.newReg()
+	g.emit("  %s = insertvalue %s undef, ptr %s, 0", fat, g.llType(typ), ptr)
+	out := g.newReg()
+	g.emit("  %s = insertvalue %s %s, %s %s, 1", out, g.llType(typ), fat, g.ptrInt(), count)
+	return &value{text: out, ll: g.llType(typ), typ: typ}
 }
 
 // structLit lowers a struct construction. The object is created in the
