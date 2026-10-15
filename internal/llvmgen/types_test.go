@@ -16,12 +16,12 @@ func testProgram() *Program {
 	file.Decls = []*zyxc.Node{
 		zyxc.New("import", "std/fmt"),
 		zyxc.New("struct", "Point", "example.com/app.Point").
-			Child(zyxc.New("field", "x", "i64"), zyxc.New("field", "y", "f64")),
+			Child(zyxc.New("field-decl", "x", "i64", "0"), zyxc.New("field-decl", "y", "f64", "0")),
 		zyxc.New("struct", "Line", "example.com/app.Line").
 			Child(
-				zyxc.New("field", "from", "Point"),
-				zyxc.New("field", "to", "Point"),
-				zyxc.New("field", "tag", "str"),
+				zyxc.New("field-decl", "from", "Point", "0"),
+				zyxc.New("field-decl", "to", "Point", "16"),
+				zyxc.New("field-decl", "tag", "str", "32"),
 			),
 		zyxc.New("func", "main", "plain", "example.com/app.main").
 			Mark("entry", "").

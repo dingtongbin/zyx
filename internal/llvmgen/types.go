@@ -159,7 +159,7 @@ func (t *typeTable) Fields(ty *types.Type) ([]layout.Field, bool) {
 	module := t.modules[ty.ID]
 	var out []layout.Field
 	for _, child := range node.Children {
-		if child.Kind != "field" || len(child.Payload) < 2 {
+		if child.Kind != "field-decl" || len(child.Payload) < 2 {
 			continue
 		}
 		ft, err := t.parse(module, child.Payload[1])

@@ -11,9 +11,11 @@ import (
 	"zyx/internal/ast"
 	"zyx/internal/check"
 	"zyx/internal/coro"
+	"zyx/internal/layout"
 	"zyx/internal/marks"
 	"zyx/internal/resolve"
 	"zyx/internal/source"
+	"zyx/internal/toolchain"
 	"zyx/internal/types"
 )
 
@@ -21,7 +23,7 @@ import (
 // first in byte order, then every declaration in source order, with the
 // symbol id of every reference and the marks of every operation.
 func Build(pkg *resolve.Package, rinfo *resolve.Info, cpkg *check.Package, minfo *marks.Info, cinfo *coro.Info, target string) (*File, error) {
-	b := &builder{pkg: pkg, rinfo: rinfo, cpkg: cpkg, marks: minfo, coro: cinfo}
+	b := &builder{pkg: pkg, rinfo: rinfo, cpkg: cpkg, marks: minfo, coro: cinfo, target: target}
 	f := &File{Target: target, Module: pkg.Path}
 	var imports []*Node
 	for _, file := range pkg.Files {
@@ -100,6 +102,8 @@ type builder struct {
 	cpkg  *check.Package
 	marks *marks.Info
 	coro  *coro.Info
+	// target is the triple the layout of every type is settled for.
+	target string
 }
 
 // marks attaches the marks of a node.
@@ -222,8 +226,13 @@ func (b *builder) decl(decl ast.Decl) *Node {
 		return b.structNode(d)
 	case *ast.UnionDecl:
 		n := New("extern-union", d.Name.Name)
-		for _, f := range d.Fields {
-			n.Child(b.fieldNode(f))
+		if t := b.staticType(d.Name); t != nil {
+			if l := b.layoutNode(t); l != nil {
+				n.Child(l)
+			}
+			for _, f := range b.fieldNodes(t, nil) {
+				n.Child(f)
+			}
 		}
 		return b.at(n, d.Sp)
 	case *ast.EnumDecl:
@@ -383,12 +392,15 @@ func (b *builder) structNode(d *ast.StructDecl) *Node {
 	}
 	n := New(kind, d.Name.Name, b.symID(d.Name))
 	n.Child(b.typeParams(d.TypeParams)...)
-	for _, member := range d.Members {
-		if f, ok := member.(*ast.FieldDecl); ok {
-			n.Child(b.fieldNode(f))
+	selfType := b.selfType(d.Name)
+	if t := b.staticType(d.Name); t != nil {
+		if l := b.layoutNode(t); l != nil {
+			n.Child(l)
+		}
+		for _, f := range b.fieldNodes(t, d) {
+			n.Child(f)
 		}
 	}
-	selfType := b.selfType(d.Name)
 	for _, member := range d.Members {
 		if _, ok := member.(*ast.FieldDecl); ok {
 			continue
@@ -400,9 +412,73 @@ func (b *builder) structNode(d *ast.StructDecl) *Node {
 	return b.at(n, d.Sp)
 }
 
-// fieldNode renders a field.
-func (b *builder) fieldNode(f *ast.FieldDecl) *Node {
-	return b.at(New("field", f.Name.Name, b.typeText(b.cpkg.Nodes[f.Type])), f.Sp)
+// layoutTarget returns the layout properties of the target the build is
+// for, which is what settles every size, alignment, and offset.
+func (b *builder) layoutTarget() layout.Target {
+	t, err := toolchain.ParseTarget(b.target)
+	if err != nil {
+		return layout.Target{PtrSize: 8, PtrAlign: 8}
+	}
+	return t.Layout()
+}
+
+// fieldNodes renders the fields of an aggregate in the final layout order,
+// each carrying the offset the layout algorithm settled. The declared order
+// is an input of that algorithm, not an output the backend needs.
+//
+// A generic declaration has no settled layout, because its fields mention
+// type parameters. Its fields are written in declared order with no offset,
+// and the instance the monomorphizer builds settles them.
+func (b *builder) fieldNodes(t *types.Type, decl *ast.StructDecl) []*Node {
+	placed, err := layout.Fields(t, b.cpkg, b.layoutTarget())
+	if err != nil {
+		return b.declaredFields(decl)
+	}
+	spans := map[string]source.Span{}
+	if decl != nil {
+		for _, member := range decl.Members {
+			if f, ok := member.(*ast.FieldDecl); ok {
+				spans[f.Name.Name] = f.Sp
+			}
+		}
+	}
+	out := make([]*Node, 0, len(placed))
+	for _, f := range placed {
+		n := New("field-decl", f.Name, b.typeText(f.Type), strconv.FormatUint(f.Offset, 10))
+		out = append(out, b.at(n, spans[f.Name]))
+	}
+	return out
+}
+
+// declaredFields renders the fields of a declaration whose layout is not
+// settled, in declaration order.
+func (b *builder) declaredFields(decl *ast.StructDecl) []*Node {
+	if decl == nil {
+		return nil
+	}
+	var out []*Node
+	for _, member := range decl.Members {
+		f, ok := member.(*ast.FieldDecl)
+		if !ok {
+			continue
+		}
+		n := New("field-decl", f.Name.Name, b.typeText(b.cpkg.Nodes[f.Type]))
+		out = append(out, b.at(n, f.Sp))
+	}
+	return out
+}
+
+// layoutNode renders the settled layout of an aggregate.
+func (b *builder) layoutNode(t *types.Type) *Node {
+	size, err := layout.Size(t, b.cpkg, b.layoutTarget())
+	if err != nil {
+		return nil
+	}
+	align, err := layout.Align(t, b.cpkg, b.layoutTarget())
+	if err != nil {
+		return nil
+	}
+	return New("layout", strconv.FormatUint(size, 10), strconv.FormatUint(align, 10))
 }
 
 // variantNode renders an enum variant.

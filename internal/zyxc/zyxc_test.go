@@ -86,7 +86,7 @@ func Use(conn: Conn) {
 	for _, want := range []string{
 		"const MaxConn example.com/app/server.MaxConn",
 		"struct Conn example.com/app/server.Conn",
-		"field host str",
+		"field-decl host str 0",
 		"func Close plain example.com/app/server.Conn.Close",
 		"func Listen plain example.com/app/server.Listen",
 		"struct-lit Conn",
@@ -142,7 +142,7 @@ struct Conn {
 			t.Errorf("line has trailing space: %q", line)
 		}
 	}
-	if !strings.Contains(text, "\n  field host ") {
+	if !strings.Contains(text, "\n  field-decl host ") {
 		t.Errorf("a child must be indented two spaces:\n%s", text)
 	}
 }
