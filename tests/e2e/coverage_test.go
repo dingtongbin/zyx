@@ -14,15 +14,17 @@ import (
 var coveredKinds = []string{
 	"alias", "arg", "arm", "array-lit", "array-repeat", "assign", "assign-op", "binary",
 	"bind", "bind-const", "block", "body", "break", "call", "callee",
-	"callee-type", "cond", "const", "continue", "convert", "count", "default-arm",
+	"callee-type", "chan", "cond", "const", "continue", "convert", "count",
+	"default-arm", "dur",
 	"defer", "elem", "else", "entry", "enum", "expr-stmt", "extern-struct",
 	"extern-union", "field", "field-decl", "field-init", "for", "for-in",
 	"func", "func-ref", "hi", "idx", "if", "impl", "import", "index", "interface", "is",
 	"iter", "key", "lambda", "lhs", "lit", "lo", "map-lit", "match", "mcall",
 	"method-value", "msg", "name", "new", "operand", "panic", "param",
 	"part-expr", "part-text", "pat", "pat-bind", "pat-variant", "qual",
-	"range", "receiver", "recv", "region", "result", "return", "rhs",
-	"select", "set-lit", "sig", "slice", "spawn", "struct", "struct-lit",
+	"range", "receiver", "recv", "recv-arm", "region", "result", "return", "rhs",
+	"send-arm",
+	"select", "set-lit", "sig", "slice", "spawn", "struct", "struct-lit", "timeout-arm",
 	"subject", "target", "then", "tindex", "try", "tuple-lit", "type",
 	"value", "var", "variant",
 }
@@ -31,11 +33,8 @@ var coveredKinds = []string{
 // yet, with the reason. Every entry is work the front end still owes, not a
 // decision to drop the kind.
 var deferredKinds = map[string]string{
-	"c-call":      "no corpus calls C",
-	"import-c":    "no corpus imports a C header",
-	"recv-arm":    "no corpus selects a receive arm",
-	"send-arm":    "no corpus selects a send arm",
-	"timeout-arm": "no corpus selects a timeout arm",
+	"c-call":   "no corpus calls C: an import c header is reported as unused",
+	"import-c": "no corpus imports a C header: an import c header is reported as unused",
 }
 
 // kindPattern matches the kind that opens a line of the tree.

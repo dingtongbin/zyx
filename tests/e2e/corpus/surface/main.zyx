@@ -128,6 +128,31 @@ func shapes() -> i64 {
     return total
 }
 
+func receive(ch: chan < i64 >) -> i64 {
+    select {
+        recv (ch) -> v, ok {
+            if ok {
+                return v
+            }
+            return 0
+        }
+        default {
+            return 1
+        }
+    }
+}
+
+func sendTo(ch: chan < i64 >, v: i64) -> i64 {
+    select {
+        send (ch, v) {
+            return 0
+        }
+        timeout (1000) {
+            return 1
+        }
+    }
+}
+
 func main() {
     var h = Handle { fd: 0}
     if h.fd != 0 {
