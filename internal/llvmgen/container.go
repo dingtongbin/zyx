@@ -22,6 +22,8 @@ func (g *generator) containerCall(module string, n *zyxc.Node, recv *value, name
 		return g.mapCall(module, n, recv, name)
 	case "Set":
 		return g.setCall(module, n, recv, name)
+	case "PriorityQueue":
+		return g.queueCall(module, n, recv, name)
 	}
 	g.fail(fmt.Errorf("llvmgen: %s.%s is not lowered", recv.typ.Name, name))
 	return nil
@@ -48,6 +50,22 @@ func (g *generator) newContainer(module string, n *zyxc.Node, typ *types.Type) *
 		reg := g.newReg()
 		g.emit("  %s = call ptr @zyxrt_map_new(%s %d, %s %d, ptr %s, ptr %s)",
 			reg, g.ptrInt(), keySize, g.ptrInt(), valSize, hash, eq)
+		return &value{text: reg, ll: "ptr", typ: typ}
+	}
+	if typ.Name == "PriorityQueue" {
+		elem := arg(typ, 0)
+		size, ok := g.arraySize(elem)
+		if !ok {
+			return nil
+		}
+		less := g.load(g.expr(module, g.sole(n.First("arg")), nil))
+		if less == nil {
+			return nil
+		}
+		thunk := g.lessThunk(elem, less)
+		g.declareRuntime("zyxrt_queue_new", "ptr", g.ptrInt(), "ptr")
+		reg := g.newReg()
+		g.emit("  %s = call ptr @zyxrt_queue_new(%s %d, ptr %s)", reg, g.ptrInt(), size, thunk)
 		return &value{text: reg, ll: "ptr", typ: typ}
 	}
 	if typ.Name == "Set" {
@@ -310,6 +328,64 @@ func (g *generator) setCall(module string, n *zyxc.Node, recv *value, name strin
 	}
 	g.fail(fmt.Errorf("llvmgen: Set.%s is not lowered", name))
 	return nil
+}
+
+// queueCall lowers one operation on a PriorityQueue.
+func (g *generator) queueCall(module string, n *zyxc.Node, recv *value, name string) *value {
+	elem := arg(recv.typ, 0)
+	switch name {
+	case "Len":
+		g.declareRuntime("zyxrt_queue_len", g.ptrInt(), "ptr")
+		reg := g.newReg()
+		g.emit("  %s = call %s @zyxrt_queue_len(ptr %s)", reg, g.ptrInt(), recv.text)
+		return &value{text: reg, ll: g.ptrInt(), typ: types.Usize}
+	case "Push":
+		slot, ok := g.elementSlot(module, n, elem)
+		if !ok {
+			return nil
+		}
+		g.declareRuntime("zyxrt_queue_push", "void", "ptr", "ptr")
+		g.emit("  call void @zyxrt_queue_push(ptr %s, ptr %s)", recv.text, slot)
+		return &value{ll: "void"}
+	case "Pop":
+		slot := g.objectAlloca(elem)
+		g.declareRuntime("zyxrt_queue_pop", "i32", "ptr", "ptr")
+		flag := g.newReg()
+		g.emit("  %s = call i32 @zyxrt_queue_pop(ptr %s, ptr %s)", flag, recv.text, slot)
+		return g.optionValue(module, n, slot, elem, flag)
+	}
+	g.fail(fmt.Errorf("llvmgen: PriorityQueue.%s is not lowered", name))
+	return nil
+}
+
+// lessThunk emits the adapter the runtime orders two elements through. The
+// comparison the language supplies takes two values of the element type, so
+// an element that fits in a register is read out of the heap first and an
+// object is passed as the address it already is.
+func (g *generator) lessThunk(elem *types.Type, less *value) string {
+	g.thunks++
+	name := fmt.Sprintf("zyx.less.%d", g.thunks)
+	saved := g.fn
+	g.fn = &funcState{symbol: name, vars: map[string]*varSlot{}}
+	g.fn.entry = g.newLabel("less")
+	var parts []string
+	for _, label := range []string{"%a", "%b"} {
+		text := label
+		if !byAddress(elem) {
+			reg := g.newReg()
+			g.emit("  %s = load %s, ptr %s", reg, g.llPass(elem), label)
+			text = reg
+		}
+		parts = append(parts, g.llPass(elem)+" "+text)
+	}
+	reg := g.newReg()
+	g.emit("  %s = call i8 %s(%s)", reg, less.text, strings.Join(parts, ", "))
+	wide := g.newReg()
+	g.emit("  %s = zext i8 %s to i32", wide, reg)
+	g.terminator("  ret i32 %s", wide)
+	g.emitThunk(name, "i32", "ptr %a, ptr %b")
+	g.fn = saved
+	return "@" + name
 }
 
 // setLit lowers a set literal: an empty set, then one element at a time.

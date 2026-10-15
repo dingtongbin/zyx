@@ -40,6 +40,12 @@ void zyxrt_map_keys(void *handle, void *out);
 void zyxrt_map_values(void *handle, void *out);
 void *zyxrt_map_key_list(void *handle, size_t key_size);
 
+/* A priority queue is a heap ordered by a comparison the caller supplies. */
+void *zyxrt_queue_new(size_t elem, void *less);
+size_t zyxrt_queue_len(void *handle);
+void zyxrt_queue_push(void *handle, const void *value);
+int zyxrt_queue_pop(void *handle, void *out);
+
 /* A set holds each element once. */
 void *zyxrt_set_new(size_t elem_size, void *hash, void *eq);
 size_t zyxrt_set_len(void *handle);

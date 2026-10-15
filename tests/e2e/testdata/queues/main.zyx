@@ -1,0 +1,49 @@
+package main
+
+import "std/fmt"
+
+struct Task {
+    prio: i64
+    id: i64
+}
+
+func lessTask(a: Task, b: Task) -> bool {
+    return a.prio < b.prio
+}
+
+func lessInt(a: i64, b: i64) -> bool {
+    return a < b
+}
+
+func main() {
+    var q = new PriorityQueue<Task>(func lessTask)
+    q.Push(Task { prio: 3, id: 1})
+    q.Push(Task { prio: 1, id: 2})
+    q.Push(Task { prio: 2, id: 3})
+    fmt.PrintI64(i64(q.Len()))
+    fmt.PrintNl()
+    var i = 0
+    for i < 3 {
+        match q.Pop() {
+            Some(t) => fmt.PrintI64(t.id)
+            None => fmt.PrintI64(- 1)
+        }
+        i += 1
+    }
+    fmt.PrintNl()
+    var n = new PriorityQueue<i64>(func lessInt)
+    n.Push(5)
+    n.Push(1)
+    n.Push(4)
+    n.Push(2)
+    n.Push(3)
+    var j = 0
+    for j < 5 {
+        match n.Pop() {
+            Some(v) => fmt.PrintI64(v)
+            None => fmt.PrintI64(- 1)
+        }
+        j += 1
+    }
+    fmt.PrintNl()
+}
