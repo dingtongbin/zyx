@@ -21,6 +21,10 @@ typedef struct zyxrt_region {
   size_t classes;
   /* big holds the runs the pool does not serve. */
   zyxrt_big *big;
+  /* free_objects holds the objects released before the region exits, one
+     list per size class. The next free object is stored in the released
+     object itself, which is why an object never needs a header. */
+  void **free_objects;
   /* bootstrap marks the region the runtime made before the pools were
      ready, which allocates from the system throughout. */
   int bootstrap;
@@ -65,6 +69,10 @@ void *zyxrt_region_new(void) {
   if (r->slabs == NULL) {
     zyxrt_panic("out of memory", 13);
   }
+  r->free_objects = (void **)calloc(r->classes, sizeof(void *));
+  if (r->free_objects == NULL) {
+    zyxrt_panic("out of memory", 13);
+  }
   return r;
 }
 
@@ -98,8 +106,26 @@ void zyxrt_region_free(void *region) {
     free(run);
     run = next;
   }
+  free(r->free_objects);
   free(r->slabs);
   free(r);
+}
+
+/* zyxrt_region_release returns one object to its region before the region
+   exits, which is what a static release point does. The size names the class,
+   so no object carries a header. A run the pool does not serve, or an object
+   of the bootstrap region, is left for the region to release whole. */
+void zyxrt_region_release(void *region, void *object, size_t size) {
+  zyxrt_region *r = (zyxrt_region *)region;
+  if (r == NULL || object == NULL || r->bootstrap) {
+    return;
+  }
+  size_t class = zyxrt_pool_class(size);
+  if (class >= r->classes) {
+    return;
+  }
+  *(void **)object = r->free_objects[class];
+  r->free_objects[class] = object;
 }
 
 void *zyxrt_region_alloc(void *region, size_t size, size_t align) {
@@ -109,6 +135,13 @@ void *zyxrt_region_alloc(void *region, size_t size, size_t align) {
   size_t class = zyxrt_pool_class(size);
   if (align > 16 || class >= r->classes || r->bootstrap) {
     return alloc_big(r, size, align);
+  }
+  /* An object released before the region exits is handed out again, so the
+     space a program gives up is reused within the same region. */
+  void *released = r->free_objects[class];
+  if (released != NULL) {
+    r->free_objects[class] = *(void **)released;
+    return released;
   }
   zyxrt_slab *slab = r->slabs[class];
   if (slab == NULL || slab->used == slab->count) {

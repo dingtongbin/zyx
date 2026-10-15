@@ -141,6 +141,30 @@ func (g *generator) deferThunk(sym string, ptypes []*types.Type, blockLL string)
 	return name
 }
 
+// release returns an object to its region at the point the analysis marked as
+// its last use, so the space is reused within the region rather than at its
+// exit. The object must be one this backend allocated: a handle the runtime
+// owns is released by the runtime, which the container runtime does.
+func (g *generator) release(typ *types.Type, addr string) {
+	if addr == "" {
+		return
+	}
+	if !releasable(typ) {
+		return
+	}
+	size, err := layout.Size(typ, g.tab, g.target.Layout())
+	if err != nil {
+		g.fail(fmt.Errorf("llvmgen: the size of %s: %w", typ, err))
+		return
+	}
+	g.declareRuntime("zyxrt_region_current", "ptr")
+	g.declareRuntime("zyxrt_region_release", "void", "ptr", "ptr", g.ptrInt())
+	region := g.newReg()
+	g.emit("  %s = call ptr @zyxrt_region_current()", region)
+	g.emit("  call void @zyxrt_region_release(ptr %s, ptr %s, %s %d)",
+		region, addr, g.ptrInt(), size)
+}
+
 // allocate creates an object of a type in the region of the running
 // coroutine and returns its address.
 func (g *generator) allocate(typ *types.Type) string {
