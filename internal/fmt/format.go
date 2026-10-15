@@ -49,6 +49,9 @@ type printer struct {
 	// emptyBody marks an opening brace whose body holds nothing, which the
 	// format keeps on one line.
 	emptyBody bool
+	// lastDecl is the last top-level declaration keyword written, which
+	// decides where a blank line separates declarations.
+	lastDecl token.Kind
 }
 
 // run writes the whole token stream.
@@ -92,10 +95,17 @@ func (p *printer) token(toks []token.Token, i int) {
 		return
 	}
 
-	// A blank line in the source stays a blank line, and everything else
-	// closes up.
-	if p.prev != nil && p.line > 0 && line > p.line+1 && p.indent == 0 && p.separates() {
-		p.newline()
+	// A blank line in the source stays a blank line, and a top-level
+	// declaration is separated from the one before it by one blank line.
+	if p.separates() && p.indent == 0 {
+		switch {
+		case p.prev == nil:
+		case p.line > 0 && line > p.line+1:
+			p.blankLine()
+		case isDeclKeyword(t.Kind) && p.lineStart && p.lastDecl != token.Invalid &&
+			!(p.lastDecl == token.Import && t.Kind == token.Import):
+			p.blankLine()
+		}
 	}
 	if t.Kind == token.RBrace && p.inBlock() && !p.emptyBody {
 		p.newline()
@@ -160,6 +170,19 @@ func (p *printer) token(toks []token.Token, i int) {
 	p.prev = &toks[i]
 	p.prevText = text
 	p.line = line
+	if p.indent == 0 && isDeclKeyword(t.Kind) {
+		p.lastDecl = t.Kind
+	}
+}
+
+// isDeclKeyword reports whether a token opens a top-level declaration.
+func isDeclKeyword(k token.Kind) bool {
+	switch k {
+	case token.Package, token.Import, token.Const, token.Var, token.Type,
+		token.Func, token.Struct, token.Enum, token.Interface, token.Extern:
+		return true
+	}
+	return false
 }
 
 // inBlock reports whether the innermost open brace is a statement block.
@@ -288,6 +311,15 @@ func (p *printer) space() {
 // newline ends the current line.
 func (p *printer) newline() {
 	if p.lineStart {
+		return
+	}
+	p.buf.WriteByte('\n')
+	p.lineStart = true
+}
+
+// blankLine writes one empty line, which separates top-level declarations.
+func (p *printer) blankLine() {
+	if p.buf.Len() == 0 {
 		return
 	}
 	p.buf.WriteByte('\n')

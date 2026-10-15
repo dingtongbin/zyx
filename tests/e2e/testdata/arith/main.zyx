@@ -3,72 +3,72 @@ package main
 import "std/fmt"
 
 func signedOps(a: i64, b: i64) -> i64 {
-	var acc = a + b
-	acc = acc - 1
-	acc = acc * 2
-	acc = acc / 3
-	acc = acc % 1000
-	acc = acc & 1023
-	acc = acc | 1
-	acc = acc ^ 2
-	acc = acc << 1
-	acc = acc >> 1
-	return acc
+    var acc = a + b
+    acc = acc - 1
+    acc = acc * 2
+    acc = acc / 3
+    acc = acc % 1000
+    acc = acc & 1023
+    acc = acc | 1
+    acc = acc ^ 2
+    acc = acc << 1
+    acc = acc >> 1
+    return acc
 }
 
 func compare(a: i64, b: i64) -> i64 {
-	var hits = 0
-	if a == b {
-		hits += 1
-	}
-	if a != b {
-		hits += 10
-	}
-	if a < b {
-		hits += 100
-	}
-	if a <= b {
-		hits += 1000
-	}
-	if a > b {
-		hits += 10000
-	}
-	if a >= b {
-		hits += 100000
-	}
-	return hits
+    var hits = 0
+    if a == b {
+        hits += 1
+    }
+    if a != b {
+        hits += 10
+    }
+    if a < b {
+        hits += 100
+    }
+    if a <= b {
+        hits += 1000
+    }
+    if a > b {
+        hits += 10000
+    }
+    if a >= b {
+        hits += 100000
+    }
+    return hits
 }
 
 func unsignedShift(v: u64, by: u64) -> u64 {
-	return v >> by
+    return v >> by
 }
 
 func floatOps(a: f64, b: f64) -> f64 {
-	return a * b + a / b - a
+    return a * b + a / b - a
 }
 
 func truncate(x: f64) -> i64 {
-	return i64(x)
+    return i64(x)
 }
 
 func widen(n: i32) -> i64 {
-	return i64(n)
+    return i64(n)
 }
 
 func main() {
-	fmt.PrintI64(signedOps(40, 2))
-	fmt.PrintNl()
-	fmt.PrintI64(compare(3, 5))
-	fmt.PrintNl()
-	fmt.PrintU64(unsignedShift(1024, 3))
-	fmt.PrintNl()
-	fmt.PrintF64(floatOps(6.0, 3.0))
-	fmt.PrintNl()
-	fmt.PrintI64(truncate(7.75))
-	fmt.PrintNl()
-	fmt.PrintI64(widen(9))
-	fmt.PrintNl()
-	fmt.PrintBool(true)
-	fmt.PrintChar('x')
-	fmt.PrintNl()
+    fmt.PrintI64(signedOps(40, 2))
+    fmt.PrintNl()
+    fmt.PrintI64(compare(3, 5))
+    fmt.PrintNl()
+    fmt.PrintU64(unsignedShift(1024, 3))
+    fmt.PrintNl()
+    fmt.PrintF64(floatOps(6.0, 3.0))
+    fmt.PrintNl()
+    fmt.PrintI64(truncate(7.75))
+    fmt.PrintNl()
+    fmt.PrintI64(widen(9))
+    fmt.PrintNl()
+    fmt.PrintBool(true)
+    fmt.PrintChar('x')
+    fmt.PrintNl()
 }

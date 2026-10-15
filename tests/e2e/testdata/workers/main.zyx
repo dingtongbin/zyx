@@ -3,16 +3,16 @@ package main
 import "std/fmt"
 
 func report(job: i64, label: str) {
-	fmt.PrintI64(job)
-	fmt.Print(label)
-	fmt.PrintNl()
+    fmt.PrintI64(job)
+    fmt.Print(label)
+    fmt.PrintNl()
 }
 
 func main() {
-	fmt.Println("start")
-	region {
-		spawn report(1, " one")
-		spawn report(2, " two")
-	}
-	fmt.Println("end")
+    fmt.Println("start")
+    region {
+        spawn report(1, " one")
+        spawn report(2, " two")
+    }
+    fmt.Println("end")
 }

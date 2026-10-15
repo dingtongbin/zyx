@@ -50,7 +50,7 @@ func TestFormatKeepsEveryToken(t *testing.T) {
 func TestFormatIndentsBlocks(t *testing.T) {
 	src := "package main\nfunc main() {\nfmt.Println(\"a\")\n}\n"
 	got := format(src)
-	want := "package main\nfunc main() {\n    fmt.Println(\"a\")\n}\n"
+	want := "package main\n\nfunc main() {\n    fmt.Println(\"a\")\n}\n"
 	if got != want {
 		t.Errorf("format =\n%q\nwant\n%q", got, want)
 	}
@@ -59,7 +59,7 @@ func TestFormatIndentsBlocks(t *testing.T) {
 func TestFormatKeepsAnEmptyBodyOnOneLine(t *testing.T) {
 	src := "package main\nfunc main() {\n}\nfunc other() {\n}\n"
 	got := format(src)
-	want := "package main\nfunc main() { }\nfunc other() { }\n"
+	want := "package main\n\nfunc main() { }\n\nfunc other() { }\n"
 	if got != want {
 		t.Errorf("format =\n%q\nwant\n%q", got, want)
 	}

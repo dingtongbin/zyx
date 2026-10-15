@@ -65,6 +65,8 @@ func (s *Session) Run(args []string) int {
 		return s.run(rest)
 	case "fmt":
 		return s.fmt(rest)
+	case "clean":
+		return s.clean(rest)
 	case "mod":
 		return s.mod(rest)
 	case "new":
@@ -91,6 +93,7 @@ commands:
   build      compile packages to executables
   run        build with -O0 and run immediately
   fmt        rewrite sources into canonical form
+  clean      remove the build tree, and the cache with --cache
   mod        manage the module: init, tidy
   new        scaffold a project skeleton
   version    print compiler and toolchain versions
