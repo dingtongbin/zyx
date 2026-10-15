@@ -158,6 +158,8 @@ func (g *generator) expr(module string, n *zyxc.Node, want *types.Type) *value {
 		return g.arrayRepeat(module, n)
 	case "spawn":
 		return g.spawn(module, n)
+	case "panic":
+		return g.panicCall(module, n)
 	}
 	g.fail(fmt.Errorf("llvmgen: expression %s is not lowered", n.Kind))
 	return nil

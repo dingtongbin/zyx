@@ -17,9 +17,6 @@ func (g *generator) call(module string, n *zyxc.Node) *value {
 		g.fail(fmt.Errorf("llvmgen: a call needs a callee"))
 		return nil
 	}
-	if callee.Kind == "name" && len(callee.Payload) > 0 && callee.Payload[0] == "panic" {
-		return g.panicCall(module, n)
-	}
 	sym := g.calleeSymbol(callee)
 	if sym == "" {
 		g.fail(fmt.Errorf("llvmgen: %s is not a callable reference", callee.Kind))
@@ -227,17 +224,16 @@ func (g *generator) cCall(module string, n *zyxc.Node) *value {
 // panicCall lowers the built-in panic.
 func (g *generator) panicCall(module string, n *zyxc.Node) *value {
 	g.declareRuntime("zyxrt_panic", "void", "ptr", "i64")
-	var args []string
-	for _, child := range n.Children {
-		if child.Kind != "arg" {
-			continue
-		}
-		v := g.expr(module, g.sole(child), types.Str)
-		if v == nil {
-			return nil
-		}
-		args = append(args, g.cArguments(v)...)
+	message := g.wrapped(n, "msg")
+	if message == nil {
+		g.fail(fmt.Errorf("llvmgen: panic needs a message"))
+		return nil
 	}
+	v := g.expr(module, message, types.Str)
+	if v == nil {
+		return nil
+	}
+	args := g.cArguments(v)
 	if len(args) != 2 {
 		g.fail(fmt.Errorf("llvmgen: panic takes one message"))
 		return nil

@@ -331,8 +331,13 @@ func (s *Session) frontEndPackage(pkg *Package, resolveIfaces map[string]*resolv
 		return res
 	}
 
-	res.IR = zyxc.Build(rpkg, rinfo, checked, model, cinfo, s.Loader.Target.Triple)
-	res.Text = zyxc.Format(res.IR)
+	ir, err := zyxc.Build(rpkg, rinfo, checked, model, cinfo, s.Loader.Target.Triple)
+	if err != nil {
+		res.Diags = append(res.Diags, diag.Diagnostic{Code: diag.CodeEmission, Message: err.Error()})
+		return res
+	}
+	res.IR = ir
+	res.Text = zyxc.Format(ir)
 	return res
 }
 

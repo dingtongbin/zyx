@@ -36,7 +36,11 @@ func buildSource(t *testing.T, src string) *File {
 	if len(mdiags) != 0 {
 		t.Fatalf("marks: %v", mdiags)
 	}
-	return Build(pkg, rinfo, cpkg, minfo, cinfo, target.Triple)
+	ir, err := Build(pkg, rinfo, cpkg, minfo, cinfo, target.Triple)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ir
 }
 
 func TestFormatHeader(t *testing.T) {

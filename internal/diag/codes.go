@@ -263,4 +263,8 @@ const (
 const (
 	// CodeLayout reports a type whose static layout cannot be settled.
 	CodeLayout Code = "E9001"
+	// CodeEmission reports a construct the intermediate representation
+	// cannot carry, which is a hole in the compiler rather than a fault in
+	// the source.
+	CodeEmission Code = "E9002"
 )

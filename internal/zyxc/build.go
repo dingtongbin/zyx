@@ -3,6 +3,7 @@
 package zyxc
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,7 +20,7 @@ import (
 // Build renders one package's analyzed form as a .zyxc tree: the imports
 // first in byte order, then every declaration in source order, with the
 // symbol id of every reference and the marks of every operation.
-func Build(pkg *resolve.Package, rinfo *resolve.Info, cpkg *check.Package, minfo *marks.Info, cinfo *coro.Info, target string) *File {
+func Build(pkg *resolve.Package, rinfo *resolve.Info, cpkg *check.Package, minfo *marks.Info, cinfo *coro.Info, target string) (*File, error) {
 	b := &builder{pkg: pkg, rinfo: rinfo, cpkg: cpkg, marks: minfo, coro: cinfo}
 	f := &File{Target: target, Module: pkg.Path}
 	var imports []*Node
@@ -41,8 +42,34 @@ func Build(pkg *resolve.Package, rinfo *resolve.Info, cpkg *check.Package, minfo
 		}
 	}
 	f.Decls = compact(f.Decls)
+	if b.err != nil {
+		return nil, b.err
+	}
 	f.Exports = ExportsHash(f.Decls)
-	return f
+	return f, nil
+}
+
+// nodeName returns the concrete kind of an abstract syntax node, which a
+// report names when the builder cannot render it.
+func nodeName(node ast.Node) string {
+	if node == nil {
+		return "nothing"
+	}
+	name := fmt.Sprintf("%T", node)
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		name = name[i+1:]
+	}
+	return name
+}
+
+// fail records the first node the builder cannot render. A node the builder
+// does not know is a hole in the representation, so it is reported rather
+// than dropped.
+func (b *builder) fail(node ast.Node, what string) {
+	if b.err != nil || node == nil {
+		return
+	}
+	b.err = fmt.Errorf("zyxc: %s at %v is not rendered", what, node.Span())
 }
 
 // firstPayload returns the first payload token of a node.
@@ -66,6 +93,8 @@ func compact(nodes []*Node) []*Node {
 
 // builder carries the state of one package's emission.
 type builder struct {
+	// err holds the first node the builder could not render.
+	err   error
 	pkg   *resolve.Package
 	rinfo *resolve.Info
 	cpkg  *check.Package
@@ -221,6 +250,7 @@ func (b *builder) decl(decl ast.Decl) *Node {
 		}
 		return b.at(n, d.Sp)
 	}
+	b.fail(decl, "declaration "+nodeName(decl))
 	return nil
 }
 
@@ -246,6 +276,7 @@ func (b *builder) member(member ast.Decl) *Node {
 		}
 		return b.at(n, m.Sp)
 	}
+	b.fail(member, "member "+nodeName(member))
 	return nil
 }
 
@@ -499,6 +530,7 @@ func (b *builder) stmt(s ast.Stmt) *Node {
 		}
 		return b.mark(b.at(n, v.Sp), v)
 	}
+	b.fail(s, "statement "+nodeName(s))
 	return nil
 }
 
@@ -641,6 +673,7 @@ func (b *builder) pattern(p ast.Pattern) *Node {
 		n.Child(b.wrap("hi", b.expr(v.Hi)))
 		return b.at(n, v.Sp)
 	}
+	b.fail(p, "pattern "+nodeName(p))
 	return nil
 }
 
@@ -708,6 +741,10 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 	case *ast.CallExpr:
 		if n := b.callNode(v); n != nil {
 			return n
+		}
+		if b.isPanic(v.Fn) {
+			n := New("panic").Child(b.wrap("msg", b.expr(firstArg(v))))
+			return b.at(n, v.Sp)
 		}
 		n := New("call")
 		n.Child(b.wrap("callee", b.expr(v.Fn)))
@@ -799,6 +836,7 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 	case *ast.AggregateLitExpr:
 		return b.aggregate(v)
 	}
+	b.fail(e, "expression "+nodeName(e))
 	return nil
 }
 
@@ -808,6 +846,48 @@ func cName(fn ast.Expr) string {
 		return sel.Name.Name
 	}
 	return ""
+}
+
+// namespace returns the predeclared namespace a selector reaches, such as
+// meta or dur, or the empty string.
+func (b *builder) namespace(v *ast.SelectorExpr) string {
+	id := qualifierName(v)
+	if id == nil {
+		return ""
+	}
+	sym := b.rinfo.Defs[id]
+	if sym == nil || sym.Kind != resolve.KindPackage {
+		return ""
+	}
+	switch sym.Name {
+	case "meta", "dur":
+		return sym.Name
+	}
+	return ""
+}
+
+// isJoin reports whether a selector names one of the operations the language
+// builds into a coroutine handle.
+func (b *builder) isJoin(v *ast.SelectorExpr) bool {
+	recv := b.cpkg.Nodes[v.X]
+	if recv == nil || recv.ID != types.JoinHandle.ID {
+		return false
+	}
+	switch v.Name.Name {
+	case "Join", "TryJoin":
+		return true
+	}
+	return false
+}
+
+// isPanic reports whether a callee names the built-in panic.
+func (b *builder) isPanic(fn ast.Expr) bool {
+	id, ok := fn.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	sym := b.rinfo.Defs[id]
+	return sym != nil && sym.Kind == resolve.KindBuiltin && sym.Name == "panic"
 }
 
 // calleeTypeNode returns the `callee-type` child of a call, which records
@@ -841,6 +921,16 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 			n := New("c-call", sel.Name.Name)
 			n.Child(b.args(v.Args)...)
 			return b.mark(b.at(n, v.Sp), v)
+		case b.namespace(sel) != "":
+			// meta.size_of(T) and dur.ms(100) are their own node kinds,
+			// because the backend settles them without a call.
+			n := New(b.namespace(sel), sel.Name.Name)
+			n.Child(b.args(v.Args)...)
+			return b.at(n, v.Sp)
+		case b.isJoin(sel):
+			n := New("join", sel.Name.Name)
+			n.Child(b.wrap("recv", b.expr(sel.X)))
+			return b.at(n, v.Sp)
 		case b.isVariant(sel):
 			n := New("variant-lit", b.typeText(b.cpkg.Nodes[sel.X]), sel.Name.Name)
 			n.Child(b.args(v.Args)...)
