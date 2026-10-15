@@ -12,9 +12,9 @@ import (
 // corpus grows: a kind that stops being emitted fails the test below, so the
 // intermediate form cannot quietly lose a construct.
 var coveredKinds = []string{
-	"alias", "arg", "arm", "array-lit", "assign", "assign-op", "binary",
+	"alias", "arg", "arm", "array-lit", "array-repeat", "assign", "assign-op", "binary",
 	"bind", "bind-const", "block", "body", "break", "call", "callee",
-	"callee-type", "cond", "const", "continue", "convert", "default-arm",
+	"callee-type", "cond", "const", "continue", "convert", "count", "default-arm",
 	"defer", "elem", "else", "entry", "enum", "expr-stmt", "extern-struct",
 	"extern-union", "field", "field-decl", "field-init", "for", "for-in",
 	"func", "func-ref", "hi", "idx", "if", "impl", "import", "index", "interface", "is",
@@ -31,12 +31,11 @@ var coveredKinds = []string{
 // yet, with the reason. Every entry is work the front end still owes, not a
 // decision to drop the kind.
 var deferredKinds = map[string]string{
-	"array-repeat": "no corpus repeats an array",
-	"c-call":       "no corpus calls C",
-	"import-c":     "no corpus imports a C header",
-	"recv-arm":     "no corpus selects a receive arm",
-	"send-arm":     "no corpus selects a send arm",
-	"timeout-arm":  "no corpus selects a timeout arm",
+	"c-call":      "no corpus calls C",
+	"import-c":    "no corpus imports a C header",
+	"recv-arm":    "no corpus selects a receive arm",
+	"send-arm":    "no corpus selects a send arm",
+	"timeout-arm": "no corpus selects a timeout arm",
 }
 
 // kindPattern matches the kind that opens a line of the tree.
