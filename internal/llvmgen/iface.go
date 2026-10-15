@@ -85,16 +85,10 @@ func (g *generator) implMethod(concrete, iface *types.Type, name string) string 
 }
 
 // implIs reports whether an impl block names an interface. The block writes
-// the name the interface is declared by, so the two spellings are compared.
+// the interface's symbol, so the two are compared as symbols rather than by
+// spelling.
 func (g *generator) implIs(impl *zyxc.Node, iface *types.Type) bool {
-	if len(impl.Payload) == 0 {
-		return false
-	}
-	decl := g.tab.decl(iface.ID)
-	if decl == nil || len(decl.Payload) == 0 {
-		return false
-	}
-	return impl.Payload[0] == decl.Payload[0]
+	return len(impl.Payload) > 0 && impl.Payload[0] == iface.ID
 }
 
 // ifaceValue builds the pair an interface value is made of: the method table

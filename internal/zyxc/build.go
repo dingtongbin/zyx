@@ -278,7 +278,7 @@ func (b *builder) member(member ast.Decl, selfType string) *Node {
 		}
 		return b.at(n, m.Sp)
 	case *ast.ImplBlock:
-		n := New("impl", b.typeText(b.cpkg.Nodes[m.Interface]))
+		n := New("impl", b.implSymbol(m.Interface))
 		n.Child(b.typeParams(m.TypeParams)...)
 		for _, f := range m.Methods {
 			n.Child(b.funcNode(f, selfType))
@@ -788,6 +788,16 @@ func (b *builder) staticType(e ast.Node) *types.Type {
 		return nil
 	}
 	return t
+}
+
+// implSymbol returns the symbol id of the interface an impl block names. The
+// interface is identified by its symbol, so a reader never has to match a
+// spelling to find it.
+func (b *builder) implSymbol(t ast.TypeExpr) string {
+	if tn, ok := t.(*ast.TypeName); ok && tn.Name != nil {
+		return b.symID(tn.Name)
+	}
+	return ""
 }
 
 // lambdaID returns the symbol id of a lambda, which is a function of its own
