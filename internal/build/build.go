@@ -151,14 +151,20 @@ func (l *Loader) readFiles(dir string, names []string) ([]*source.File, error) {
 	return files, nil
 }
 
-// relName returns a path relative to the module root, which is the form
-// diagnostics and the .zyxc layer use.
+// relName returns the path a diagnostic and the intermediate form name a
+// file by. It is relative to the tree the file was found in, never absolute
+// and never reaching above that tree, so the same source names itself the
+// same way wherever the checkout sits.
 func (l *Loader) relName(full string) string {
-	rel, err := filepath.Rel(l.Root, full)
-	if err != nil {
-		return full
+	if l.StdRoot != "" {
+		if rel, err := filepath.Rel(l.StdRoot, full); err == nil && !strings.HasPrefix(rel, "..") {
+			return filepath.ToSlash(rel)
+		}
 	}
-	return filepath.ToSlash(rel)
+	if rel, err := filepath.Rel(l.Root, full); err == nil && !strings.HasPrefix(rel, "..") {
+		return filepath.ToSlash(rel)
+	}
+	return filepath.Base(full)
 }
 
 // summarize returns the package name and the import lists the parsed files

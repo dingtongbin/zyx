@@ -37,7 +37,7 @@ func ExportsHash(decls []*Node) string {
 		if !isExported(decl) {
 			continue
 		}
-		writeNode(&b, decl, 0)
+		writeCanonical(&b, decl, 0)
 	}
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])
@@ -69,6 +69,30 @@ func writeNode(b *strings.Builder, n *Node, depth int) {
 	b.WriteByte('\n')
 	for _, child := range n.Children {
 		writeNode(b, child, depth+1)
+	}
+}
+
+// writeCanonical writes a node without its source position, which is what
+// the export hash covers. A position names a file inside one checkout, so
+// hashing it would make the hash depend on where the tree happens to sit.
+func writeCanonical(b *strings.Builder, n *Node, depth int) {
+	if n == nil {
+		return
+	}
+	for i := 0; i < depth; i++ {
+		b.WriteString(indentation)
+	}
+	b.WriteString(n.head())
+	if len(n.Marks) > 0 {
+		parts := make([]string, 0, len(n.Marks))
+		for _, m := range n.Marks {
+			parts = append(parts, m.String())
+		}
+		b.WriteString(" marks {" + strings.Join(parts, ", ") + "}")
+	}
+	b.WriteByte('\n')
+	for _, child := range n.Children {
+		writeCanonical(b, child, depth+1)
 	}
 }
 
