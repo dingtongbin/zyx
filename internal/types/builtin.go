@@ -47,6 +47,8 @@ var (
 	BlockingQueue = Named(KindContainer, "", "", "BlockingQueue", 1)
 	// Buf is the mutable byte buffer the standard library builds on.
 	Buf = Named(KindContainer, "", "", "Buf", 0)
+	// Ring is the fixed-capacity circular buffer.
+	Ring = Named(KindContainer, "", "", "Ring", 1)
 	// JoinHandle is the coroutine handle a spawn returns.
 	JoinHandle = Named(KindContainer, "", "", "JoinHandle", 1)
 	// Duration is the predeclared value type with built-in arithmetic.
@@ -197,6 +199,7 @@ var predeclared = map[string]*Type{
 	"PriorityQueue": PriorityQueue,
 	"BlockingQueue": BlockingQueue,
 	"Buf":           Buf,
+	"Ring":          Ring,
 	"JoinHandle":    JoinHandle,
 	"Duration":      Duration,
 	"PanicError":    PanicError,

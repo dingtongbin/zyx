@@ -28,6 +28,8 @@ func (g *generator) containerCall(module string, n *zyxc.Node, recv *value, name
 		return g.bqueueCall(module, n, recv, name)
 	case "Buf":
 		return g.bufCall(module, n, recv, name)
+	case "Ring":
+		return g.ringCall(module, n, recv, name)
 	}
 	g.fail(fmt.Errorf("llvmgen: %s.%s is not lowered", recv.typ.Name, name))
 	return nil
@@ -54,6 +56,22 @@ func (g *generator) newContainer(module string, n *zyxc.Node, typ *types.Type) *
 		reg := g.newReg()
 		g.emit("  %s = call ptr @zyxrt_map_new(%s %d, %s %d, ptr %s, ptr %s)",
 			reg, g.ptrInt(), keySize, g.ptrInt(), valSize, hash, eq)
+		return &value{text: reg, ll: "ptr", typ: typ}
+	}
+	if typ.Name == "Ring" {
+		elem := arg(typ, 0)
+		size, ok := g.arraySize(elem)
+		if !ok {
+			return nil
+		}
+		capacity := g.load(g.expr(module, g.sole(n.First("arg")), types.Usize))
+		if capacity == nil {
+			return nil
+		}
+		g.declareRuntime("zyxrt_ring_new", "ptr", g.ptrInt(), g.ptrInt())
+		reg := g.newReg()
+		g.emit("  %s = call ptr @zyxrt_ring_new(%s %d, %s %s)",
+			reg, g.ptrInt(), size, g.ptrInt(), capacity.text)
 		return &value{text: reg, ll: "ptr", typ: typ}
 	}
 	if typ.Name == "Buf" {
@@ -399,6 +417,38 @@ func (g *generator) queueCall(module string, n *zyxc.Node, recv *value, name str
 		return g.optionValue(module, n, slot, elem, flag)
 	}
 	g.fail(fmt.Errorf("llvmgen: PriorityQueue.%s is not lowered", name))
+	return nil
+}
+
+// ringCall lowers one operation on a Ring.
+func (g *generator) ringCall(module string, n *zyxc.Node, recv *value, name string) *value {
+	elem := arg(recv.typ, 0)
+	switch name {
+	case "Len", "Cap":
+		fn := "zyxrt_ring_len"
+		if name == "Cap" {
+			fn = "zyxrt_ring_cap"
+		}
+		g.declareRuntime(fn, g.ptrInt(), "ptr")
+		reg := g.newReg()
+		g.emit("  %s = call %s @%s(ptr %s)", reg, g.ptrInt(), fn, recv.text)
+		return &value{text: reg, ll: g.ptrInt(), typ: types.Usize}
+	case "Push":
+		slot, ok := g.elementSlot(module, n, elem)
+		if !ok {
+			return nil
+		}
+		g.declareRuntime("zyxrt_ring_push", "void", "ptr", "ptr")
+		g.emit("  call void @zyxrt_ring_push(ptr %s, ptr %s)", recv.text, slot)
+		return &value{ll: "void"}
+	case "Pop":
+		slot := g.objectAlloca(elem)
+		g.declareRuntime("zyxrt_ring_pop", "i32", "ptr", "ptr")
+		flag := g.newReg()
+		g.emit("  %s = call i32 @zyxrt_ring_pop(ptr %s, ptr %s)", flag, recv.text, slot)
+		return g.optionValue(module, n, slot, elem, flag)
+	}
+	g.fail(fmt.Errorf("llvmgen: Ring.%s is not lowered", name))
 	return nil
 }
 

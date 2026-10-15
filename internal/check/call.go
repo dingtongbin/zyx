@@ -492,6 +492,14 @@ var containerMethods = map[string]map[string]func(*types.Type) *types.Type{
 			return types.FuncOf(types.Option.Instantiate(arg(recv, 0)))
 		},
 	},
+	"Ring": {
+		"Len":  func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Cap":  func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Push": func(recv *types.Type) *types.Type { return types.FuncOf(void, arg(recv, 0)) },
+		"Pop": func(recv *types.Type) *types.Type {
+			return types.FuncOf(types.Option.Instantiate(arg(recv, 0)))
+		},
+	},
 	"Buf": {
 		"Len":       func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
 		"Cap":       func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },

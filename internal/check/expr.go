@@ -879,6 +879,8 @@ func (c *checker) newContainer(v *ast.NewExpr, typ *types.Type) *types.Type {
 		params = nil
 	case "PriorityQueue":
 		params = []*types.Type{less}
+	case "Ring":
+		params = []*types.Type{types.Usize}
 	case "Buf":
 		// The capacity is optional, so the argument is checked against it
 		// rather than required.

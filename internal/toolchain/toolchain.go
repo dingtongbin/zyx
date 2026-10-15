@@ -207,6 +207,7 @@ func (t *Toolchain) Sources(target Target) []string {
 		filepath.Join(t.Runtime, "container", "queue.c"),
 		filepath.Join(t.Runtime, "container", "bqueue.c"),
 		filepath.Join(t.Runtime, "container", "buf.c"),
+		filepath.Join(t.Runtime, "container", "ring.c"),
 	}
 	// A hand-written stack switch replaces the portable context routines on
 	// the architectures that have one.

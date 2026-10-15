@@ -71,6 +71,14 @@ void zyxrt_buf_bytes(void *handle, const unsigned char **out, size_t *len);
 void zyxrt_buf_str(void *handle, const char **out, size_t *len);
 void *zyxrt_buf_take(void *handle);
 
+/* Ring is a fixed-capacity circular buffer. A push into a full ring drops the
+   oldest element, and a pop takes the oldest, so both are constant time. */
+void *zyxrt_ring_new(size_t elem, size_t cap);
+size_t zyxrt_ring_len(void *handle);
+size_t zyxrt_ring_cap(void *handle);
+void zyxrt_ring_push(void *handle, const void *value);
+int zyxrt_ring_pop(void *handle, void *out);
+
 /* A set holds each element once. */
 void *zyxrt_set_new(size_t elem_size, void *hash, void *eq);
 size_t zyxrt_set_len(void *handle);
