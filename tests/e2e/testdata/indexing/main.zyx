@@ -37,7 +37,7 @@ func main() {
     var text = "abc"
     fmt.PrintU64(u64(text [1]))
     fmt.PrintNl()
-    var accent = "é"
+    var accent = "\u{e9}"
     fmt.PrintU64(u64(accent [0]))
     fmt.PrintNl()
     fmt.PrintU64(u64(accent [1]))
