@@ -127,13 +127,62 @@ func (g *generator) entryPoint() {
 	g.declareRuntime("zyxrt_run_main", "i32", "ptr", "ptr")
 	// The runtime runs the language main as the root coroutine, so it
 	// reaches the program through a thunk of the runtime's own signature.
+	// The process exit code is the value main returns, which the thunk
+	// leaves where the C main reads it.
+	result := g.funcResult(main)
+	if result != nil {
+		fmt.Fprintf(&g.m.funcs, "@zyx.exit = internal global i32 0\n")
+	}
 	fmt.Fprintf(&g.m.funcs, "define internal void @zyx.main.thunk(ptr %%arg) {\n")
 	fmt.Fprintf(&g.m.funcs, "  call void @zyx.globals()\n")
-	fmt.Fprintf(&g.m.funcs, "  call void @%s()\n", symbol)
+	if result == nil {
+		fmt.Fprintf(&g.m.funcs, "  call void @%s()\n", symbol)
+	} else {
+		code, err := g.exitCode(result, symbol)
+		if err != nil {
+			g.fail(err)
+		}
+		fmt.Fprintf(&g.m.funcs, "%s", code)
+		fmt.Fprintf(&g.m.funcs, "  store i32 %%zyx.code, ptr @zyx.exit\n")
+	}
 	fmt.Fprintf(&g.m.funcs, "  ret void\n}\n")
 	fmt.Fprintf(&g.m.funcs, "define i32 @main() {\n")
 	fmt.Fprintf(&g.m.funcs, "  call i32 @zyxrt_run_main(ptr @zyx.main.thunk, ptr null)\n")
-	fmt.Fprintf(&g.m.funcs, "  ret i32 0\n}\n")
+	if result == nil {
+		fmt.Fprintf(&g.m.funcs, "  ret i32 0\n}\n")
+		return
+	}
+	fmt.Fprintf(&g.m.funcs, "  %%zyx.status = load i32, ptr @zyx.exit\n")
+	fmt.Fprintf(&g.m.funcs, "  ret i32 %%zyx.status\n}\n")
+}
+
+// funcResult returns the declared result type of a function.
+func (g *generator) funcResult(n *zyxc.Node) *types.Type {
+	r := n.First("result")
+	if r == nil {
+		return nil
+	}
+	return g.typeOfNode(r, g.tab.module(symIDOf(n)))
+}
+
+// exitCode renders the call of main and the conversion of its result into
+// the process exit code.
+func (g *generator) exitCode(result *types.Type, symbol string) (string, error) {
+	ll := g.llPass(result)
+	if !strings.HasPrefix(ll, "i") {
+		return "", fmt.Errorf("llvmgen: main returns %s, which is not an exit code", result)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "  %%zyx.raw = call %s @%s()\n", ll, symbol)
+	switch {
+	case ll == "i32":
+		fmt.Fprintf(&b, "  %%zyx.code = add i32 %%zyx.raw, 0\n")
+	case llSize(ll) < 32:
+		fmt.Fprintf(&b, "  %%zyx.code = zext %s %%zyx.raw to i32\n", ll)
+	default:
+		fmt.Fprintf(&b, "  %%zyx.code = trunc %s %%zyx.raw to i32\n", ll)
+	}
+	return b.String(), nil
 }
 
 // paramType returns the declared type of a function parameter, whose

@@ -99,6 +99,28 @@ func programs(t *testing.T) []string {
 	return out
 }
 
+// TestProgramExitCode checks that the process exit code is the value the
+// language main returns.
+func TestProgramExitCode(t *testing.T) {
+	if _, err := toolchain.Locate(); err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	dir := t.TempDir()
+	files := map[string]string{
+		"zyx.mod":  "module example.com/exitcode\n\nzyx 0.1\n",
+		"main.zyx": "package main\n\nfunc main() -> i32 {\n\treturn 42\n}\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, stderr, code := run(dir, "run", "./...")
+	if code != 42 {
+		t.Errorf("exit code = %d, want 42\n%s", code, stderr)
+	}
+}
+
 // TestPrograms checks, builds, and runs every program of the corpus.
 func TestPrograms(t *testing.T) {
 	if _, err := toolchain.Locate(); err != nil {

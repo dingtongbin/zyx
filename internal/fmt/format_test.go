@@ -50,9 +50,35 @@ func TestFormatKeepsEveryToken(t *testing.T) {
 func TestFormatIndentsBlocks(t *testing.T) {
 	src := "package main\nfunc main() {\nfmt.Println(\"a\")\n}\n"
 	got := format(src)
-	want := "package main\nfunc main() {\n  fmt.Println(\"a\")\n}\n"
+	want := "package main\nfunc main() {\n    fmt.Println(\"a\")\n}\n"
 	if got != want {
 		t.Errorf("format =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestFormatKeepsAnEmptyBodyOnOneLine(t *testing.T) {
+	src := "package main\nfunc main() {\n}\nfunc other() {\n}\n"
+	got := format(src)
+	want := "package main\nfunc main() { }\nfunc other() { }\n"
+	if got != want {
+		t.Errorf("format =\n%q\nwant\n%q", got, want)
+	}
+	if again := format(got); again != got {
+		t.Errorf("an empty body is not idempotent:\n%q", again)
+	}
+}
+
+func TestFormatPutsPlainImportsBeforeCImports(t *testing.T) {
+	src := "package main\nimport c \"zyxrt.h\"\nimport \"std/fmt\"\nimport \"std/str\"\n\nfunc main() {\n}\n"
+	got := format(src)
+	fmtAt := strings.Index(got, "std/fmt")
+	strAt := strings.Index(got, "std/str")
+	cAt := strings.Index(got, "zyxrt.h")
+	if fmtAt < 0 || strAt < 0 || cAt < 0 {
+		t.Fatalf("an import was lost:\n%s", got)
+	}
+	if !(fmtAt < strAt && strAt < cAt) {
+		t.Errorf("imports are not grouped:\n%s", got)
 	}
 }
 

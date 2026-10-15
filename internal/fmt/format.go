@@ -46,6 +46,9 @@ type printer struct {
 	braces []bool
 	// line is the source line the last written token started on.
 	line int
+	// emptyBody marks an opening brace whose body holds nothing, which the
+	// format keeps on one line.
+	emptyBody bool
 }
 
 // run writes the whole token stream.
@@ -67,7 +70,9 @@ func (p *printer) token(toks []token.Token, i int) {
 		return
 	}
 	if t.Kind == token.Newline {
-		if p.separates() {
+		// A line break right after an opening brace adds nothing: the brace
+		// already ended its line, or opened an empty body.
+		if !p.emptyBody && p.prevKind() != token.LBrace && p.separates() {
 			p.newline()
 		}
 		p.prev = &toks[i]
@@ -92,7 +97,7 @@ func (p *printer) token(toks []token.Token, i int) {
 	if p.prev != nil && p.line > 0 && line > p.line+1 && p.indent == 0 && p.separates() {
 		p.newline()
 	}
-	if t.Kind == token.RBrace && p.inBlock() {
+	if t.Kind == token.RBrace && p.inBlock() && !p.emptyBody {
 		p.newline()
 		if p.indent > 0 {
 			p.indent--
@@ -112,16 +117,27 @@ func (p *printer) token(toks []token.Token, i int) {
 	case token.LBrace:
 		block := p.opensBlock(toks, i)
 		p.braces = append(p.braces, block)
-		if block {
-			p.indent++
-			p.newline()
+		if !block {
+			break
 		}
+		if nextSignificant(toks, i) == token.RBrace {
+			// An empty body is written on one line.
+			p.emptyBody = true
+			p.space()
+			break
+		}
+		p.indent++
+		p.newline()
 	case token.RBrace:
 		block := p.inBlock()
 		if n := len(p.braces); n > 0 {
 			p.braces = p.braces[:n-1]
 		}
 		if !block {
+			break
+		}
+		if p.emptyBody {
+			p.emptyBody = false
 			break
 		}
 		if i+1 < len(toks) && toks[i+1].Kind == token.Else {
@@ -150,6 +166,19 @@ func (p *printer) token(toks []token.Token, i int) {
 func (p *printer) inBlock() bool {
 	n := len(p.braces)
 	return n > 0 && p.braces[n-1]
+}
+
+// nextSignificant returns the kind of the next token that carries text,
+// skipping line breaks and comments.
+func nextSignificant(toks []token.Token, i int) token.Kind {
+	for j := i + 1; j < len(toks); j++ {
+		switch toks[j].Kind {
+		case token.Newline, token.Comment, token.EOF, token.Invalid:
+			continue
+		}
+		return toks[j].Kind
+	}
+	return token.Invalid
 }
 
 // separates reports whether a line break at this point separates two
@@ -238,12 +267,15 @@ func (p *printer) prevKind() token.Kind {
 func (p *printer) write(text string) {
 	if p.lineStart {
 		for i := 0; i < p.indent; i++ {
-			p.buf.WriteString("  ")
+			p.buf.WriteString(indentUnit)
 		}
 		p.lineStart = false
 	}
 	p.buf.WriteString(text)
 }
+
+// indentUnit is the indentation step the format prescribes.
+const indentUnit = "    "
 
 // space writes one space unless the line holds nothing yet.
 func (p *printer) space() {

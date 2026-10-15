@@ -71,9 +71,13 @@ func Locate() (*Toolchain, error) {
 }
 
 // candidateDirs lists the directories the toolchain search visits, in
-// order.
+// order. ZYX_LLVM_ROOT names the toolchain root the distribution ships, and
+// ZYX_LLVM_BIN names a directory of programs directly.
 func candidateDirs() []string {
 	var dirs []string
+	if root := os.Getenv("ZYX_LLVM_ROOT"); root != "" {
+		dirs = append(dirs, filepath.Join(root, "bin"), root)
+	}
 	if dir := os.Getenv("ZYX_LLVM_BIN"); dir != "" {
 		dirs = append(dirs, filepath.SplitList(dir)...)
 	}
