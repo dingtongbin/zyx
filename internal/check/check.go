@@ -528,9 +528,15 @@ func (c *checker) baseType(v *ast.TypeName) *types.Type {
 		return nil
 	}
 	out := c.typeOfSymbol(sym)
-	if out != nil {
-		c.out.Nodes[v.Name] = out
+	if out == nil {
+		// The name resolves, but it does not name a type. Reporting here
+		// keeps an unknown type from reaching the format as the text
+		// "invalid", which no later stage could tell from a real type.
+		c.errorHelp(diag.CodeTypeMismatch, v.Name.Sp,
+			"name a type here", "%s is not a type", v.Name.Name)
+		return nil
 	}
+	c.out.Nodes[v.Name] = out
 	return out
 }
 
