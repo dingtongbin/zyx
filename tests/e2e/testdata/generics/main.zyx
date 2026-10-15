@@ -1,0 +1,39 @@
+package main
+
+import "std/fmt"
+
+struct Pair<T> {
+	first: T
+	second: T
+
+	func First() -> T {
+		return self.first
+	}
+
+	func Second() -> T {
+		return self.second
+	}
+}
+
+func pick<T: Eq>(a: T, b: T, chooseFirst: bool) -> T {
+	if chooseFirst {
+		return a
+	}
+	return b
+}
+
+func main() {
+	var nums: Pair<i64> = Pair { first: 3, second: 4 }
+	fmt.PrintI64(nums.First())
+	fmt.PrintNl()
+	fmt.PrintI64(nums.Second())
+	fmt.PrintNl()
+
+	var words: Pair<str> = Pair { first: "hello", second: "world" }
+	fmt.Println(words.First())
+	fmt.Println(words.Second())
+
+	fmt.PrintI64(pick(7, 2, true))
+	fmt.PrintNl()
+	fmt.Println(pick("alpha", "beta", false))
+}

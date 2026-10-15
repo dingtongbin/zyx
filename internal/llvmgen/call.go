@@ -26,7 +26,7 @@ func (g *generator) call(module string, n *zyxc.Node) *value {
 		return nil
 	}
 	if decl := g.tab.decl(sym); decl == nil || decl.Kind != "func" {
-		g.fail(fmt.Errorf("llvmgen: %s is not a function", sym))
+		g.fail(fmt.Errorf("llvmgen: %s: %s is not a function", n.Pos, sym))
 		return nil
 	}
 	return g.directCall(module, n, sym, nil)
@@ -65,7 +65,7 @@ func (g *generator) methodCall(module string, n *zyxc.Node) *value {
 	}
 	decl := g.tab.decl(sym)
 	if decl == nil || decl.Kind != "func" {
-		g.fail(fmt.Errorf("llvmgen: the method %s has no declaration", n.Payload[0]))
+		g.fail(fmt.Errorf("llvmgen: the method %s has no declaration (%s)", n.Payload[0], sym))
 		return nil
 	}
 	return g.directCall(module, n, sym, recv)

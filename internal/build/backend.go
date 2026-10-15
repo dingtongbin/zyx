@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"zyx/internal/llvmgen"
+	"zyx/internal/mono"
 	"zyx/internal/toolchain"
 	"zyx/internal/zyxc"
 )
@@ -36,19 +37,7 @@ type BackendOptions struct {
 // Link compiles the trees of one entry package and links them with the
 // runtime. It returns the path of the executable.
 func (s *Session) Link(entry string, results []*Result, opts BackendOptions) (string, error) {
-	prog := &llvmgen.Program{Entry: entry, Files: map[string]*zyxc.File{}}
-	for _, res := range results {
-		if res.IR == nil {
-			continue
-		}
-		path := res.Package.ImportPath
-		prog.Order = append(prog.Order, path)
-		prog.Files[path] = res.IR
-	}
-	if prog.Files[entry] == nil {
-		return "", fmt.Errorf("package %s did not reach the backend", entry)
-	}
-	ir, err := llvmgen.Generate(prog, s.Loader.Target)
+	ir, err := s.IRText(entry, results)
 	if err != nil {
 		return "", err
 	}
@@ -114,9 +103,15 @@ func (s *Session) Link(entry string, results []*Result, opts BackendOptions) (st
 	return opts.Output, nil
 }
 
-// IRText returns the LLVM IR of an entry package without compiling it.
+// IRText returns the LLVM IR of an entry package without compiling it. The
+// trees pass through monomorphization first, so the backend sees only
+// concrete declarations.
 func (s *Session) IRText(entry string, results []*Result) ([]byte, error) {
-	prog := &llvmgen.Program{Entry: entry, Files: map[string]*zyxc.File{}}
+	prog := &mono.Program{
+		Target: s.Loader.Target.Triple,
+		Entry:  entry,
+		Files:  map[string]*zyxc.File{},
+	}
 	for _, res := range results {
 		if res.IR == nil {
 			continue
@@ -125,5 +120,11 @@ func (s *Session) IRText(entry string, results []*Result) ([]byte, error) {
 		prog.Order = append(prog.Order, path)
 		prog.Files[path] = res.IR
 	}
-	return llvmgen.Generate(prog, s.Loader.Target)
+	if prog.Files[entry] == nil {
+		return nil, fmt.Errorf("package %s did not reach the backend", entry)
+	}
+	if _, err := mono.Instantiate(prog); err != nil {
+		return nil, err
+	}
+	return llvmgen.Generate(&llvmgen.Program{Entry: prog.Entry, Order: prog.Order, Files: prog.Files}, s.Loader.Target)
 }

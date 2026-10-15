@@ -117,13 +117,24 @@ func namedSize(t *types.Type, p Provider, target Target, seen map[string]bool) (
 	return size, err
 }
 
+// typeKey returns the identity of a type for the cycle check. Two
+// instantiations of one generic type are different types, so the key is the
+// canonical text rather than the declaration id.
+func typeKey(t *types.Type) string {
+	if t == nil {
+		return ""
+	}
+	return t.String()
+}
+
 // namedLayout returns the size and alignment of a named aggregate type.
 func namedLayout(t *types.Type, p Provider, target Target, seen map[string]bool) (uint64, uint64, error) {
-	if seen[t.ID] {
-		return 0, 0, fmt.Errorf("layout: %s contains itself by value", t.ID)
+	key := typeKey(t)
+	if seen[key] {
+		return 0, 0, fmt.Errorf("layout: %s contains itself by value", t)
 	}
-	seen[t.ID] = true
-	defer delete(seen, t.ID)
+	seen[key] = true
+	defer delete(seen, key)
 
 	switch t.Kind {
 	case types.KindEnum:

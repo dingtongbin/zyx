@@ -255,6 +255,10 @@ func (g *generator) llType(t *types.Type) string {
 // llPass returns the LLVM type of a value in a register, a parameter, or a
 // local: an aggregate passes as the reference that names its object.
 func (g *generator) llPass(t *types.Type) string {
+	if t == nil {
+		g.fail(fmt.Errorf("llvmgen: a value has no type"))
+		return "i64"
+	}
 	if byAddress(t) {
 		return "ptr"
 	}
@@ -274,6 +278,9 @@ func (g *generator) ptrInt() string {
 // struct and a fixed-size array are created in a region, so a value of
 // either names an object rather than carrying one.
 func byAddress(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
 	switch t.Kind {
 	case types.KindStruct, types.KindExternStruct, types.KindUnion, types.KindEnum, types.KindArray:
 		return true
@@ -306,7 +313,7 @@ func (g *generator) typeOfNode(n *zyxc.Node, module string) *types.Type {
 	}
 	t, err := g.tab.parse(module, n.Payload[0])
 	if err != nil {
-		g.fail(err)
+		g.fail(fmt.Errorf("%s: %w", n.Pos, err))
 		return nil
 	}
 	return t

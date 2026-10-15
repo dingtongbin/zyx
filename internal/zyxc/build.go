@@ -807,6 +807,19 @@ func cName(fn ast.Expr) string {
 	return ""
 }
 
+// calleeTypeNode returns the `callee-type` child of a call, which records
+// the instantiated signature of the callee. A generic call is settled by
+// matching that signature against the declaration's own.
+func (b *builder) calleeTypeNode(id *ast.Ident) *Node {
+	if id == nil {
+		return nil
+	}
+	if t := b.staticType(id); t != nil {
+		return New("callee-type", b.typeText(t))
+	}
+	return nil
+}
+
 // args renders a call's arguments.
 func (b *builder) args(list []ast.Expr) []*Node {
 	out := make([]*Node, 0, len(list))
@@ -833,10 +846,16 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 			n := New("mcall", sel.Name.Name, b.memberID(sel.X, sel.Name.Name))
 			n.Child(b.wrap("recv", b.expr(sel.X)))
 			n.Child(b.args(v.Args)...)
+			if child := b.calleeTypeNode(sel.Name); child != nil {
+				n.Child(child)
+			}
 			return b.mark(b.at(n, v.Sp), v)
 		case b.isQualified(sel):
 			n := New("qual", nameOr(qualifierName(sel)), sel.Name.Name, b.symID(sel.Name))
 			n.Child(b.args(v.Args)...)
+			if child := b.calleeTypeNode(sel.Name); child != nil {
+				n.Child(child)
+			}
 			return b.at(n, v.Sp)
 		}
 		return nil

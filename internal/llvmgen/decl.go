@@ -172,11 +172,20 @@ func (g *generator) receiverType(n *zyxc.Node) *types.Type {
 	default:
 		return nil
 	}
-	t, err := g.tab.named(owner, "", node.Payload[0])
+	t, err := g.tab.named(owner, "", memberOfID(owner))
 	if err != nil {
 		return nil
 	}
 	return t
+}
+
+// memberOfID returns the last segment of a symbol id, which is the name the
+// declaration is written by inside its package.
+func memberOfID(id string) string {
+	if i := strings.LastIndex(id, "."); i >= 0 {
+		return id[i+1:]
+	}
+	return id
 }
 
 // signature returns the parameters and the result of a function, and the

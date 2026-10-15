@@ -25,7 +25,15 @@ type Resolver interface {
 // ParseType parses the canonical text of a type. A bare name resolves in
 // module, and a qualified name through the resolver.
 func ParseType(module, text string, r Resolver) (*types.Type, error) {
-	p := &typeParser{module: module, r: r, s: text}
+	return ParseTypeWith(module, text, r, nil)
+}
+
+// ParseTypeWith parses the canonical text of a type in the scope of a
+// declaration's type parameters. params maps a parameter name onto the type
+// that names it, so the text of a generic declaration reads back with its
+// parameters intact.
+func ParseTypeWith(module, text string, r Resolver, params map[string]*types.Type) (*types.Type, error) {
+	p := &typeParser{module: module, r: r, s: text, params: params}
 	t, err := p.parseType()
 	if err != nil {
 		return nil, err
@@ -94,6 +102,8 @@ type typeParser struct {
 	module string
 	s      string
 	i      int
+	// params maps the type-parameter names in scope onto their types.
+	params map[string]*types.Type
 }
 
 // skipSpace advances past spaces.
@@ -301,6 +311,9 @@ func (p *typeParser) named(qual, name string, args []*types.Type) (*types.Type, 
 				return pre, nil
 			}
 			return pre.Instantiate(args...), nil
+		}
+		if param, ok := p.params[name]; ok && len(args) == 0 {
+			return param, nil
 		}
 		return p.resolve(p.module+"."+name, "", name, args)
 	}

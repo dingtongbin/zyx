@@ -12,9 +12,9 @@ import (
 )
 
 // A Program is the input of the backend: the trees of every package that
-// takes part in the build, in dependency order. The backend reads only the
-// trees and the runtime header; it never reads source and never resolves a
-// name.
+// takes part in the build, in dependency order, after monomorphization. The
+// backend reads only the trees and the runtime header; it never reads
+// source and never resolves a name.
 type Program struct {
 	// Entry is the import path of the package that holds main.
 	Entry string
