@@ -6,6 +6,17 @@ struct Holder {
     slot: str
 }
 
+struct Shelf {
+    items: Array<i64>
+}
+
+func shelved() -> i64 {
+    var shelf = Shelf { items: new Array<i64> (2)}
+    var spare = new Array<i64> (4)
+    shelf.items = spare
+    return 1
+}
+
 struct Bag {
     total: i64
 }
@@ -55,6 +66,6 @@ func blocked(ch: chan<i64>) -> i64 {
 
 func main() {
     var ch = new chan<i64> (1)
-    var total = i64(local()) + stored() + moved() + blocked(ch)
+    var total = i64(local()) + stored() + moved() + blocked(ch) + shelved()
     fastCall()
 }

@@ -229,7 +229,12 @@ func (g *generator) release(typ *types.Type, slot string) {
 func (g *generator) allocateIn(n *zyxc.Node, typ *types.Type) string {
 	name := ""
 	for _, m := range n.Marks {
-		if m.Name == "home" {
+		switch m.Name {
+		case "home":
+			name = m.Arg
+		case "shared-bind":
+			// An object more than one region uses binds to the region that
+			// contains them all, which outlives every use.
 			name = m.Arg
 		}
 	}

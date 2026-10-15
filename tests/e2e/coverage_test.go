@@ -79,22 +79,21 @@ var coveredMarks = []string{
 	"alias", "boundary-clone", "boundary-share", "c-blocking", "chan:select",
 	"coro:handoff", "coro:host", "coro:panic-path", "coro:region", "coro:spawn",
 	"defer-site", "defers", "entry", "home", "init", "iter-guard", "last-use",
-	"move", "region:enter", "region:exit", "shared-ref", "shared-store",
-	"static-release", "transfer", "view-borrow", "watched",
+	"move", "region:enter", "region:exit", "shared-bind", "shared-ref",
+	"shared-store", "static-release", "transfer", "view-borrow", "watched",
 }
 
 // deferredMarks lists the marks the format defines that no corpus reaches
 // yet, with the reason. Every entry is work the front end still owes, not a
 // decision to drop the mark.
 var deferredMarks = map[string]string{
-	"c-fast":      unexercised,
-	"chan:close":  unexercised,
-	"chan:recv":   unexercised,
-	"chan:send":   unexercised,
-	"chan:try":    notEmitted,
-	"coro:body":   notEmitted,
-	"mono-rule":   notEmitted,
-	"shared-bind": notEmitted,
+	"c-fast":     unexercised,
+	"chan:close": unexercised,
+	"chan:recv":  unexercised,
+	"chan:send":  unexercised,
+	"chan:try":   notEmitted,
+	"coro:body":  notEmitted,
+	"mono-rule":  notEmitted,
 }
 
 // unexercised is the reason a mark the front end already produces is deferred:

@@ -248,8 +248,9 @@ func Work(h: Holder) {
 	info, diags := marksOf(t, src)
 	wantClean(t, diags)
 	wantMark(t, info, "shared-ref")
-	// The region that dominates every use needs the whole program.
-	wantMark(t, info, "mono-rule:home server.Work#2")
+	// An object stored where it outlives its binding binds to the region
+	// that contains every use, which here is the function body.
+	wantMark(t, info, "shared-bind:r0")
 }
 
 func TestViewStoredIsRejected(t *testing.T) {
