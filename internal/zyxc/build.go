@@ -5,6 +5,7 @@ package zyxc
 import (
 	"sort"
 	"strconv"
+	"strings"
 
 	"zyx/internal/ast"
 	"zyx/internal/check"
@@ -94,12 +95,58 @@ func (b *builder) at(n *Node, sp source.Span) *Node {
 	return n.At(b.pos(sp))
 }
 
-// typeText renders a type the way the format writes it.
-func typeText(t *types.Type) string {
+// typeText renders a type the way the format writes it. Every named type
+// the package does not declare is written with its package qualifier, so
+// the text names its package wherever it appears and a reader resolves it
+// without guessing.
+func (b *builder) typeText(t *types.Type) string {
 	if t == nil {
 		return "invalid"
 	}
-	return t.String()
+	return b.qualified(t).String()
+}
+
+// qualified returns a copy of a type in which every named type the current
+// package does not declare carries its package qualifier.
+func (b *builder) qualified(t *types.Type) *types.Type {
+	if t == nil {
+		return nil
+	}
+	switch t.Kind {
+	case types.KindTuple, types.KindFunc:
+		out := *t
+		out.Elems = make([]*types.Type, len(t.Elems))
+		for i, e := range t.Elems {
+			out.Elems[i] = b.qualified(e)
+		}
+		out.Result = b.qualified(t.Result)
+		return &out
+	case types.KindArray, types.KindSlice, types.KindChan:
+		out := *t
+		out.Elem = b.qualified(t.Elem)
+		return &out
+	}
+	if !t.IsNamed() || t.Pkg == "" || t.Pkg == b.pkg.Path || t.Qual != "" {
+		return t
+	}
+	out := *t
+	out.Qual = packageQualifier(t.Pkg)
+	if len(t.Args) > 0 {
+		out.Args = make([]*types.Type, len(t.Args))
+		for i, a := range t.Args {
+			out.Args[i] = b.qualified(a)
+		}
+	}
+	return &out
+}
+
+// packageQualifier returns the name a package is written by, which is its
+// last path segment.
+func packageQualifier(path string) string {
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		return path[i+1:]
+	}
+	return path
 }
 
 // importNode renders one import declaration.
@@ -116,7 +163,7 @@ func (b *builder) decl(decl ast.Decl) *Node {
 	case *ast.ConstDecl:
 		n := New("const", d.Name.Name, b.symID(d.Name))
 		if d.Type != nil {
-			n.Child(New("type", typeText(b.cpkg.Nodes[d.Type])))
+			n.Child(New("type", b.typeText(b.cpkg.Nodes[d.Type])))
 		}
 		if d.Value != nil {
 			n.Child(b.expr(d.Value))
@@ -128,7 +175,7 @@ func (b *builder) decl(decl ast.Decl) *Node {
 			n.Payload = append(n.Payload, name.Name, b.symID(name))
 		}
 		if d.Type != nil {
-			n.Child(New("type", typeText(b.cpkg.Nodes[d.Type])))
+			n.Child(New("type", b.typeText(b.cpkg.Nodes[d.Type])))
 		}
 		if d.Value != nil {
 			n.Child(b.expr(d.Value))
@@ -137,7 +184,7 @@ func (b *builder) decl(decl ast.Decl) *Node {
 	case *ast.TypeAlias:
 		n := New("alias", d.Name.Name, b.symID(d.Name))
 		if d.Type != nil {
-			n.Child(New("type", typeText(b.cpkg.Nodes[d.Type])))
+			n.Child(New("type", b.typeText(b.cpkg.Nodes[d.Type])))
 		}
 		return b.at(n, d.Sp)
 	case *ast.FuncDecl:
@@ -185,14 +232,14 @@ func (b *builder) member(member ast.Decl) *Node {
 	case *ast.ConstDecl:
 		n := New("const", m.Name.Name, b.symID(m.Name))
 		if m.Type != nil {
-			n.Child(New("type", typeText(b.cpkg.Nodes[m.Type])))
+			n.Child(New("type", b.typeText(b.cpkg.Nodes[m.Type])))
 		}
 		if m.Value != nil {
 			n.Child(b.expr(m.Value))
 		}
 		return b.at(n, m.Sp)
 	case *ast.ImplBlock:
-		n := New("impl", typeText(b.cpkg.Nodes[m.Interface]))
+		n := New("impl", b.typeText(b.cpkg.Nodes[m.Interface]))
 		n.Child(b.typeParams(m.TypeParams)...)
 		for _, f := range m.Methods {
 			n.Child(b.funcNode(f))
@@ -219,7 +266,7 @@ func (b *builder) typeParams(params []*ast.TypeParam) []*Node {
 		}
 		n := New("param", tp.Name.Name, b.symID(tp.Name))
 		for _, c := range tp.Constraints {
-			n.Payload = append(n.Payload, typeText(b.cpkg.Nodes[c]))
+			n.Payload = append(n.Payload, b.typeText(b.cpkg.Nodes[c]))
 		}
 		out = append(out, b.at(n, tp.Sp))
 	}
@@ -252,11 +299,11 @@ func (b *builder) funcNode(f *ast.FuncDecl) *Node {
 		} else {
 			pn.Payload = append(pn.Payload, "...")
 		}
-		pn.Payload = append(pn.Payload, typeText(b.cpkg.Nodes[p.Type]))
+		pn.Payload = append(pn.Payload, b.typeText(b.cpkg.Nodes[p.Type]))
 		n.Child(b.at(pn, p.Sp))
 	}
 	if f.Result != nil {
-		n.Child(b.at(New("result", typeText(b.cpkg.Nodes[f.Result])), f.Result.Span()))
+		n.Child(b.at(New("result", b.typeText(b.cpkg.Nodes[f.Result])), f.Result.Span()))
 	}
 	if f.Body != nil {
 		n.Child(b.block(f.Body))
@@ -274,11 +321,11 @@ func (b *builder) sigNode(f *ast.FuncDecl) *Node {
 		if p.Name != nil {
 			pn.Payload = append(pn.Payload, p.Name.Name)
 		}
-		pn.Payload = append(pn.Payload, typeText(b.cpkg.Nodes[p.Type]))
+		pn.Payload = append(pn.Payload, b.typeText(b.cpkg.Nodes[p.Type]))
 		n.Child(b.at(pn, p.Sp))
 	}
 	if f.Result != nil {
-		n.Child(b.at(New("result", typeText(b.cpkg.Nodes[f.Result])), f.Result.Span()))
+		n.Child(b.at(New("result", b.typeText(b.cpkg.Nodes[f.Result])), f.Result.Span()))
 	}
 	return b.at(n, f.Sp)
 }
@@ -309,7 +356,7 @@ func (b *builder) structNode(d *ast.StructDecl) *Node {
 
 // fieldNode renders a field.
 func (b *builder) fieldNode(f *ast.FieldDecl) *Node {
-	return b.at(New("field", f.Name.Name, typeText(b.cpkg.Nodes[f.Type])), f.Sp)
+	return b.at(New("field", f.Name.Name, b.typeText(b.cpkg.Nodes[f.Type])), f.Sp)
 }
 
 // variantNode renders an enum variant.
@@ -318,7 +365,7 @@ func (b *builder) variantNode(v *ast.VariantDecl) *Node {
 	if len(v.Payload) > 0 {
 		parts := make([]string, 0, len(v.Payload))
 		for _, t := range v.Payload {
-			parts = append(parts, typeText(b.cpkg.Nodes[t]))
+			parts = append(parts, b.typeText(b.cpkg.Nodes[t]))
 		}
 		n.Child(New("type", "("+joinComma(parts)+")"))
 	}
@@ -335,6 +382,21 @@ func joinComma(parts []string) string {
 		out += p
 	}
 	return out
+}
+
+// bindingType returns the `type` child of a local binding. A declared type
+// wins; otherwise the type of the initializer settles a binding that
+// introduces one name.
+func (b *builder) bindingType(decl ast.Node, value ast.Expr, names int) *Node {
+	if t := b.staticType(decl); t != nil {
+		return New("type", b.typeText(t))
+	}
+	if names == 1 {
+		if t := b.staticType(value); t != nil {
+			return New("type", b.typeText(t))
+		}
+	}
+	return nil
 }
 
 // block renders a statement block.
@@ -365,8 +427,8 @@ func (b *builder) stmt(s ast.Stmt) *Node {
 		for _, name := range v.Names {
 			n.Payload = append(n.Payload, name.Name, b.symID(name))
 		}
-		if v.Type != nil {
-			n.Child(New("type", typeText(b.cpkg.Nodes[v.Type])))
+		if child := b.bindingType(v.Type, v.Value, len(v.Names)); child != nil {
+			n.Child(child)
 		}
 		if v.Value != nil {
 			n.Child(b.expr(v.Value))
@@ -374,8 +436,8 @@ func (b *builder) stmt(s ast.Stmt) *Node {
 		return b.at(n, v.Sp)
 	case *ast.ConstDecl:
 		n := New("bind-const", v.Name.Name, b.symID(v.Name))
-		if v.Type != nil {
-			n.Child(New("type", typeText(b.cpkg.Nodes[v.Type])))
+		if child := b.bindingType(v.Type, v.Value, 1); child != nil {
+			n.Child(child)
 		}
 		if v.Value != nil {
 			n.Child(b.expr(v.Value))
@@ -482,6 +544,14 @@ func (b *builder) forNode(v *ast.ForStmt) *Node {
 			n.Payload = append(n.Payload, "_", "")
 		}
 		n.Child(b.wrap("iter", b.expr(v.Iter)))
+		for _, binding := range v.Bindings {
+			if binding == nil {
+				continue
+			}
+			if t := b.staticType(binding); t != nil {
+				n.Child(New("type", b.typeText(t)))
+			}
+		}
 	} else if v.Iter != nil {
 		n.Child(b.wrap("cond", b.expr(v.Iter)))
 	}
@@ -537,7 +607,11 @@ func (b *builder) pattern(p ast.Pattern) *Node {
 	case *ast.WildcardPattern:
 		return b.at(New("pat-wild"), v.Sp)
 	case *ast.BindPattern:
-		return b.at(New("pat-bind", v.Name.Name, b.symID(v.Name)), v.Sp)
+		n := New("pat-bind", v.Name.Name, b.symID(v.Name))
+		if t := b.staticType(v.Name); t != nil {
+			n.Child(New("type", b.typeText(t)))
+		}
+		return b.at(n, v.Sp)
 	case *ast.LitPattern:
 		return b.at(New("pat-lit", v.X.Value), v.Sp)
 	case *ast.VariantPattern:
@@ -567,8 +641,43 @@ func (b *builder) pattern(p ast.Pattern) *Node {
 	return nil
 }
 
-// expr renders an expression.
+// staticType returns the static type of an expression, or nil when the
+// expression produces no value. The format writes no annotation for a
+// result-free expression, the same way a function with no result writes no
+// `result` node.
+func (b *builder) staticType(e ast.Node) *types.Type {
+	if e == nil {
+		return nil
+	}
+	t := b.cpkg.Nodes[e]
+	if t == nil || t.Kind == types.Invalid {
+		return nil
+	}
+	return t
+}
+
+// annotate records the static type of an expression, which the backend
+// consumes and never has to infer.
+func (b *builder) annotate(n *Node, e ast.Expr) *Node {
+	if n == nil {
+		return n
+	}
+	if t := b.staticType(e); t != nil {
+		n.Child(New("type", b.typeText(t)))
+	}
+	return n
+}
+
+// expr renders an expression and records its static type. The annotation
+// settles every question the backend would otherwise have to answer by
+// inference: the type of a literal, of a call whose callee carries no
+// declaration, and of an unannotated binding.
 func (b *builder) expr(e ast.Expr) *Node {
+	return b.annotate(b.exprNode(e), e)
+}
+
+// exprNode renders an expression without its type annotation.
+func (b *builder) exprNode(e ast.Expr) *Node {
 	switch v := e.(type) {
 	case nil:
 		return nil
@@ -591,7 +700,7 @@ func (b *builder) expr(e ast.Expr) *Node {
 		n := New("addr").Child(b.wrap("operand", b.expr(v.X)))
 		return b.at(n, v.Sp)
 	case *ast.IsExpr:
-		n := New("is", typeText(b.cpkg.Nodes[v.Type])).Child(b.wrap("operand", b.expr(v.X)))
+		n := New("is", b.typeText(b.cpkg.Nodes[v.Type])).Child(b.wrap("operand", b.expr(v.X)))
 		return b.at(n, v.Sp)
 	case *ast.CallExpr:
 		if n := b.callNode(v); n != nil {
@@ -624,7 +733,7 @@ func (b *builder) expr(e ast.Expr) *Node {
 		n.Child(b.wrap("hi", b.expr(v.Hi)))
 		return b.at(n, v.Sp)
 	case *ast.NewExpr:
-		n := New("new", typeText(b.cpkg.Nodes[v.Type]))
+		n := New("new", b.typeText(b.cpkg.Nodes[v.Type]))
 		for _, a := range v.Args {
 			n.Child(b.wrap("arg", b.expr(a)))
 		}
@@ -655,11 +764,11 @@ func (b *builder) expr(e ast.Expr) *Node {
 	case *ast.LambdaExpr:
 		n := New("lambda", "")
 		for _, p := range v.Params {
-			pn := New("param", nameOr(p.Name), typeText(b.cpkg.Nodes[p.Type]))
+			pn := New("param", nameOr(p.Name), b.typeText(b.cpkg.Nodes[p.Type]))
 			n.Child(b.at(pn, p.Sp))
 		}
 		if v.Result != nil {
-			n.Child(New("result", typeText(b.cpkg.Nodes[v.Result])))
+			n.Child(New("result", b.typeText(b.cpkg.Nodes[v.Result])))
 		}
 		if v.Body != nil {
 			n.Child(b.wrap("body", b.block(v.Body)))
@@ -717,7 +826,7 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 			n.Child(b.args(v.Args)...)
 			return b.mark(b.at(n, v.Sp), v)
 		case b.isVariant(sel):
-			n := New("variant-lit", typeText(b.cpkg.Nodes[sel.X]), sel.Name.Name)
+			n := New("variant-lit", b.typeText(b.cpkg.Nodes[sel.X]), sel.Name.Name)
 			n.Child(b.args(v.Args)...)
 			return b.at(n, v.Sp)
 		case b.isMethodCall(sel):
@@ -733,7 +842,7 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 		return nil
 	}
 	if id, ok := v.Fn.(*ast.Ident); ok && b.isTypeCallee(id) {
-		n := New("convert", typeText(b.cpkg.Nodes[id]))
+		n := New("convert", b.typeText(b.cpkg.Nodes[id]))
 		n.Child(b.wrap("operand", b.expr(firstArg(v))))
 		return b.at(n, v.Sp)
 	}
@@ -787,7 +896,7 @@ func (b *builder) selector(v *ast.SelectorExpr) *Node {
 	case b.isCCall(v):
 		return b.at(New("c-call", v.Name.Name), v.Sp)
 	case b.isVariant(v):
-		n := New("variant-lit", typeText(b.cpkg.Nodes[v.X]), v.Name.Name)
+		n := New("variant-lit", b.typeText(b.cpkg.Nodes[v.X]), v.Name.Name)
 		return b.at(n, v.Sp)
 	case b.isMethodCall(v):
 		n := New("mcall", v.Name.Name, b.memberID(v.X, v.Name.Name))
@@ -899,7 +1008,7 @@ func (b *builder) aggregate(v *ast.AggregateLitExpr) *Node {
 			kind = "set-lit"
 		}
 	}
-	n := New(kind, typeText(typ))
+	n := New(kind, b.typeText(typ))
 	for _, entry := range v.Entries {
 		switch kind {
 		case "map-lit":

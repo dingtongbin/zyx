@@ -73,12 +73,16 @@ func (g *generator) toBool(v *value) string {
 	return reg
 }
 
-// expr lowers one expression. want is the type the context expects, which
-// settles the type of a literal and of an untyped aggregate; it may be nil.
+// expr lowers one expression. The tree records the static type of every
+// expression, so the annotation wins over want, which only settles a node
+// the backend synthesized itself.
 func (g *generator) expr(module string, n *zyxc.Node, want *types.Type) *value {
 	if n == nil {
 		g.fail(fmt.Errorf("llvmgen: a missing expression"))
 		return nil
+	}
+	if t := g.typeOfNode(n.First("type"), module); t != nil {
+		want = t
 	}
 	switch n.Kind {
 	case "name":
@@ -146,92 +150,40 @@ func (g *generator) name(module string, n *zyxc.Node) *value {
 	return nil
 }
 
-// bindingType returns the declared type of a top-level binding.
+// bindingType returns the declared type of a top-level binding. The tree
+// annotates every binding, so no initializer is ever inspected.
 func (g *generator) bindingType(module string, decl *zyxc.Node, id string) *types.Type {
 	if decl.Kind == "func" {
 		return nil
 	}
-	if t := g.typeOfNode(decl.First("type"), g.tab.module(id)); t != nil {
-		return t
-	}
-	if decl.Kind == "var" {
-		// The initializer settles the type of an unannotated binding.
-		init := g.initChild(decl)
-		if init != nil {
-			v := g.constType(g.tab.module(id), init)
-			if v != nil {
-				return v
-			}
-		}
-	}
-	return nil
+	return g.typeOfNode(decl.First("type"), g.tab.module(id))
 }
 
-// constType infers the type of a constant initializer without emitting it.
-func (g *generator) constType(module string, n *zyxc.Node) *types.Type {
-	if n == nil {
-		return nil
-	}
-	switch n.Kind {
-	case "lit":
-		return g.literalType(n)
-	case "unary":
-		return g.constType(module, g.wrapped(n, "operand"))
-	case "binary":
-		return g.constType(module, g.wrapped(n, "lhs"))
-	case "name":
-		if len(n.Payload) >= 2 {
-			if slot, ok := g.fn.vars[n.Payload[1]]; ok {
-				return slot.typ
-			}
-			if decl := g.tab.decl(n.Payload[1]); decl != nil {
-				return g.bindingType(module, decl, n.Payload[1])
-			}
-		}
-	case "struct-lit":
-		if len(n.Payload) > 0 {
-			t, err := g.tab.parse(module, n.Payload[0])
-			if err == nil {
-				return t
-			}
+// parts returns the number of children of a node other than its type
+// annotation.
+func (g *generator) parts(n *zyxc.Node) int {
+	count := 0
+	for _, child := range n.Children {
+		if child.Kind != "type" {
+			count++
 		}
 	}
-	return nil
+	return count
 }
 
-// literalType returns the type a literal carries with no context.
-func (g *generator) literalType(n *zyxc.Node) *types.Type {
-	if len(n.Payload) == 0 {
-		return nil
-	}
-	text := n.Payload[0]
-	if text == "true" || text == "false" {
-		return types.Bool
-	}
-	if _, err := parseIntLiteral(text); err == nil {
-		return types.Int64
-	}
-	if _, err := strconv.ParseFloat(text, 64); err == nil {
-		return types.Float64
-	}
-	return types.Str
-}
-
-// literal lowers a literal.
+// literal lowers a literal. The annotated type settles which literal form
+// it is: a character, a string, a number, or a boolean.
 func (g *generator) literal(module string, n *zyxc.Node, want *types.Type) *value {
 	if len(n.Payload) == 0 {
 		g.fail(fmt.Errorf("llvmgen: a literal needs a value"))
 		return nil
 	}
-	if len(n.Children) != 0 {
+	if g.parts(n) != 0 {
 		g.fail(fmt.Errorf("llvmgen: an interpolated string is not lowered"))
 		return nil
 	}
 	text := n.Payload[0]
 	typ := want
-	if typ == nil {
-		typ = g.literalType(n)
-	}
 	if typ == nil {
 		g.fail(fmt.Errorf("llvmgen: the type of literal %q is not settled", text))
 		return nil

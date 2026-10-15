@@ -52,9 +52,6 @@ func (g *generator) globalValue(module string, n *zyxc.Node, id, name string) {
 		return
 	}
 	if typ == nil {
-		typ = g.constType(module, init)
-	}
-	if typ == nil {
 		g.fail(fmt.Errorf("llvmgen: the type of global %s is not settled", name))
 		return
 	}
