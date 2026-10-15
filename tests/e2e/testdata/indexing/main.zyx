@@ -32,4 +32,14 @@ func main() {
     fmt.PrintI64((nested.0).0)
     fmt.PrintNl()
     fmt.Println((nested.0).1)
+    // A str is indexed by its bytes, so a multi-byte character reads as the
+    // bytes it is written with.
+    var text = "abc"
+    fmt.PrintU64(u64(text [1]))
+    fmt.PrintNl()
+    var accent = "é"
+    fmt.PrintU64(u64(accent [0]))
+    fmt.PrintNl()
+    fmt.PrintU64(u64(accent [1]))
+    fmt.PrintNl()
 }

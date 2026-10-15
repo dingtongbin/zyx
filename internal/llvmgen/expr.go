@@ -1014,6 +1014,17 @@ func (g *generator) index(module string, n *zyxc.Node) *value {
 		g.emit("  %s = getelementptr inbounds %s, ptr %s, i64 %s",
 			reg, g.llType(recv.typ.Elem), ptrReg, idx.text)
 		return &value{text: reg, ll: g.llPass(recv.typ.Elem), typ: recv.typ.Elem, lvalue: true, inline: true}
+	case types.KindStr:
+		// A str is indexed by its bytes, and the index is checked like any
+		// other.
+		ptrReg := g.newReg()
+		g.emit("  %s = extractvalue %s %s, 0", ptrReg, recv.ll, recv.text)
+		lenReg := g.newReg()
+		g.emit("  %s = extractvalue %s %s, 1", lenReg, recv.ll, recv.text)
+		g.guardIndex(idx.text, lenReg)
+		reg := g.newReg()
+		g.emit("  %s = getelementptr inbounds i8, ptr %s, i64 %s", reg, ptrReg, idx.text)
+		return &value{text: reg, ll: "i8", typ: types.Uint8, lvalue: true, inline: true}
 	}
 	g.fail(fmt.Errorf("llvmgen: indexing %s is not lowered", recv.typ))
 	return nil

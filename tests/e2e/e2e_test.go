@@ -157,6 +157,7 @@ func TestInsertedChecksPanic(t *testing.T) {
 		{"shift amount does not fit on the right", "var one: u64 = 1\n\tvar wide: u64 = 64\n\tfmt.PrintU64(one >> wide)", "panic: shift amount out of range"},
 		{"index leaves the array", "var xs: [i64; 4] = [1, 2, 3, 4]\n\tfmt.PrintI64(xs[7])", "panic: index out of range"},
 		{"index leaves the view", "var xs: [i64; 4] = [1, 2, 3, 4]\n\tvar view = xs[1..3]\n\tfmt.PrintI64(view[9])", "panic: index out of range"},
+		{"index leaves the string", "var text = \"abc\"\n\tfmt.PrintU64(u64(text[9]))", "panic: index out of range"},
 		{"a negative index reads as a large one", "var xs: [i64; 4] = [1, 2, 3, 4]\n\tvar at: i64 = -1\n\tfmt.PrintI64(xs[usize(at)])", "panic: index out of range"},
 	}
 	for _, level := range []string{"-O0", "-O2", "-O3"} {
