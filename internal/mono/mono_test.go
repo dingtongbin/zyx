@@ -174,12 +174,13 @@ func TestInstanceNamesCarryTheirSignature(t *testing.T) {
 	}
 }
 
-// TestInstantiateDoesNotInferFromArguments checks that the type arguments of
-// a use come from the callee's own annotation. A callee that carries the
-// generic signature supplies no instantiation, and the arguments of the call
-// must not stand in for it: reading them here would put a second, weaker copy
-// of the front end's rule in this stage.
-func TestInstantiateDoesNotInferFromArguments(t *testing.T) {
+// TestInstantiateRejectsAUseWithoutAnInstantiatedSignature checks that the
+// type arguments of a use come from the callee's own annotation, and that a
+// use which carries none is an error rather than a dangling name. Reading the
+// arguments of the call instead would put a second, weaker copy of the front
+// end's rule in this stage, and rewriting past the use would hand the backend
+// a name that no declaration answers to.
+func TestInstantiateRejectsAUseWithoutAnInstantiatedSignature(t *testing.T) {
 	file := &zyxc.File{Target: "amd64-unknown-linux-gnu", Module: "example.com/app"}
 	file.Decls = []*zyxc.Node{
 		zyxc.New("func", "twice", "plain", "example.com/app.twice").
@@ -207,12 +208,12 @@ func TestInstantiateDoesNotInferFromArguments(t *testing.T) {
 		Order:  []string{"example.com/app"},
 		Files:  map[string]*zyxc.File{"example.com/app": file},
 	}
-	count, err := Instantiate(p)
-	if err != nil {
-		t.Fatal(err)
+	_, err := Instantiate(p)
+	if err == nil {
+		t.Fatal("a use with no instantiated signature must be an error")
 	}
-	if count != 0 {
-		t.Errorf("instances = %d, want none: a generic callee supplies no type arguments", count)
+	if !strings.Contains(err.Error(), "example.com/app.twice") {
+		t.Errorf("the error does not name the declaration: %v", err)
 	}
 	if strings.Contains(text(p), "twice$$") {
 		t.Error("a callee with the generic signature produced an instance")

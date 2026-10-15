@@ -56,6 +56,9 @@ func Instantiate(p *Program) (int, error) {
 		}
 		file.Decls = kept
 		file.Exports = zyxc.ExportsHash(file.Decls)
+		if m.err != nil {
+			return m.count, m.err
+		}
 	}
 	for len(m.pending) > 0 {
 		req := m.pending[0]
@@ -81,6 +84,17 @@ type instantiator struct {
 	// queued records the instance ids already requested or built.
 	queued map[string]bool
 	count  int
+	// err holds the first use whose type arguments could not be settled.
+	err error
+}
+
+// fail records the first error. A reference the front end left without an
+// instantiated signature must not reach the backend as a dangling name, so
+// the pass stops rather than rewriting part of a program.
+func (m *instantiator) fail(format string, args ...any) {
+	if m.err == nil {
+		m.err = fmt.Errorf("mono: "+format, args...)
+	}
 }
 
 // A request is one instance to build: a generic declaration and the type
@@ -338,6 +352,7 @@ func (m *instantiator) reference(module string, n *zyxc.Node, id string) string 
 	if generic(decl) {
 		args, ok := m.typeArguments(module, n, decl)
 		if !ok {
+			m.fail("the use of %s carries no instantiated signature, so its type arguments cannot be settled", id)
 			return ""
 		}
 		return m.request(decl, m.modules[id], decl.Payload[0], args)
