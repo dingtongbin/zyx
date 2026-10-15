@@ -69,6 +69,20 @@ void zyxrt_sched_suspend(zyxrt_coro *c) {
   zyxrt_ctx_switch(c->ctx, sched_ctx);
 }
 
+/* zyxrt_sched_abandon ends the running coroutine and returns to the
+   scheduler without returning into the coroutine's stack. A panic uses it:
+   the frames above the raise point are left where they are, because the
+   coroutine's region is released as a whole. */
+void zyxrt_sched_abandon(zyxrt_coro *c) {
+  if (c->region != NULL) {
+    zyxrt_region_free(c->region);
+    c->region = NULL;
+  }
+  c->done = 1;
+  current = NULL;
+  zyxrt_ctx_switch(c->ctx, sched_ctx);
+}
+
 void zyxrt_sched_yield(void) {
   zyxrt_coro *self = current;
   if (!self) return;
@@ -123,4 +137,11 @@ void zyxrt_sched_wake(zyxrt_coro **list) {
     zyxrt_sched_ready(c);
     c = next;
   }
+}
+
+/* zyxrt_coro_panic returns the exception a coroutine raised, or NULL. */
+void *zyxrt_coro_panic(void *handle) {
+  zyxrt_coro *c = (zyxrt_coro *)handle;
+  if (!c) return NULL;
+  return c->panic;
 }

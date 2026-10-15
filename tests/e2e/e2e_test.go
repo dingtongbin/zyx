@@ -99,6 +99,36 @@ func programs(t *testing.T) []string {
 	return out
 }
 
+// TestCoroutinePanicIsContained checks that a panic in a spawned coroutine
+// is reported, recorded for whoever joins it, and does not end the process.
+func TestCoroutinePanicIsContained(t *testing.T) {
+	if _, err := toolchain.Locate(); err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	dir := t.TempDir()
+	files := map[string]string{
+		"zyx.mod": "module example.com/panics\n\nzyx 0.1\n",
+		"main.zyx": "package main\n\nimport \"std/fmt\"\n\nfunc boom() {\n\tpanic(\"boom\")\n}\n\n" +
+			"func calm() {\n\tfmt.Println(\"calm ran\")\n}\n\n" +
+			"func main() {\n\tfmt.Println(\"start\")\n\tregion {\n\t\tspawn boom()\n\t\tspawn calm()\n\t}\n\tfmt.Println(\"end\")\n}\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdout, stderr, code := run(dir, "run", "./...")
+	if code != 0 {
+		t.Errorf("the process ended with %d, want 0: a coroutine's panic belongs to the coroutine", code)
+	}
+	if !strings.Contains(stdout, "start") || !strings.Contains(stdout, "calm ran") || !strings.Contains(stdout, "end") {
+		t.Errorf("the program did not run to the end:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "panic: boom") {
+		t.Errorf("the panic was not reported:\n%s", stderr)
+	}
+}
+
 // TestProgramExitCode checks that the process exit code is the value the
 // language main returns.
 func TestProgramExitCode(t *testing.T) {

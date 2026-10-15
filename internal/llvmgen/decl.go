@@ -386,7 +386,9 @@ func (g *generator) function(module string, n *zyxc.Node) {
 		}
 	}
 	out.WriteString(strings.Join(parts, ", "))
-	out.WriteString(") {\n")
+	// uwtable keeps the frame's unwind information, which a panic needs to
+	// walk past it.
+	out.WriteString(") uwtable {\n")
 	out.WriteString(g.fn.entry + ":\n")
 	out.WriteString(g.fn.allocas.String())
 	out.WriteString(g.fn.body.String())

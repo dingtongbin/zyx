@@ -7,7 +7,8 @@
 int zyxrt_run_main(zyxrt_main_fn fn, void *arg) {
   zyxrt_platform_init();
   zyxrt_sched_init();
-  zyxrt_coro_spawn((zyxrt_fn)fn, arg);
+  zyxrt_coro *root = zyxrt_coro_spawn((zyxrt_fn)fn, arg);
+  root->root = 1;
   while (zyxrt_sched_run_once()) {
   }
   zyxrt_sched_shutdown();

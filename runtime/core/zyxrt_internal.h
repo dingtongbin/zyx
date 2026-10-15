@@ -13,6 +13,10 @@ typedef struct zyxrt_coro {
   void *arg;
   void *region;
   void *result;
+  /* panic holds the exception the coroutine raised, or NULL. */
+  void *panic;
+  /* root marks the coroutine that runs the language main function. */
+  int root;
   int done;
   void *stack;
   size_t stack_size;
@@ -38,6 +42,10 @@ void zyxrt_sched_init(void);
 void zyxrt_sched_shutdown(void);
 void zyxrt_sched_ready(zyxrt_coro *c);
 void zyxrt_sched_suspend(zyxrt_coro *c);
+/* zyxrt_sched_abandon ends the running coroutine and returns to the
+   scheduler. A panic uses it, because the coroutine's stack must not be
+   returned into. */
+void zyxrt_sched_abandon(zyxrt_coro *c);
 void zyxrt_sched_yield(void);
 int zyxrt_sched_run_once(void);
 zyxrt_coro *zyxrt_sched_current(void);

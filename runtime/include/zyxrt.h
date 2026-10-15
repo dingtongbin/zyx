@@ -39,6 +39,10 @@ typedef void (*zyxrt_fn)(void *arg);
 void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg);
 void *zyxrt_coro_join(void *handle);
 int zyxrt_coro_try_join(void *handle, void **result);
+/* zyxrt_coro_panic returns the exception a coroutine raised, or NULL. */
+void *zyxrt_coro_panic(void *handle);
+/* zyxrt_panic_message returns the text of an exception. */
+const char *zyxrt_panic_message(const void *panic, size_t *len);
 
 /* Channels. A channel carries values of one size, up to a fixed capacity. */
 void *zyxrt_chan_new(size_t elem, size_t cap);

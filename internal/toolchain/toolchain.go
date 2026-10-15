@@ -307,6 +307,9 @@ func (t *Toolchain) Link(objects []string, out string, libs, libDirs []string) e
 		args = append(args, "-l"+lib)
 	}
 	args = append(args, "-lm")
+	// A static link keeps the unwinder and the C runtime inside the
+	// executable, so a built program runs wherever it is copied to.
+	args = append(args, "-static")
 	return t.run(t.CC, args)
 }
 
