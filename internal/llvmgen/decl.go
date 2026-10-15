@@ -49,14 +49,14 @@ func (g *generator) globalValue(module string, n *zyxc.Node, id, name string) {
 			g.fail(fmt.Errorf("llvmgen: the type of global %s is not settled", name))
 			return
 		}
-		fmt.Fprintf(&g.m.funcs, "%s = internal global %s %s\n", llvmName(id), g.llType(typ), g.zero(typ))
+		fmt.Fprintf(&g.m.funcs, "@%s = internal global %s %s\n", llvmName(id), g.llType(typ), g.zero(typ))
 		return
 	}
 	if typ == nil {
 		g.fail(fmt.Errorf("llvmgen: the type of global %s is not settled", name))
 		return
 	}
-	fmt.Fprintf(&g.m.funcs, "%s = internal global %s %s\n", llvmName(id), g.llType(typ), g.zero(typ))
+	fmt.Fprintf(&g.m.funcs, "@%s = internal global %s %s\n", llvmName(id), g.llType(typ), g.zero(typ))
 	g.m.globalInits = append(g.m.globalInits, globalInit{module: module, id: id, typ: typ, init: init})
 }
 

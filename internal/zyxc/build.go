@@ -193,8 +193,8 @@ func (b *builder) decl(decl ast.Decl) *Node {
 	switch d := decl.(type) {
 	case *ast.ConstDecl:
 		n := New("const", d.Name.Name, b.symID(d.Name))
-		if d.Type != nil {
-			n.Child(New("type", b.typeText(b.cpkg.Nodes[d.Type])))
+		if t := b.declaredType(d.Type, d.Name, d.Value); t != nil {
+			n.Child(New("type", b.typeText(t)))
 		}
 		if d.Value != nil {
 			n.Child(b.wrap("value", b.expr(d.Value)))
@@ -205,8 +205,8 @@ func (b *builder) decl(decl ast.Decl) *Node {
 		for _, name := range d.Names {
 			n.Payload = append(n.Payload, name.Name, b.symID(name))
 		}
-		if d.Type != nil {
-			n.Child(New("type", b.typeText(b.cpkg.Nodes[d.Type])))
+		if t := b.declaredType(d.Type, firstName(d.Names), d.Value); t != nil {
+			n.Child(New("type", b.typeText(t)))
 		}
 		if d.Value != nil {
 			n.Child(b.wrap("value", b.expr(d.Value)))
@@ -775,6 +775,31 @@ func (b *builder) staticType(e ast.Node) *types.Type {
 		return nil
 	}
 	return t
+}
+
+// firstName returns the first name of a binding list, or nil when the list is
+// empty.
+func firstName(names []*ast.Ident) *ast.Ident {
+	if len(names) == 0 {
+		return nil
+	}
+	return names[0]
+}
+
+// declaredType returns the type a binding has: the type it writes, the type
+// the checker recorded for its name, or the type its initializer has. A
+// binding reaches the format with a settled type, so no later stage reads the
+// initializer to find one.
+func (b *builder) declaredType(declared ast.TypeExpr, name *ast.Ident, value ast.Expr) *types.Type {
+	if declared != nil {
+		return b.cpkg.Nodes[declared]
+	}
+	if name != nil {
+		if t := b.staticType(name); t != nil {
+			return t
+		}
+	}
+	return b.staticType(value)
 }
 
 // annotate records the static type of an expression, which the backend
