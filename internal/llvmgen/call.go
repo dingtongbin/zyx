@@ -121,6 +121,12 @@ func (g *generator) methodCall(module string, n *zyxc.Node) *value {
 		// carries.
 		return g.ifaceCall(module, n, recv, n.Payload[0])
 	}
+	if n.Payload[0] == "Show" && g.builtinShow(recv.typ) {
+		// The language gives a primitive or a str its Show from the fixed
+		// table the backend owns, so the call appends the value to the
+		// buffer it names rather than reaching a declaration.
+		return g.builtinShowCall(module, n, g.load(recv))
+	}
 	decl := g.tab.decl(sym)
 	if decl == nil || decl.Kind != "func" {
 		g.fail(fmt.Errorf("llvmgen: the method %s has no declaration (%s)", n.Payload[0], sym))

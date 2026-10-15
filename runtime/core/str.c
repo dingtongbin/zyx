@@ -23,60 +23,61 @@ int8_t zyxrt_str_eq(const char *a, size_t an, const char *b, size_t bn) {
     return 1;
 }
 
-/* The text of one value is written into storage the region owns, and its
-   address and length are reported through the out parameters. */
+/* The text of one value is appended to a buffer, in the same form the
+   printing helpers write. The text is built on the stack and never becomes a
+   string of its own, so a value costs one pass over its own bytes. */
 
-void zyxrt_i64_str(int64_t v, const char **out, size_t *len) {
-    char *text = (char *)zyxrt_region_alloc_current(24, 1);
-    int n = snprintf(text, 24, "%lld", (long long)v);
-    *out = text;
-    *len = n < 0 ? 0 : (size_t)n;
-}
-
-void zyxrt_u64_str(uint64_t v, const char **out, size_t *len) {
-    char *text = (char *)zyxrt_region_alloc_current(24, 1);
-    int n = snprintf(text, 24, "%llu", (unsigned long long)v);
-    *out = text;
-    *len = n < 0 ? 0 : (size_t)n;
-}
-
-void zyxrt_f64_str(double v, const char **out, size_t *len) {
-    char *text = (char *)zyxrt_region_alloc_current(32, 1);
-    int n = snprintf(text, 32, "%g", v);
-    *out = text;
-    *len = n < 0 ? 0 : (size_t)n;
-}
-
-void zyxrt_bool_str(int8_t v, const char **out, size_t *len) {
-    if (v) {
-        *out = "true";
-        *len = 4;
-    } else {
-        *out = "false";
-        *len = 5;
+void zyxrt_buf_write_i64(void *handle, int64_t v) {
+    char text[24];
+    int n = snprintf(text, sizeof text, "%lld", (long long)v);
+    if (n > 0) {
+        zyxrt_buf_write(handle, (const unsigned char *)text, (size_t)n);
     }
 }
 
-/* zyxrt_char_str writes one Unicode scalar value as UTF-8, the same way the
-   printing helper does. */
-void zyxrt_char_str(uint32_t c, const char **out, size_t *len) {
-    char *text = (char *)zyxrt_region_alloc_current(4, 1);
+void zyxrt_buf_write_u64(void *handle, uint64_t v) {
+    char text[24];
+    int n = snprintf(text, sizeof text, "%llu", (unsigned long long)v);
+    if (n > 0) {
+        zyxrt_buf_write(handle, (const unsigned char *)text, (size_t)n);
+    }
+}
+
+void zyxrt_buf_write_f64(void *handle, double v) {
+    char text[32];
+    int n = snprintf(text, sizeof text, "%g", v);
+    if (n > 0) {
+        zyxrt_buf_write(handle, (const unsigned char *)text, (size_t)n);
+    }
+}
+
+void zyxrt_buf_write_bool(void *handle, int8_t v) {
+    if (v) {
+        zyxrt_buf_write(handle, (const unsigned char *)"true", 4);
+    } else {
+        zyxrt_buf_write(handle, (const unsigned char *)"false", 5);
+    }
+}
+
+/* zyxrt_buf_write_char appends one Unicode scalar value as UTF-8, the same
+   way the printing helper writes it. */
+void zyxrt_buf_write_char(void *handle, uint32_t c) {
+    unsigned char text[4];
     size_t n = 0;
     if (c < 0x80) {
-        text[n++] = (char)c;
+        text[n++] = (unsigned char)c;
     } else if (c < 0x800) {
-        text[n++] = (char)(0xC0 | (c >> 6));
-        text[n++] = (char)(0x80 | (c & 0x3F));
+        text[n++] = (unsigned char)(0xC0 | (c >> 6));
+        text[n++] = (unsigned char)(0x80 | (c & 0x3F));
     } else if (c < 0x10000) {
-        text[n++] = (char)(0xE0 | (c >> 12));
-        text[n++] = (char)(0x80 | ((c >> 6) & 0x3F));
-        text[n++] = (char)(0x80 | (c & 0x3F));
+        text[n++] = (unsigned char)(0xE0 | (c >> 12));
+        text[n++] = (unsigned char)(0x80 | ((c >> 6) & 0x3F));
+        text[n++] = (unsigned char)(0x80 | (c & 0x3F));
     } else {
-        text[n++] = (char)(0xF0 | (c >> 18));
-        text[n++] = (char)(0x80 | ((c >> 12) & 0x3F));
-        text[n++] = (char)(0x80 | ((c >> 6) & 0x3F));
-        text[n++] = (char)(0x80 | (c & 0x3F));
+        text[n++] = (unsigned char)(0xF0 | (c >> 18));
+        text[n++] = (unsigned char)(0x80 | ((c >> 12) & 0x3F));
+        text[n++] = (unsigned char)(0x80 | ((c >> 6) & 0x3F));
+        text[n++] = (unsigned char)(0x80 | (c & 0x3F));
     }
-    *out = text;
-    *len = n;
+    zyxrt_buf_write(handle, text, n);
 }

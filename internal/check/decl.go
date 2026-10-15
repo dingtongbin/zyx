@@ -626,7 +626,7 @@ func (c *checker) checkImpls() {
 
 // checkImplComplete compares one impl block with the interface it names.
 func (c *checker) checkImplComplete(d *Decl, impl *Impl) {
-	want := c.interfaceMethods(impl.Interface, d.Type)
+	want := c.out.interfaceMethods(impl.Interface, d.Type)
 	for name, sig := range want {
 		got, ok := impl.Methods[name]
 		if !ok {
@@ -652,13 +652,13 @@ func (c *checker) checkImplComplete(d *Decl, impl *Impl) {
 
 // interfaceMethods returns the methods an interface requires, with its type
 // arguments and its Self parameter applied to the implementing type.
-func (c *checker) interfaceMethods(iface, implType *types.Type) map[string]*types.Type {
-	raw := c.rawInterfaceMethods(iface)
+func (p *Package) interfaceMethods(iface, implType *types.Type) map[string]*types.Type {
+	raw := p.rawInterfaceMethods(iface)
 	if raw == nil {
 		return nil
 	}
 	args := map[string]*types.Type{}
-	if d := c.declOf(iface); d != nil {
+	if d := p.Decl(iface); d != nil {
 		for i, p := range d.Params {
 			if i < len(iface.Args) {
 				args[p.ID] = iface.Args[i]
@@ -683,11 +683,11 @@ func (c *checker) interfaceMethods(iface, implType *types.Type) map[string]*type
 
 // rawInterfaceMethods returns the declared methods of an interface, before
 // its type arguments and Self are applied.
-func (c *checker) rawInterfaceMethods(iface *types.Type) map[string]*types.Type {
+func (p *Package) rawInterfaceMethods(iface *types.Type) map[string]*types.Type {
 	if iface == nil {
 		return nil
 	}
-	if d := c.declOf(iface); d != nil {
+	if d := p.Decl(iface); d != nil {
 		return d.Methods
 	}
 	return nil

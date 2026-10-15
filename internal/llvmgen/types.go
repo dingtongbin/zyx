@@ -47,6 +47,12 @@ func newTypeTable(p *Program) *typeTable {
 		modules: map[string]string{},
 	}
 	for _, path := range p.Order {
+		// A module names itself, so a tree can name a type of any package
+		// in the program. An instance of a library's generic function is
+		// written in the library and carries its caller's types.
+		t.quals[qualifier(path)] = path
+	}
+	for _, path := range p.Order {
 		file := p.Files[path]
 		if file == nil {
 			continue

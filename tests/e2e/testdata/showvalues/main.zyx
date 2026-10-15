@@ -1,0 +1,43 @@
+package main
+
+import "std/fmt"
+
+struct Point {
+    x: i64
+    y: i64
+    impl Show {
+        func Show(w: Buf) {
+            w.WriteStr("(")
+            w.WriteStr(f"{self.x}")
+            w.WriteStr(", ")
+            w.WriteStr(f"{self.y}")
+            w.WriteStr(")")
+        }
+    }
+}
+// Render writes a value's text into a buffer the caller owns, so a caller
+// that gathers several values pays for one buffer rather than one string per
+// value.
+
+func Render<T: Show>(w: Buf, v: T) {
+    v.Show(w)
+}
+
+func main() {
+    var p = Point { x: 1, y: 2}
+    fmt.PrintValue(p)
+    fmt.PrintNl()
+    fmt.PrintlnValue(42)
+    fmt.PrintlnValue(2.5)
+    fmt.PrintlnValue(true)
+    fmt.PrintlnValue('A')
+    fmt.PrintlnValue("hi")
+    fmt.Println(fmt.SprintValue(p))
+    var w = new Buf(0)
+    Render(w, p)
+    fmt.Fprint(w, "|")
+    Render(w, 7)
+    fmt.Fprint(w, "|")
+    Render(w, "tail")
+    fmt.Println(w.Str())
+}

@@ -109,6 +109,13 @@ type request struct {
 // index records every declaration and every import of the program.
 func (m *instantiator) index() {
 	for _, path := range m.p.Order {
+		// A module names itself, so an instance that lands in one package
+		// can still name a type that belongs to another. A generic function
+		// of a library is instantiated with its caller's types, and the
+		// instance is written in the library's package.
+		m.imports[zyxc.PackageQualifier(path)] = path
+	}
+	for _, path := range m.p.Order {
 		file := m.p.Files[path]
 		if file == nil {
 			continue
@@ -347,6 +354,14 @@ func (m *instantiator) ownerOf(id string) string {
 func (m *instantiator) reference(module string, n *zyxc.Node, id string) string {
 	decl := m.decls[id]
 	if decl == nil {
+		// A method call on a type parameter has no symbol of its own: the
+		// parameter stands for a different type in each instance. The
+		// receiver's instantiated type names the method that instance
+		// calls, so the reference is settled here rather than left empty
+		// for the backend to trip over.
+		if id == "" && n.Kind == "mcall" {
+			return m.paramMethodSymbol(module, n)
+		}
 		return ""
 	}
 	if generic(decl) {
@@ -367,6 +382,17 @@ func (m *instantiator) reference(module string, n *zyxc.Node, id string) string 
 		return ""
 	}
 	return m.instantiateType(recv).ID + "." + memberOf(id)
+}
+
+// paramMethodSymbol returns the symbol of a method call on a type parameter
+// in one instance. A type declares its impl methods as members of itself, so
+// the instance's receiver type and the method name are the whole symbol.
+func (m *instantiator) paramMethodSymbol(module string, n *zyxc.Node) string {
+	recv := m.receiverType(module, n)
+	if recv == nil || recv.Kind == types.KindTypeParam || recv.ID == "" {
+		return ""
+	}
+	return m.instantiateType(recv).ID + "." + payloadAt(n, 0)
 }
 
 // receiverType returns the annotated type of a call's receiver, or nil when

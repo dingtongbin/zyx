@@ -347,27 +347,66 @@ func (g *generator) addValue(module string, buf string, v *value) bool {
 		g.emit("  call void @zyxrt_buf_write(ptr %s, ptr %s, %s %s)", buf, ptr, g.ptrInt(), size)
 		return true
 	}
-	fn, argLL := "", ""
-	switch {
-	case typ.IsFloat():
-		fn, argLL = "zyxrt_f64_str", g.llType(typ)
-	case typ.Kind == types.KindBool:
-		fn, argLL = "zyxrt_bool_str", "i8"
-	case typ.Kind == types.KindChar:
-		fn, argLL = "zyxrt_char_str", "i32"
-	case typ.IsSigned():
-		fn, argLL = "zyxrt_i64_str", g.ptrInt()
-	case typ.IsInteger():
-		fn, argLL = "zyxrt_u64_str", g.ptrInt()
-	default:
+	fn, argLL, ok := g.bufWriter(typ)
+	if !ok {
 		return g.addShown(module, buf, v)
 	}
-	size := g.alloca(types.Usize)
-	text := g.alloca(types.Raw)
-	g.declareRuntime(fn, "void", argLL, "ptr", "ptr")
-	g.emit("  call void @%s(%s %s, ptr %s, ptr %s)", fn, argLL, v.text, text, size)
-	g.appendGathered(buf, text, size)
+	g.declareRuntime(fn, "void", "ptr", argLL)
+	g.emit("  call void @%s(ptr %s, %s %s)", fn, buf, argLL, v.text)
 	return true
+}
+
+// bufWriter returns the runtime writer that appends one value to a buffer, in
+// the form the language writes that value in. The language gives every
+// primitive its text from this table rather than from a Show declaration, so
+// an interpolated primitive and a Show call on one follow the same rule.
+func (g *generator) bufWriter(typ *types.Type) (string, string, bool) {
+	switch {
+	case typ.IsFloat():
+		return "zyxrt_buf_write_f64", g.llType(typ), true
+	case typ.Kind == types.KindBool:
+		return "zyxrt_buf_write_bool", "i8", true
+	case typ.Kind == types.KindChar:
+		return "zyxrt_buf_write_char", "i32", true
+	case typ.IsSigned():
+		return "zyxrt_buf_write_i64", g.ptrInt(), true
+	case typ.IsInteger():
+		return "zyxrt_buf_write_u64", g.ptrInt(), true
+	}
+	return "", "", false
+}
+
+// builtinShow reports whether the language gives the type its Show from the
+// fixed table rather than from a declaration, which is the case for every
+// value that table can write.
+func (g *generator) builtinShow(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	if t.Kind == types.KindStr {
+		return true
+	}
+	_, _, ok := g.bufWriter(t)
+	return ok
+}
+
+// builtinShowCall lowers a Show call on a value the fixed table writes: the
+// value is appended to the buffer the call names, with no declaration and no
+// intermediate string.
+func (g *generator) builtinShowCall(module string, n *zyxc.Node, v *value) *value {
+	arg := g.wrapped(n, "arg")
+	if arg == nil {
+		g.fail(fmt.Errorf("llvmgen: Show needs the buffer it writes into"))
+		return nil
+	}
+	buf := g.load(g.expr(module, arg, nil))
+	if buf == nil {
+		return nil
+	}
+	if !g.addValue(module, buf.text, v) {
+		return nil
+	}
+	return &value{ll: "void"}
 }
 
 // addShown appends a value of a declared type, which writes itself into the
@@ -381,16 +420,6 @@ func (g *generator) addShown(module string, buf string, v *value) bool {
 	}
 	g.emit("  call void @%s(ptr %s, ptr %s)", llvmName(sym), g.addrText(v), buf)
 	return true
-}
-
-// appendGathered appends the text a formatting function reported.
-func (g *generator) appendGathered(buf, text, size string) {
-	ptr := g.newReg()
-	g.emit("  %s = load ptr, ptr %s", ptr, text)
-	length := g.newReg()
-	g.emit("  %s = load %s, ptr %s", length, g.ptrInt(), size)
-	g.declareRuntime("zyxrt_buf_write", "void", "ptr", "ptr", g.ptrInt())
-	g.emit("  call void @zyxrt_buf_write(ptr %s, ptr %s, %s %s)", buf, ptr, g.ptrInt(), length)
 }
 
 // literal lowers a literal. The kind the format wrote settles which literal

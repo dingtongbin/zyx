@@ -377,6 +377,11 @@ func (c *checker) methodOf(recv *types.Type, name string) *types.Type {
 	if recv == nil || recv.Kind == types.Invalid {
 		return nil
 	}
+	if recv.Kind == types.KindTypeParam {
+		// A type parameter reaches the methods its constraints declare,
+		// which is the only interface it is known to satisfy.
+		return c.out.paramMethod(recv, name)
+	}
 	if d := c.declOf(recv); d != nil {
 		if sig, ok := d.Methods[name]; ok {
 			return instantiateMethod(recv, d, sig)
@@ -406,6 +411,9 @@ func instantiateMethod(recv *types.Type, d *Decl, sig *types.Type) *types.Type {
 func (p *Package) MethodOf(recv *types.Type, name string) *types.Type {
 	if recv == nil || recv.Kind == types.Invalid {
 		return nil
+	}
+	if recv.Kind == types.KindTypeParam {
+		return p.paramMethod(recv, name)
 	}
 	if d := p.Decl(recv); d != nil {
 		if sig, ok := d.Methods[name]; ok {

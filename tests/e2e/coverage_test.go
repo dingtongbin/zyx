@@ -377,6 +377,14 @@ func TestInterpolationWritesIntoABuffer(t *testing.T) {
 	if regexp.MustCompile(`call \{ ptr, i64 \} @"[^"]*\.Show"`).MatchString(stdout) {
 		t.Errorf("Show still answers with a string:\n%s", stdout)
 	}
+	// A value the fixed table writes goes straight into the buffer, so no
+	// formatter that hands back a string of its own remains.
+	if regexp.MustCompile(`@zyxrt_(i64|u64|f64|bool|char)_str`).MatchString(stdout) {
+		t.Errorf("a formatted value still becomes a string of its own:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "zyxrt_buf_write_") {
+		t.Errorf("no value is written into the buffer:\n%s", stdout)
+	}
 	buffers := regexp.MustCompile(`(%[\w.]+) = call ptr @zyxrt_buf_new`).FindAllStringSubmatch(stdout, -1)
 	if len(buffers) == 0 {
 		t.Fatalf("no interpolation gathers into a buffer:\n%s", stdout)

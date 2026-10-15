@@ -42,3 +42,43 @@ func PrintChar(ch: char) {
 func PrintNl() {
 	c.zyxrt_print_nl()
 }
+
+// PrintValue writes a value in the form its Show gives it.
+func PrintValue<T: Show>(v: T) {
+	var w = new Buf(0)
+	v.Show(w)
+	Print(w.Str())
+}
+
+// PrintlnValue writes a value in the form its Show gives it, then a line
+// feed.
+func PrintlnValue<T: Show>(v: T) {
+	var w = new Buf(0)
+	v.Show(w)
+	Println(w.Str())
+}
+
+// Fprint writes a string's UTF-8 bytes into a buffer.
+func Fprint(w: Buf, s: str) {
+	w.WriteStr(s)
+}
+
+// Fprintln writes a string's UTF-8 bytes and a line feed into a buffer.
+func Fprintln(w: Buf, s: str) {
+	w.WriteStr(s)
+	w.WriteByte(10)
+}
+
+// FprintValue writes a value into a buffer, in the form its Show gives it.
+// The value writes itself, so a caller that gathers several values pays for
+// one buffer rather than one string per value.
+func FprintValue<T: Show>(w: Buf, v: T) {
+	v.Show(w)
+}
+
+// SprintValue returns a value's text as a new string.
+func SprintValue<T: Show>(v: T) -> str {
+	var w = new Buf(0)
+	v.Show(w)
+	return w.Str()
+}

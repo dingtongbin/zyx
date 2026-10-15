@@ -407,6 +407,7 @@ func (c *checker) constraintType(con ast.TypeExpr) *types.Type {
 }
 
 // paramTypes returns the type of every declared type parameter, in order.
+// paramTypes returns the type parameter types of a declaration, in order.
 func (c *checker) paramTypes(params []*ast.TypeParam) []*types.Type {
 	out := make([]*types.Type, 0, len(params))
 	for _, tp := range params {
@@ -414,7 +415,20 @@ func (c *checker) paramTypes(params []*ast.TypeParam) []*types.Type {
 			continue
 		}
 		if sym := c.symOf(tp.Name); sym != nil {
-			out = append(out, types.Param(sym.ID, tp.Name.Name))
+			out = append(out, types.ParamOf(sym.ID, tp.Name.Name, c.constraintTypes(tp)))
+		}
+	}
+	return out
+}
+
+// constraintTypes builds the constraint interfaces of one type parameter, in
+// declaration order. A constraint that is not an interface contributes
+// nothing here; the declaration check is the one that reports it.
+func (c *checker) constraintTypes(tp *ast.TypeParam) []*types.Type {
+	var out []*types.Type
+	for _, con := range tp.Constraints {
+		if t := c.buildType(con); t != nil && t.Kind == types.KindInterface {
+			out = append(out, t)
 		}
 	}
 	return out
