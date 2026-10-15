@@ -77,35 +77,35 @@ var specMarks = []string{
 var coveredMarks = []string{
 	"alias", "c-blocking", "chan:select", "coro:handoff", "coro:host",
 	"coro:panic-path", "coro:region", "coro:spawn", "defer-site", "defers",
-	"entry", "home", "init", "iter-guard", "region:enter", "region:exit",
-	"transfer", "view-borrow", "watched",
+	"entry", "home", "init", "iter-guard", "move", "region:enter", "region:exit",
+	"shared-ref", "shared-store", "transfer", "view-borrow", "watched",
 }
 
 // deferredMarks lists the marks the format defines that no corpus reaches
 // yet, with the reason. Every entry is work the front end still owes, not a
 // decision to drop the mark.
 var deferredMarks = map[string]string{
-	"boundary-clone": memoryPass,
-	"boundary-share": memoryPass,
-	"c-fast":         "the front end does not classify C calls yet",
-	"chan:close":     memoryPass,
-	"chan:recv":      memoryPass,
-	"chan:send":      memoryPass,
-	"chan:try":       memoryPass,
-	"coro:body":      memoryPass,
-	"last-use":       memoryPass,
-	"mono-rule":      "comptime evaluation is not implemented yet",
-	"move":           memoryPass,
-	"shared-bind":    memoryPass,
-	"shared-ref":     memoryPass,
-	"shared-store":   memoryPass,
-	"static-release": memoryPass,
+	"boundary-clone": unexercised,
+	"boundary-share": unexercised,
+	"c-fast":         unexercised,
+	"chan:close":     unexercised,
+	"chan:recv":      unexercised,
+	"chan:send":      unexercised,
+	"chan:try":       notEmitted,
+	"coro:body":      notEmitted,
+	"last-use":       unexercised,
+	"mono-rule":      notEmitted,
+	"shared-bind":    notEmitted,
+	"static-release": unexercised,
 }
 
-// memoryPass is the reason the ownership and boundary marks are deferred:
-// they come from the pass that decides where an object lives and when it is
-// released, which the front end does not run yet.
-const memoryPass = "the ownership and release pass does not run yet"
+// unexercised is the reason a mark the front end already produces is deferred:
+// no program of the corpus has its shape yet, so nothing verifies it.
+const unexercised = "no corpus program has this shape yet"
+
+// notEmitted is the reason a mark the format defines is deferred: the pass
+// that would produce it does not run yet.
+const notEmitted = "the pass that produces it does not run yet"
 
 // emitMarks returns every mark the intermediate form of a package writes,
 // read back through the format's own reader. Reading the text rather than
