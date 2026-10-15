@@ -16,11 +16,16 @@ import (
 // names the storage of a variable; an rvalue carries the value itself. A
 // value whose type lives at an address, such as a reference struct or a
 // fixed-size array, carries the address of its object.
+//
+// inline marks an lvalue whose storage is the object itself rather than a
+// reference to it: the field of a struct and the element of an array hold
+// their object, while a local of the same type holds a reference.
 type value struct {
 	text   string
 	ll     string
 	typ    *types.Type
 	lvalue bool
+	inline bool
 }
 
 // load returns the value of an lvalue.
@@ -28,19 +33,30 @@ func (g *generator) load(v *value) *value {
 	if v == nil || !v.lvalue {
 		return v
 	}
-	reg := g.newReg()
 	if byAddress(v.typ) {
+		if v.inline {
+			// The storage is the object, so its address is the value.
+			return &value{text: v.text, ll: "ptr", typ: v.typ}
+		}
+		reg := g.newReg()
 		g.emit("  %s = load ptr, ptr %s", reg, v.text)
 		return &value{text: reg, ll: "ptr", typ: v.typ}
 	}
+	reg := g.newReg()
 	g.emit("  %s = load %s, ptr %s", reg, v.ll, v.text)
 	return &value{text: reg, ll: v.ll, typ: v.typ}
 }
 
-// addrText returns the address of a value, materializing one when the value
-// lives in a register.
+// addrText returns the address of the object a value names, materializing
+// one when the value lives in a register.
 func (g *generator) addrText(v *value) string {
 	if v.lvalue {
+		if byAddress(v.typ) && !v.inline {
+			// The storage holds a reference to the object.
+			reg := g.newReg()
+			g.emit("  %s = load ptr, ptr %s", reg, v.text)
+			return reg
+		}
 		return v.text
 	}
 	if byAddress(v.typ) {
@@ -51,15 +67,34 @@ func (g *generator) addrText(v *value) string {
 	return slot
 }
 
-// storeInto writes a value into storage.
-func (g *generator) storeInto(addr string, typ *types.Type, v *value) {
+// storeInto writes a value into storage. inline marks a destination whose
+// storage is the object itself, which a reference type copies rather than
+// points at.
+func (g *generator) storeInto(addr string, typ *types.Type, v *value, inline bool) {
 	if byAddress(typ) {
+		if inline {
+			g.copyObject(addr, g.addrText(v), typ)
+			return
+		}
 		// The object is shared: the destination keeps a reference to it.
 		g.emit("  store ptr %s, ptr %s", g.addrText(v), addr)
 		return
 	}
 	r := g.load(v)
 	g.emit("  store %s %s, ptr %s", r.ll, r.text, addr)
+}
+
+// copyObject copies one object onto another, which is what assigning a
+// reference type into inline storage does.
+func (g *generator) copyObject(dst, src string, typ *types.Type) {
+	size, err := layout.Size(typ, g.tab, g.target.Layout())
+	if err != nil {
+		g.fail(fmt.Errorf("llvmgen: the size of %s: %w", typ, err))
+		return
+	}
+	intrinsic := fmt.Sprintf("llvm.memcpy.p0.p0.%s", g.ptrInt())
+	g.declareRuntime(intrinsic, "void", "ptr", "ptr", g.ptrInt(), "i1")
+	g.emit("  call void @%s(ptr %s, ptr %s, %s %d, i1 false)", intrinsic, dst, src, g.ptrInt(), size)
 }
 
 // toBool converts a value into the i1 a branch takes.
@@ -528,7 +563,7 @@ func (g *generator) field(module string, n *zyxc.Node) *value {
 		}
 		reg := g.newReg()
 		g.emit("  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d", reg, g.llType(typ), base, i)
-		return &value{text: reg, ll: g.llPass(f.Type), typ: f.Type, lvalue: true}
+		return &value{text: reg, ll: g.llPass(f.Type), typ: f.Type, lvalue: true, inline: true}
 	}
 	g.fail(fmt.Errorf("llvmgen: %s has no field %s", typ, name))
 	return nil
@@ -546,14 +581,14 @@ func (g *generator) index(module string, n *zyxc.Node) *value {
 		reg := g.newReg()
 		g.emit("  %s = getelementptr inbounds %s, ptr %s, i64 0, i64 %s",
 			reg, g.llType(recv.typ), recv.text, idx.text)
-		return &value{text: reg, ll: g.llPass(recv.typ.Elem), typ: recv.typ.Elem, lvalue: true}
+		return &value{text: reg, ll: g.llPass(recv.typ.Elem), typ: recv.typ.Elem, lvalue: true, inline: true}
 	case types.KindSlice:
 		ptrReg := g.newReg()
 		g.emit("  %s = extractvalue %s %s, 0", ptrReg, recv.ll, recv.text)
 		reg := g.newReg()
 		g.emit("  %s = getelementptr inbounds %s, ptr %s, i64 %s",
 			reg, g.llType(recv.typ.Elem), ptrReg, idx.text)
-		return &value{text: reg, ll: g.llPass(recv.typ.Elem), typ: recv.typ.Elem, lvalue: true}
+		return &value{text: reg, ll: g.llPass(recv.typ.Elem), typ: recv.typ.Elem, lvalue: true, inline: true}
 	}
 	g.fail(fmt.Errorf("llvmgen: indexing %s is not lowered", recv.typ))
 	return nil
@@ -623,7 +658,7 @@ func (g *generator) structLit(module string, n *zyxc.Node) *value {
 		if v == nil {
 			return nil
 		}
-		g.storeInto(reg, fieldType, v)
+		g.storeInto(reg, fieldType, v, true)
 	}
 	return &value{text: base, ll: "ptr", typ: typ}
 }
@@ -651,7 +686,7 @@ func (g *generator) arrayLit(module string, n *zyxc.Node) *value {
 		}
 		reg := g.newReg()
 		g.emit("  %s = getelementptr inbounds %s, ptr %s, i64 0, i64 %d", reg, g.llType(typ), base, i)
-		g.storeInto(reg, elem, v)
+		g.storeInto(reg, elem, v, true)
 	}
 	if elem == nil {
 		g.fail(fmt.Errorf("llvmgen: an empty array literal has no element type"))

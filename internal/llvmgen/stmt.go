@@ -93,7 +93,7 @@ func (g *generator) bind(module string, n *zyxc.Node) {
 	}
 	slot := g.alloca(typ)
 	if v != nil {
-		g.storeInto(slot, typ, v)
+		g.storeInto(slot, typ, v, false)
 	}
 	if id != "" {
 		g.fn.vars[id] = &varSlot{alloca: slot, typ: typ}
@@ -110,7 +110,7 @@ func (g *generator) assign(module string, n *zyxc.Node) {
 	if src == nil {
 		return
 	}
-	g.storeInto(g.addrText(target), target.typ, src)
+	g.storeInto(target.text, target.typ, src, target.inline)
 }
 
 // assignOp lowers a compound assignment.
@@ -134,7 +134,7 @@ func (g *generator) assignOp(module string, n *zyxc.Node) {
 	if result == nil {
 		return
 	}
-	g.storeInto(addr, target.typ, result)
+	g.storeInto(addr, target.typ, result, false)
 }
 
 // ifStmt lowers a conditional.
@@ -250,6 +250,6 @@ func (g *generator) returnStmt(module string, n *zyxc.Node) {
 	if g.fn.resultSlot == "" {
 		g.fn.resultSlot = g.alloca(g.fn.result)
 	}
-	g.storeInto(g.fn.resultSlot, g.fn.result, v)
+	g.storeInto(g.fn.resultSlot, g.fn.result, v, false)
 	g.terminator("  br label %%%s", g.fn.ret)
 }

@@ -1,6 +1,12 @@
 3
 4
+4
+3
+3
+3
 hello
 world
 7
 beta
+9
+solo

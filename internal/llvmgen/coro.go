@@ -76,7 +76,7 @@ func (g *generator) spawn(module string, n *zyxc.Node) *value {
 		}
 		slot := g.newReg()
 		g.emit("  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d", slot, blockLL, base, i)
-		g.storeInto(slot, ptypes[i], v)
+		g.storeInto(slot, ptypes[i], v, true)
 	}
 
 	thunk := g.spawnThunk(sym, ptypes, blockLL)

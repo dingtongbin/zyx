@@ -79,7 +79,7 @@ func (g *generator) emitGlobalInits() {
 		if v == nil {
 			continue
 		}
-		g.storeInto("@"+llvmName(init.id), init.typ, v)
+		g.storeInto("@"+llvmName(init.id), init.typ, v, false)
 	}
 	g.terminator("  ret void")
 	var out strings.Builder
