@@ -1,0 +1,36 @@
+package main
+
+import "std/fmt"
+
+struct Point {
+    x: i64
+    y: i64
+    impl Eq {
+        func Eq(other: Point) -> bool {
+            return self.x == other.x && self.y == other.y
+        }
+    }
+    impl Hash {
+        func Hash() -> u64 {
+            return u64(self.x) * 31 + u64(self.y)
+        }
+    }
+}
+
+func main() {
+    var m: Map<Point, i64> = Map {}
+    m.Set(Point { x: 1, y: 2}, 10)
+    m.Set(Point { x: 3, y: 4}, 20)
+    fmt.PrintI64(i64(m.Len()))
+    fmt.PrintNl()
+    match m.Get(Point { x: 1, y: 2}) {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.PrintI64(- 1)
+    }
+    fmt.PrintNl()
+    match m.Get(Point { x: 9, y: 9}) {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.PrintI64(- 1)
+    }
+    fmt.PrintNl()
+}

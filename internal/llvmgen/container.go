@@ -6,6 +6,7 @@ package llvmgen
 
 import (
 	"fmt"
+	"strings"
 
 	"zyx/internal/layout"
 	"zyx/internal/types"
@@ -122,7 +123,7 @@ func (g *generator) arrayCall(module string, n *zyxc.Node, recv *value, name str
 		if index == nil {
 			return nil
 		}
-		slot := g.alloca(elem)
+		slot := g.objectAlloca(elem)
 		g.declareRuntime("zyxrt_array_get_unchecked", "void", "ptr", g.ptrInt(), "ptr")
 		g.emit("  call void @zyxrt_array_get_unchecked(ptr %s, %s %s, ptr %s)",
 			recv.text, index.ll, index.text, slot)
@@ -345,9 +346,19 @@ func (g *generator) slotOf(module string, e *zyxc.Node, elem *types.Type) (strin
 	if v == nil {
 		return "", false
 	}
-	slot := g.alloca(elem)
-	g.storeInto(slot, elem, v, false)
+	// The runtime reads an element as the bytes of its type, so an object of
+	// a reference type lies in the slot rather than a pointer to it.
+	slot := g.objectAlloca(elem)
+	g.storeInto(slot, elem, v, true)
 	return slot, true
+}
+
+// objectAlloca reserves storage for an object itself, which is the shape the
+// runtime reads when an element crosses as the bytes of its type.
+func (g *generator) objectAlloca(typ *types.Type) string {
+	reg := g.newReg()
+	fmt.Fprintf(&g.fn.allocas, "  %s = alloca %s\n", reg, g.llType(typ))
+	return reg
 }
 
 // namedSlot evaluates a labelled child into storage the runtime can read.
@@ -356,8 +367,10 @@ func (g *generator) namedSlot(module string, n *zyxc.Node, label string, elem *t
 	if v == nil {
 		return "", false
 	}
-	slot := g.alloca(elem)
-	g.storeInto(slot, elem, v, false)
+	// The runtime reads an element as the bytes of its type, so an object of
+	// a reference type lies in the slot rather than a pointer to it.
+	slot := g.objectAlloca(elem)
+	g.storeInto(slot, elem, v, true)
 	return slot, true
 }
 
@@ -384,8 +397,68 @@ func (g *generator) mapHash(key *types.Type) (string, string) {
 		g.declareRuntime("zyxrt_eq_bytes", "i32", "ptr", "ptr", g.ptrInt())
 		return "@zyxrt_hash_bytes", "@zyxrt_eq_bytes"
 	}
-	g.fail(fmt.Errorf("llvmgen: a %s key needs its own Hash and Eq, which is not lowered", key))
-	return "", ""
+	// A declared type supplies its own Hash and Eq, which the runtime reaches
+	// through a thunk of the signature it expects.
+	hash, eq, ok := g.userHashFns(key)
+	if !ok {
+		g.fail(fmt.Errorf("llvmgen: %s has no Hash and Eq, so it cannot be a key", key))
+		return "", ""
+	}
+	return hash, eq
+}
+
+// userHashFns returns the hash and the comparison of a key of a declared
+// type, which the type supplies through its Hash and Eq.
+func (g *generator) userHashFns(key *types.Type) (string, string, bool) {
+	hashSym := g.implMethod(key, types.Hash, "Hash")
+	eqSym := g.implMethod(key, types.Eq, "Eq")
+	if hashSym == "" || eqSym == "" {
+		return "", "", false
+	}
+	return g.hashThunk(hashSym), g.eqThunk(eqSym), true
+}
+
+// hashThunk emits the adapter the runtime hashes a declared key through.
+func (g *generator) hashThunk(sym string) string {
+	g.thunks++
+	name := fmt.Sprintf("zyx.hash.%d", g.thunks)
+	saved := g.fn
+	g.fn = &funcState{symbol: name, vars: map[string]*varSlot{}}
+	g.fn.entry = g.newLabel("hash")
+	reg := g.newReg()
+	g.emit("  %s = call %s @%s(ptr %%key)", reg, g.ptrInt(), llvmName(sym))
+	g.terminator("  ret %s %s", g.ptrInt(), reg)
+	g.emitThunk(name, g.ptrInt(), "ptr %key, "+g.ptrInt()+" %size")
+	g.fn = saved
+	return "@" + name
+}
+
+// eqThunk emits the adapter the runtime compares a declared key through.
+func (g *generator) eqThunk(sym string) string {
+	g.thunks++
+	name := fmt.Sprintf("zyx.eq.%d", g.thunks)
+	saved := g.fn
+	g.fn = &funcState{symbol: name, vars: map[string]*varSlot{}}
+	g.fn.entry = g.newLabel("eq")
+	reg := g.newReg()
+	g.emit("  %s = call i8 @%s(ptr %%a, ptr %%b)", reg, llvmName(sym))
+	wide := g.newReg()
+	g.emit("  %s = zext i8 %s to i32", wide, reg)
+	g.terminator("  ret i32 %s", wide)
+	g.emitThunk(name, "i32", "ptr %a, ptr %b, "+g.ptrInt()+" %size")
+	g.fn = saved
+	return "@" + name
+}
+
+// emitThunk writes the function the current state accumulated.
+func (g *generator) emitThunk(name, ret, params string) {
+	var out strings.Builder
+	fmt.Fprintf(&out, "define internal %s @%s(%s) {\n", ret, name, params)
+	out.WriteString(g.fn.entry + ":\n")
+	out.WriteString(g.fn.allocas.String())
+	out.WriteString(g.fn.body.String())
+	out.WriteString("}\n")
+	g.m.funcs.WriteString(out.String())
 }
 
 // mapLit lowers a map literal: an empty map, then one entry at a time.
@@ -432,8 +505,10 @@ func (g *generator) elementSlotAt(module string, n *zyxc.Node, elem *types.Type,
 	if v == nil {
 		return "", false
 	}
-	slot := g.alloca(elem)
-	g.storeInto(slot, elem, v, false)
+	// The runtime reads an element as the bytes of its type, so an object of
+	// a reference type lies in the slot rather than a pointer to it.
+	slot := g.objectAlloca(elem)
+	g.storeInto(slot, elem, v, true)
 	return slot, true
 }
 
@@ -444,8 +519,10 @@ func (g *generator) elementSlot(module string, n *zyxc.Node, elem *types.Type) (
 	if v == nil {
 		return "", false
 	}
-	slot := g.alloca(elem)
-	g.storeInto(slot, elem, v, false)
+	// The runtime reads an element as the bytes of its type, so an object of
+	// a reference type lies in the slot rather than a pointer to it.
+	slot := g.objectAlloca(elem)
+	g.storeInto(slot, elem, v, true)
 	return slot, true
 }
 
@@ -453,7 +530,7 @@ func (g *generator) elementSlot(module string, n *zyxc.Node, elem *types.Type) (
 // runtime reports whether an element was there, and the object carries either
 // the element or nothing.
 func (g *generator) arrayTake(module string, n *zyxc.Node, recv *value, elem *types.Type, fn, argName string) *value {
-	slot := g.alloca(elem)
+	slot := g.objectAlloca(elem)
 	parts := []string{"ptr " + recv.text}
 	if argName != "" {
 		index := g.load(g.expr(module, g.sole(n.First("arg")), types.Usize))
