@@ -19,6 +19,8 @@ func (g *generator) containerCall(module string, n *zyxc.Node, recv *value, name
 		return g.arrayCall(module, n, recv, name)
 	case "Map":
 		return g.mapCall(module, n, recv, name)
+	case "Set":
+		return g.setCall(module, n, recv, name)
 	}
 	g.fail(fmt.Errorf("llvmgen: %s.%s is not lowered", recv.typ.Name, name))
 	return nil
@@ -45,6 +47,22 @@ func (g *generator) newContainer(module string, n *zyxc.Node, typ *types.Type) *
 		reg := g.newReg()
 		g.emit("  %s = call ptr @zyxrt_map_new(%s %d, %s %d, ptr %s, ptr %s)",
 			reg, g.ptrInt(), keySize, g.ptrInt(), valSize, hash, eq)
+		return &value{text: reg, ll: "ptr", typ: typ}
+	}
+	if typ.Name == "Set" {
+		elem := arg(typ, 0)
+		size, ok := g.arraySize(elem)
+		if !ok {
+			return nil
+		}
+		hash, eq := g.mapHash(elem)
+		if hash == "" {
+			return nil
+		}
+		g.declareRuntime("zyxrt_set_new", "ptr", g.ptrInt(), "ptr", "ptr")
+		reg := g.newReg()
+		g.emit("  %s = call ptr @zyxrt_set_new(%s %d, ptr %s, ptr %s)",
+			reg, g.ptrInt(), size, hash, eq)
 		return &value{text: reg, ll: "ptr", typ: typ}
 	}
 	if typ.Name != "Array" {
@@ -250,6 +268,86 @@ func (g *generator) mapKeyList(module string, n *zyxc.Node, recv *value, key *ty
 	list := g.newReg()
 	g.emit("  %s = call ptr @zyxrt_map_key_list(ptr %s, %s %d)", list, recv.text, g.ptrInt(), size)
 	return &value{text: list, ll: "ptr", typ: typ}
+}
+
+// setCall lowers one operation on a Set.
+func (g *generator) setCall(module string, n *zyxc.Node, recv *value, name string) *value {
+	elem := arg(recv.typ, 0)
+	switch name {
+	case "Len":
+		g.declareRuntime("zyxrt_set_len", g.ptrInt(), "ptr")
+		reg := g.newReg()
+		g.emit("  %s = call %s @zyxrt_set_len(ptr %s)", reg, g.ptrInt(), recv.text)
+		return &value{text: reg, ll: g.ptrInt(), typ: types.Usize}
+	case "Add":
+		slot, ok := g.elementSlot(module, n, elem)
+		if !ok {
+			return nil
+		}
+		g.declareRuntime("zyxrt_set_add", "void", "ptr", "ptr")
+		g.emit("  call void @zyxrt_set_add(ptr %s, ptr %s)", recv.text, slot)
+		return &value{ll: "void"}
+	case "Contains":
+		slot, ok := g.elementSlot(module, n, elem)
+		if !ok {
+			return nil
+		}
+		g.declareRuntime("zyxrt_set_contains", "i32", "ptr", "ptr")
+		reg := g.newReg()
+		g.emit("  %s = call i32 @zyxrt_set_contains(ptr %s, ptr %s)", reg, recv.text, slot)
+		return g.boolFrom(reg)
+	case "Remove":
+		slot, ok := g.elementSlot(module, n, elem)
+		if !ok {
+			return nil
+		}
+		out := g.alloca(elem)
+		g.declareRuntime("zyxrt_set_remove", "i32", "ptr", "ptr", "ptr")
+		flag := g.newReg()
+		g.emit("  %s = call i32 @zyxrt_set_remove(ptr %s, ptr %s, ptr %s)", flag, recv.text, slot, out)
+		return g.optionValue(module, n, out, elem, flag)
+	}
+	g.fail(fmt.Errorf("llvmgen: Set.%s is not lowered", name))
+	return nil
+}
+
+// setLit lowers a set literal: an empty set, then one element at a time.
+func (g *generator) setLit(module string, n *zyxc.Node) *value {
+	typ := g.typeOfNode(n.First("type"), module)
+	if typ == nil || typ.Kind != types.KindContainer {
+		g.fail(fmt.Errorf("llvmgen: the type of the set literal is not settled"))
+		return nil
+	}
+	empty := &zyxc.Node{Kind: "new"}
+	empty.Child(zyxc.New("type", typ.String()))
+	set := g.newContainer(module, empty, typ)
+	if set == nil {
+		return nil
+	}
+	elem := arg(typ, 0)
+	for _, child := range n.Children {
+		if child.Kind != "elem" {
+			continue
+		}
+		slot, ok := g.slotOf(module, g.sole(child), elem)
+		if !ok {
+			return nil
+		}
+		g.declareRuntime("zyxrt_set_add", "void", "ptr", "ptr")
+		g.emit("  call void @zyxrt_set_add(ptr %s, ptr %s)", set.text, slot)
+	}
+	return set
+}
+
+// slotOf evaluates an expression into storage the runtime can read.
+func (g *generator) slotOf(module string, e *zyxc.Node, elem *types.Type) (string, bool) {
+	v := g.load(g.expr(module, e, elem))
+	if v == nil {
+		return "", false
+	}
+	slot := g.alloca(elem)
+	g.storeInto(slot, elem, v, false)
+	return slot, true
 }
 
 // namedSlot evaluates a labelled child into storage the runtime can read.

@@ -1,0 +1,25 @@
+package main
+
+import "std/fmt"
+
+func main() {
+    var s: Set<i64> = Set { 1, 2, 3}
+    fmt.PrintI64(i64(s.Len()))
+    fmt.PrintNl()
+    s.Add(2)
+    fmt.PrintI64(i64(s.Len()))
+    fmt.PrintNl()
+    s.Add(4)
+    fmt.PrintI64(i64(s.Len()))
+    fmt.PrintNl()
+    fmt.PrintBool(s.Contains(3))
+    fmt.PrintBool(s.Contains(9))
+    fmt.PrintNl()
+    match s.Remove(1) {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.PrintI64(- 1)
+    }
+    fmt.PrintNl()
+    fmt.PrintI64(i64(s.Len()))
+    fmt.PrintNl()
+}

@@ -221,3 +221,43 @@ void *zyxrt_map_key_list(void *handle, size_t key_size) {
   }
   return list;
 }
+
+/* A set is a map whose value is one byte the caller never reads, so the key
+   is the element and every operation the map has serves the set. */
+
+void *zyxrt_set_new(size_t elem_size, void *hash, void *eq) {
+  return zyxrt_map_new(elem_size, 1, hash, eq);
+}
+
+size_t zyxrt_set_len(void *handle) { return zyxrt_map_len(handle); }
+
+void zyxrt_set_add(void *handle, const void *elem) {
+  unsigned char dummy = 0;
+  zyxrt_map_set(handle, elem, &dummy);
+}
+
+int zyxrt_set_contains(void *handle, const void *elem) {
+  return zyxrt_map_contains(handle, elem);
+}
+
+/* zyxrt_set_remove takes an element out and copies the element itself into
+   out, which is what the language's Remove answers with. */
+int zyxrt_set_remove(void *handle, const void *elem, void *out) {
+  zyxrt_map *m = (zyxrt_map *)handle;
+  if (m == NULL) return 0;
+  size_t index = (size_t)(m->hash(elem, m->key_size) & (m->cap - 1));
+  zyxrt_map_entry **link = &m->buckets[index];
+  while (*link != NULL) {
+    zyxrt_map_entry *e = *link;
+    if (m->eq(e->key, elem, m->key_size)) {
+      if (out != NULL) {
+        memcpy(out, e->key, m->key_size);
+      }
+      *link = e->next;
+      m->len--;
+      return 1;
+    }
+    link = &e->next;
+  }
+  return 0;
+}

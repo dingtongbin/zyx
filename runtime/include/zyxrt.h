@@ -39,6 +39,13 @@ int zyxrt_map_remove(void *handle, const void *key, void *out);
 void zyxrt_map_keys(void *handle, void *out);
 void zyxrt_map_values(void *handle, void *out);
 void *zyxrt_map_key_list(void *handle, size_t key_size);
+
+/* A set holds each element once. */
+void *zyxrt_set_new(size_t elem_size, void *hash, void *eq);
+size_t zyxrt_set_len(void *handle);
+void zyxrt_set_add(void *handle, const void *elem);
+int zyxrt_set_contains(void *handle, const void *elem);
+int zyxrt_set_remove(void *handle, const void *elem, void *out);
 /* The hashes and comparisons the language supplies for its own key types. */
 uint64_t zyxrt_hash_bytes(const void *key, size_t size);
 int zyxrt_eq_bytes(const void *a, const void *b, size_t size);
