@@ -398,6 +398,83 @@ func TestInterpolationWritesIntoABuffer(t *testing.T) {
 	t.Errorf("no Show receives the gather buffer:\n%s", stdout)
 }
 
+// deferredRunning lists the kinds the format defines that no program which
+// runs reaches, with the reason. A kind only a checked corpus directory
+// reaches is a construct no machine code carries yet, so only the checker
+// verifies it.
+var deferredRunning = map[string]string{
+	// A construct that lives in an imported package. The tool prints one
+	// package's tree at a time, and it prints the entry package, so a kind
+	// whose only use is in a library does not show up here.
+	"c-call":   inImported,
+	"import-c": inImported,
+	// A construct that exists only while the program is compiled, so no
+	// machine code carries it by nature.
+	"alias":      compileOnly,
+	"bind-const": compileOnly,
+	"meta":       compileOnly,
+	// A construct that produces machine code and that no program of the
+	// corpus uses yet.
+	"addr":          unexercised,
+	"array-repeat":  unexercised,
+	"extern-struct": unexercised,
+	"extern-union":  unexercised,
+	"index":         unexercised,
+	"method-value":  unexercised,
+	"tindex":        unexercised,
+	"var":           unexercised,
+}
+
+// inImported is the reason a kind is deferred from this measurement: its only
+// use is inside a package the program imports.
+const inImported = "its only use is in an imported package, which the entry package's tree does not show"
+
+// compileOnly is the reason a kind is deferred: the construct is settled while
+// the program is compiled and leaves no machine code behind.
+const compileOnly = "the construct is settled at compile time and leaves no machine code"
+
+// programKinds returns every kind the programs that run reach. A program is a
+// directory of testdata, which the end-to-end test compiles to machine code
+// and executes.
+func programKinds(t *testing.T) map[string]bool {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, name := range programs(t) {
+		for kind := range emitKinds(t, copyTree(t, filepath.Join("testdata", name))) {
+			seen[kind] = true
+		}
+	}
+	return seen
+}
+
+// TestEverySpecKindReachesMachineCode checks that a program which runs reaches
+// every kind the format defines. A kind only a checked corpus directory
+// reaches is a construct no machine code carries yet, and this is where that
+// shows up rather than in a claim about coverage. The count it reports is the
+// answer to how much of the syntax the corpus carries into machine code.
+func TestEverySpecKindReachesMachineCode(t *testing.T) {
+	if _, err := toolchain.Locate(); err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	seen := programKinds(t)
+	var unbuilt []string
+	for _, kind := range specKinds {
+		if seen[kind] {
+			continue
+		}
+		if reason, ok := deferredRunning[kind]; ok && reason != "" {
+			continue
+		}
+		unbuilt = append(unbuilt, kind)
+	}
+	if len(unbuilt) != 0 {
+		t.Errorf("no program that runs reaches these kinds and none is deferred: %s",
+			strings.Join(unbuilt, " "))
+	}
+	t.Logf("a running program reaches %d of the %d kinds the format defines; the rest are deferred with a reason",
+		len(specKinds)-len(deferredRunning), len(specKinds))
+}
+
 // TestDeferredKindsAreStillUnreached checks the record of what the front end
 // still owes a corpus for. When a construct joins the corpus, its entry must
 // move to coveredKinds, and this test says so.
