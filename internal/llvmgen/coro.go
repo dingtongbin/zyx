@@ -80,9 +80,9 @@ func (g *generator) spawn(module string, n *zyxc.Node) *value {
 	}
 
 	thunk := g.spawnThunk(sym, ptypes, blockLL)
-	g.declareRuntime("zyxrt_spawn", "ptr", "ptr", "ptr")
+	g.declareRuntime("zyxrt_coro_spawn", "ptr", "ptr", "ptr")
 	handle := g.newReg()
-	g.emit("  %s = call ptr @zyxrt_spawn(ptr @%s, ptr %s)", handle, thunk, base)
+	g.emit("  %s = call ptr @zyxrt_coro_spawn(ptr @%s, ptr %s)", handle, thunk, base)
 	return &value{text: handle, ll: "ptr", typ: types.JoinHandle.Instantiate(result)}
 }
 

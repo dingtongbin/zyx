@@ -31,8 +31,8 @@ func (g *generator) allocate(typ *types.Type) string {
 		g.fail(fmt.Errorf("llvmgen: the alignment of %s: %w", typ, err))
 		return "null"
 	}
-	g.declareRuntime("zyxrt_alloc_here", "ptr", "i64", "i64")
+	g.declareRuntime("zyxrt_region_alloc_current", "ptr", "i64", "i64")
 	reg := g.newReg()
-	g.emit("  %s = call ptr @zyxrt_alloc_here(i64 %d, i64 %d)", reg, size, align)
+	g.emit("  %s = call ptr @zyxrt_region_alloc_current(i64 %d, i64 %d)", reg, size, align)
 	return reg
 }

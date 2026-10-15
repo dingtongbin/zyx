@@ -76,7 +76,7 @@ void zyxrt_sched_yield(void) {
   zyxrt_sched_suspend(self);
 }
 
-void *zyxrt_spawn(zyxrt_fn fn, void *arg) {
+void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg) {
   zyxrt_coro *c = (zyxrt_coro *)calloc(1, sizeof(zyxrt_coro));
   if (!c) zyxrt_panic("out of memory", 13);
   c->fn = fn;
@@ -96,7 +96,7 @@ static void free_coro(zyxrt_coro *c) {
   free(c);
 }
 
-void *zyxrt_join(void *handle) {
+void *zyxrt_coro_join(void *handle) {
   zyxrt_coro *c = (zyxrt_coro *)handle;
   if (!c) return NULL;
   while (!c->done) {
@@ -107,7 +107,7 @@ void *zyxrt_join(void *handle) {
   return result;
 }
 
-int zyxrt_try_join(void *handle, void **result) {
+int zyxrt_coro_try_join(void *handle, void **result) {
   zyxrt_coro *c = (zyxrt_coro *)handle;
   if (!c || !c->done) return 0;
   if (result) *result = c->result;

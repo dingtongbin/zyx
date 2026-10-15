@@ -62,7 +62,7 @@ void zyxrt_region_free(void *region) {
   free(r);
 }
 
-void *zyxrt_alloc(void *region, size_t size, size_t align) {
+void *zyxrt_region_alloc(void *region, size_t size, size_t align) {
   zyxrt_region *r = (zyxrt_region *)region;
   if (size == 0) size = 1;
   if (align == 0) align = 1;
@@ -95,6 +95,6 @@ void *zyxrt_region_current(void) {
   return c->region;
 }
 
-void *zyxrt_alloc_here(size_t size, size_t align) {
-  return zyxrt_alloc(zyxrt_region_current(), size, align);
+void *zyxrt_region_alloc_current(size_t size, size_t align) {
+  return zyxrt_region_alloc(zyxrt_region_current(), size, align);
 }

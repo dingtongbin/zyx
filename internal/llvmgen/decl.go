@@ -124,7 +124,7 @@ func (g *generator) entryPoint() {
 		return
 	}
 	symbol := llvmName(main.Payload[2])
-	g.declareRuntime("zyxrt_run", "i32", "ptr", "ptr")
+	g.declareRuntime("zyxrt_run_main", "i32", "ptr", "ptr")
 	// The runtime runs the language main as the root coroutine, so it
 	// reaches the program through a thunk of the runtime's own signature.
 	fmt.Fprintf(&g.m.funcs, "define internal void @zyx.main.thunk(ptr %%arg) {\n")
@@ -132,7 +132,7 @@ func (g *generator) entryPoint() {
 	fmt.Fprintf(&g.m.funcs, "  call void @%s()\n", symbol)
 	fmt.Fprintf(&g.m.funcs, "  ret void\n}\n")
 	fmt.Fprintf(&g.m.funcs, "define i32 @main() {\n")
-	fmt.Fprintf(&g.m.funcs, "  call i32 @zyxrt_run(ptr @zyx.main.thunk, ptr null)\n")
+	fmt.Fprintf(&g.m.funcs, "  call i32 @zyxrt_run_main(ptr @zyx.main.thunk, ptr null)\n")
 	fmt.Fprintf(&g.m.funcs, "  ret i32 0\n}\n")
 }
 
