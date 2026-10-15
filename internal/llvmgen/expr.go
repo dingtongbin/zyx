@@ -413,6 +413,85 @@ func (g *generator) builtinShowCall(module string, n *zyxc.Node, v *value) *valu
 	return &value{ll: "void"}
 }
 
+// equatable reports whether the language gives the type its own equality,
+// which the backend lowers without a declaration. It is the set the check
+// accepts for Eq, so the two never disagree.
+func equatable(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	return t.IsNumeric() || t.Kind == types.KindBool || t.Kind == types.KindChar ||
+		t.Kind == types.KindRaw || t.Kind == types.KindStr || t.Kind == types.KindDuration
+}
+
+// hashable reports whether the language gives the type a hash, which the
+// backend lowers without a declaration. It is the set the check accepts for
+// Hash, so the two never disagree.
+func hashable(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Kind {
+	case types.KindBool, types.KindInt8, types.KindInt16, types.KindInt32,
+		types.KindInt64, types.KindUint8, types.KindUint16, types.KindUint32,
+		types.KindUint64, types.KindUsize, types.KindChar, types.KindRaw,
+		types.KindDuration, types.KindStr:
+		return true
+	}
+	return false
+}
+
+// builtinEqCall lowers an Eq call on a value the language compares itself. A
+// scalar compares with one instruction and a str compares the bytes it names,
+// so the call costs no more than the operator the interface stands for.
+func (g *generator) builtinEqCall(module string, n *zyxc.Node, v *value) *value {
+	other := g.load(g.expr(module, g.wrapped(n, "arg"), v.typ))
+	if other == nil {
+		return nil
+	}
+	if v.typ.Kind == types.KindStr {
+		ap, an := g.splitFat(v)
+		bp, bn := g.splitFat(other)
+		g.declareRuntime("zyxrt_str_eq", "i8", "ptr", g.ptrInt(), "ptr", g.ptrInt())
+		reg := g.newReg()
+		g.emit("  %s = call i8 @zyxrt_str_eq(ptr %s, %s %s, ptr %s, %s %s)",
+			reg, ap, g.ptrInt(), an, bp, g.ptrInt(), bn)
+		return &value{text: reg, ll: "i8", typ: types.Bool}
+	}
+	reg := g.newReg()
+	if v.typ.IsFloat() {
+		g.emit("  %s = fcmp oeq %s %s, %s", reg, v.ll, v.text, other.text)
+	} else {
+		g.emit("  %s = icmp eq %s %s, %s", reg, v.ll, v.text, other.text)
+	}
+	// A comparison yields one bit, and the language stores a bool as a byte.
+	wide := g.newReg()
+	g.emit("  %s = zext i1 %s to i8", wide, reg)
+	return &value{text: wide, ll: "i8", typ: types.Bool}
+}
+
+// builtinHashCall lowers a Hash call on a value the language hashes itself.
+// The hash reads the bytes of the value, which is the rule a container uses
+// for a key of the same type, so a Hash call and a key agree.
+func (g *generator) builtinHashCall(module string, n *zyxc.Node, v *value) *value {
+	size, err := layout.Size(v.typ, g.tab, g.target.Layout())
+	if err != nil {
+		g.fail(fmt.Errorf("llvmgen: the size of %s: %w", v.typ, err))
+		return nil
+	}
+	slot := g.objectAlloca(v.typ)
+	g.storeInto(slot, v.typ, v, true)
+	fn := "zyxrt_hash_bytes"
+	if v.typ.Kind == types.KindStr {
+		// A str is a fat pointer, so its hash reads the bytes it names.
+		fn = "zyxrt_hash_str_key"
+	}
+	g.declareRuntime(fn, g.ptrInt(), "ptr", g.ptrInt())
+	reg := g.newReg()
+	g.emit("  %s = call %s @%s(ptr %s, %s %d)", reg, g.ptrInt(), fn, slot, g.ptrInt(), size)
+	return &value{text: reg, ll: g.ptrInt(), typ: types.Uint64}
+}
+
 // addShown appends a value of a declared type, which writes itself into the
 // buffer through its Show. The method takes the value as its receiver and the
 // buffer as its argument, so nothing becomes a string in between.

@@ -1,0 +1,59 @@
+package main
+
+import "std/fmt"
+
+const tick: Duration = dur.us(7)
+// Same reports whether two values of one type are equal, through the Eq the
+// language gives the type itself.
+
+func Same<T: Eq>(a: T, b: T) -> bool {
+    return a.Eq(b)
+}
+// Fingerprint reports the hash of a value, through the Hash the language
+// gives the type itself.
+
+func Fingerprint<T: Hash>(v: T) -> u64 {
+    return v.Hash()
+}
+
+func main() {
+    fmt.PrintBool(Same(1, 1))
+    fmt.PrintNl()
+    fmt.PrintBool(Same(1, 2))
+    fmt.PrintNl()
+    fmt.PrintBool(Same(- 3,- 3))
+    fmt.PrintNl()
+    fmt.PrintBool(Same(2.5, 2.5))
+    fmt.PrintNl()
+    fmt.PrintBool(Same(2.5, 2.75))
+    fmt.PrintNl()
+    fmt.PrintBool(Same(true, false))
+    fmt.PrintNl()
+    fmt.PrintBool(Same('x', 'x'))
+    fmt.PrintNl()
+    fmt.PrintBool(Same(tick, tick))
+    fmt.PrintNl()
+    // A str compares and hashes the bytes it names, not the pointer, so a
+    // value built at run time matches a literal with the same text.
+    var built = f"{'a'}{'b'}{'c'}"
+    fmt.PrintBool(Same(built, "abc"))
+    fmt.PrintNl()
+    fmt.PrintBool(Fingerprint(built) == Fingerprint("abc"))
+    fmt.PrintNl()
+    // A hash is stable for equal values.
+    fmt.PrintBool(Fingerprint(7) == Fingerprint(7))
+    fmt.PrintNl()
+    fmt.PrintBool(Fingerprint(tick) == Fingerprint(tick))
+    fmt.PrintNl()
+    // The key a container uses and the method follow one rule, so the key a
+    // container stored is the key a lookup finds.
+    var m: Map<str, i64> = Map { "abc": 1, "other": 2}
+    match m.Get(built) {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.PrintI64(- 1)
+    }
+    fmt.PrintNl()
+    // A primitive reaches its Eq directly as well.
+    fmt.PrintBool(7.Eq(7))
+    fmt.PrintNl()
+}

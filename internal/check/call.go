@@ -593,6 +593,12 @@ func builtinMethod(recv *types.Type, name string) *types.Type {
 		// value or a constrained parameter would call it.
 		return types.FuncOf(nil, types.Buf)
 	}
+	if name == "Eq" && equatable(recv) {
+		return types.FuncOf(types.Bool, recv)
+	}
+	if name == "Hash" && hashable(recv) {
+		return types.FuncOf(types.Uint64)
+	}
 	return nil
 }
 
@@ -750,13 +756,15 @@ func (c *checker) implements(t, iface *types.Type) bool {
 }
 
 // builtinImplements reports whether the language itself gives a type an
-// interface: the primitive types and str implement Eq and Hash, the types
-// whose text the backend writes from its fixed table implement Show, and the
-// concurrency handles are SyncSafe.
+// interface: the types it compares implement Eq, the types it hashes
+// implement Hash, the types whose text the backend writes from its fixed
+// table implement Show, and the concurrency handles are SyncSafe.
 func builtinImplements(t, iface *types.Type) bool {
 	switch iface.Name {
-	case "Eq", "Hash":
-		return t.IsBasic() || t.Kind == types.KindStr || t.Kind == types.KindDuration
+	case "Eq":
+		return equatable(t)
+	case "Hash":
+		return hashable(t)
 	case "Show":
 		return showable(t)
 	case "SyncSafe":
@@ -779,6 +787,35 @@ func showable(t *types.Type) bool {
 	}
 	return t.IsNumeric() || t.Kind == types.KindBool || t.Kind == types.KindChar ||
 		t.Kind == types.KindStr || t.Kind == types.KindDuration
+}
+
+// equatable reports whether the language gives the type its own equality,
+// which is the set the comparison operators accept. It is exactly the set
+// whose Eq the backend lowers.
+func equatable(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	return t.IsNumeric() || t.Kind == types.KindBool || t.Kind == types.KindChar ||
+		t.Kind == types.KindRaw || t.Kind == types.KindStr || t.Kind == types.KindDuration
+}
+
+// hashable reports whether the language gives the type a hash, which is
+// exactly the set a container accepts as a key. A floating-point value is
+// left out: its equality is not the equality of its bytes, so no hash agrees
+// with it.
+func hashable(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Kind {
+	case types.KindBool, types.KindInt8, types.KindInt16, types.KindInt32,
+		types.KindInt64, types.KindUint8, types.KindUint16, types.KindUint32,
+		types.KindUint64, types.KindUsize, types.KindChar, types.KindRaw,
+		types.KindDuration, types.KindStr:
+		return true
+	}
+	return false
 }
 
 // hasReferenceMember reports whether a type holds a reference that a deep

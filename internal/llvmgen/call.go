@@ -127,6 +127,12 @@ func (g *generator) methodCall(module string, n *zyxc.Node) *value {
 		// buffer it names rather than reaching a declaration.
 		return g.builtinShowCall(module, n, g.load(recv))
 	}
+	if n.Payload[0] == "Eq" && equatable(recv.typ) {
+		return g.builtinEqCall(module, n, g.load(recv))
+	}
+	if n.Payload[0] == "Hash" && hashable(recv.typ) {
+		return g.builtinHashCall(module, n, g.load(recv))
+	}
 	decl := g.tab.decl(sym)
 	if decl == nil || decl.Kind != "func" {
 		g.fail(fmt.Errorf("llvmgen: the method %s has no declaration (%s)", n.Payload[0], sym))
