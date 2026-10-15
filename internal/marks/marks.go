@@ -270,6 +270,10 @@ func (b *builder) regionBlock(v *ast.RegionStmt) {
 
 // assign walks an assignment and records the value's uses.
 func (b *builder) assign(v *ast.AssignStmt) {
+	// A write whose target is a value shared across coroutines is recorded,
+	// because it is the one write the language allows to be observed by
+	// another coroutine.
+	b.noteSharedStore(v.Target, v)
 	if id, ok := v.Target.(*ast.Ident); ok && v.Op == token.Assign {
 		// A plain assignment to a name moves the value to that name.
 		b.expr(v.Value)
@@ -482,6 +486,18 @@ func (b *builder) allocFor(value ast.Expr) *allocation {
 		return nil
 	}
 	return b.allocsBySym[sym.ID]
+}
+
+// noteSharedStore records a write to a value shared across coroutines. The
+// language allows exactly one coroutine to own a mutable value, so a write
+// through a shared one is the case the mark exists for.
+func (b *builder) noteSharedStore(target ast.Expr, at ast.Node) {
+	if b.cpkg == nil {
+		return
+	}
+	if t := b.cpkg.Nodes[target]; t != nil && b.cpkg.SyncSafe(t) {
+		b.info.Add(at, "shared-store", "")
+	}
 }
 
 // share records that a value is stored where it outlives its binding.
