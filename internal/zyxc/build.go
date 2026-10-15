@@ -217,7 +217,7 @@ func (b *builder) decl(decl ast.Decl) *Node {
 		}
 		return b.at(n, d.Sp)
 	case *ast.FuncDecl:
-		return b.funcNode(d)
+		return b.funcNode(d, "")
 	case *ast.StructDecl:
 		return b.structNode(d)
 	case *ast.UnionDecl:
@@ -234,9 +234,10 @@ func (b *builder) decl(decl ast.Decl) *Node {
 				n.Child(b.variantNode(v))
 			}
 		}
+		selfType := b.selfType(d.Name)
 		for _, member := range d.Members {
 			if _, ok := member.(*ast.VariantDecl); !ok {
-				if child := b.member(member); child != nil {
+				if child := b.member(member, selfType); child != nil {
 					n.Child(child)
 				}
 			}
@@ -255,10 +256,10 @@ func (b *builder) decl(decl ast.Decl) *Node {
 }
 
 // member renders a type body member other than a field or a variant.
-func (b *builder) member(member ast.Decl) *Node {
+func (b *builder) member(member ast.Decl, selfType string) *Node {
 	switch m := member.(type) {
 	case *ast.FuncDecl:
-		return b.funcNode(m)
+		return b.funcNode(m, selfType)
 	case *ast.ConstDecl:
 		n := New("const", m.Name.Name, b.symID(m.Name))
 		if m.Type != nil {
@@ -272,7 +273,7 @@ func (b *builder) member(member ast.Decl) *Node {
 		n := New("impl", b.typeText(b.cpkg.Nodes[m.Interface]))
 		n.Child(b.typeParams(m.TypeParams)...)
 		for _, f := range m.Methods {
-			n.Child(b.funcNode(f))
+			n.Child(b.funcNode(f, selfType))
 		}
 		return b.at(n, m.Sp)
 	}
@@ -304,8 +305,18 @@ func (b *builder) typeParams(params []*ast.TypeParam) []*Node {
 	return out
 }
 
+// selfType returns the declared type of a type body, which is what a method
+// of that body receives. Writing it on the method removes the only place
+// where the backend would have had to read it back out of the symbol id.
+func (b *builder) selfType(name *ast.Ident) string {
+	if t := b.staticType(name); t != nil {
+		return b.typeText(t)
+	}
+	return ""
+}
+
 // funcNode renders a function, a method, or an interface signature.
-func (b *builder) funcNode(f *ast.FuncDecl) *Node {
+func (b *builder) funcNode(f *ast.FuncDecl, selfType string) *Node {
 	qual := "plain"
 	switch {
 	case f.Quals.Comptime:
@@ -316,6 +327,9 @@ func (b *builder) funcNode(f *ast.FuncDecl) *Node {
 		qual = "c"
 	}
 	n := New("func", f.Name.Name, qual, b.symID(f.Name))
+	if selfType != "" {
+		n.Child(New("receiver", selfType))
+	}
 	if f.Name.Name == "init" {
 		n.Mark("init", "")
 	}
@@ -374,11 +388,12 @@ func (b *builder) structNode(d *ast.StructDecl) *Node {
 			n.Child(b.fieldNode(f))
 		}
 	}
+	selfType := b.selfType(d.Name)
 	for _, member := range d.Members {
 		if _, ok := member.(*ast.FieldDecl); ok {
 			continue
 		}
-		if child := b.member(member); child != nil {
+		if child := b.member(member, selfType); child != nil {
 			n.Child(child)
 		}
 	}
@@ -985,13 +1000,18 @@ func (b *builder) isTypeCallee(id *ast.Ident) bool {
 	return false
 }
 
-// literalNode renders a literal.
+// literalNode renders a literal. An interpolated string keeps every segment
+// in order, so the backend rebuilds the text without guessing where the
+// holes were.
 func (b *builder) literalNode(lit *ast.Literal) *Node {
-	switch lit.Kind.String() {
-	case "fstring":
+	if lit.Kind.String() == "fstring" {
 		n := New("lit", lit.Value)
 		for _, part := range lit.Parts {
-			n.Child(b.expr(part.X))
+			if part.X == nil {
+				n.Child(New("part-text", part.Text))
+				continue
+			}
+			n.Child(New("part-expr").Child(b.expr(part.X)))
 		}
 		return b.at(n, lit.Sp)
 	}
