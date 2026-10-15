@@ -91,3 +91,56 @@ size_t zyxrt_fmt_char(char *out, size_t cap, uint32_t c) {
     }
     return n;
 }
+
+/* divmod10 divides the 128-bit value (hi, lo) by ten in place and returns the
+   remainder. The quotient of the low half needs the remainder carried in from
+   the high half, so it is computed from 2^64 = 10 * Q + R: the high remainder
+   contributes Q per unit and the low half is divided with that carry added,
+   which never overflows. */
+static uint64_t divmod10(uint64_t *hi, uint64_t *lo) {
+    const uint64_t q = 1844674407370955161ULL; /* floor(2^64 / 10) */
+    uint64_t h = *hi;
+    uint64_t l = *lo;
+    uint64_t rem = h % 10;
+    /* rem * 2^64 + l = 10 * (rem * q) + (rem * 6 + l). */
+    uint64_t t = l + rem * 6;
+    uint64_t carry = t < l ? 1 : 0;
+    /* The carry is one at most, and it can only be set when l is within 54 of
+       the top, so t + 6 cannot wrap. */
+    uint64_t rest = carry * 6 + t;
+    *hi = h / 10;
+    *lo = (rem + carry) * q + rest / 10;
+    return rest % 10;
+}
+
+size_t zyxrt_fmt_u128(char *out, size_t cap, uint64_t hi, uint64_t lo) {
+    char digits[40];
+    size_t n = 0;
+    do {
+        digits[n++] = (char)('0' + divmod10(&hi, &lo));
+    } while (hi != 0 || lo != 0);
+    if (n > cap) {
+        n = cap;
+    }
+    for (size_t i = 0; i < n; i++) {
+        out[i] = digits[n - 1 - i];
+    }
+    return n;
+}
+
+/* zyxrt_fmt_i128 writes the decimal form of a signed 128-bit value, sign
+   included. The magnitude of the smallest value does not fit in the signed
+   type, so it is taken in the unsigned one, which is the two's complement of
+   the whole pair. */
+size_t zyxrt_fmt_i128(char *out, size_t cap, int64_t hi, uint64_t lo) {
+    if (hi >= 0) {
+        return zyxrt_fmt_u128(out, cap, (uint64_t)hi, lo);
+    }
+    if (cap == 0) {
+        return 0;
+    }
+    out[0] = '-';
+    uint64_t magnitude_hi = ~(uint64_t)hi + (lo == 0 ? 1 : 0);
+    uint64_t magnitude_lo = ~lo + 1;
+    return 1 + zyxrt_fmt_u128(out + 1, cap - 1, magnitude_hi, magnitude_lo);
+}

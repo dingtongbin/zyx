@@ -682,9 +682,9 @@ func (g *generator) mapHash(key *types.Type) (string, string) {
 	}
 	switch key.Kind {
 	case types.KindBool, types.KindInt8, types.KindInt16, types.KindInt32,
-		types.KindInt64, types.KindUint8, types.KindUint16, types.KindUint32,
-		types.KindUint64, types.KindUsize, types.KindChar, types.KindRaw,
-		types.KindDuration:
+		types.KindInt64, types.KindInt128, types.KindUint8, types.KindUint16,
+		types.KindUint32, types.KindUint64, types.KindUint128, types.KindUsize,
+		types.KindChar, types.KindRaw, types.KindDuration:
 		g.declareRuntime("zyxrt_hash_bytes", g.ptrInt(), "ptr", g.ptrInt())
 		g.declareRuntime("zyxrt_eq_bytes", "i32", "ptr", "ptr", g.ptrInt())
 		return "@zyxrt_hash_bytes", "@zyxrt_eq_bytes"

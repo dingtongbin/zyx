@@ -810,9 +810,9 @@ func hashable(t *types.Type) bool {
 	}
 	switch t.Kind {
 	case types.KindBool, types.KindInt8, types.KindInt16, types.KindInt32,
-		types.KindInt64, types.KindUint8, types.KindUint16, types.KindUint32,
-		types.KindUint64, types.KindUsize, types.KindChar, types.KindRaw,
-		types.KindDuration, types.KindStr:
+		types.KindInt64, types.KindInt128, types.KindUint8, types.KindUint16,
+		types.KindUint32, types.KindUint64, types.KindUint128, types.KindUsize,
+		types.KindChar, types.KindRaw, types.KindDuration, types.KindStr:
 		return true
 	}
 	return false

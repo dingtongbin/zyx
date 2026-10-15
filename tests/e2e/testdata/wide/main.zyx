@@ -1,0 +1,42 @@
+package main
+
+import "std/fmt"
+
+func main() {
+    // A 128-bit value is written out at its own width, and the smallest
+    // signed value has no magnitude in the signed type.
+    var high: i128 = 170141183460469231731687303715884105727
+    var low: i128 =- 170141183460469231731687303715884105728
+    var top: u128 = 340282366920938463463374607431768211455
+    var two64: u128 = 18446744073709551616
+    var zero: u128 = 0
+    var small: i128 =- 5
+    fmt.Println(f"{high}")
+    fmt.Println(f"{low}")
+    fmt.Println(f"{top}")
+    fmt.Println(f"{two64}")
+    fmt.Println(f"{zero}")
+    fmt.Println(f"{small}")
+    fmt.PrintlnValue(top)
+    // A 128-bit value is a key like any other.
+    var m: Map<i128, i64> = Map { high: 1, small: 2}
+    fmt.PrintI64(i64(m.Len()))
+    fmt.PrintNl()
+    match m.Get(small) {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.PrintI64(- 1)
+    }
+    fmt.PrintNl()
+    match m.Get(high) {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.PrintI64(- 1)
+    }
+    fmt.PrintNl()
+    // Eq and Hash reach a 128-bit value too.
+    fmt.PrintBool(high.Eq(high))
+    fmt.PrintNl()
+    fmt.PrintBool(high.Hash() == high.Hash())
+    fmt.PrintNl()
+    fmt.PrintBool(small.Eq(high))
+    fmt.PrintNl()
+}

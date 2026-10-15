@@ -61,3 +61,15 @@ void zyxrt_buf_write_dur(void *handle, uint64_t ns) {
     size_t n = zyxrt_fmt_u64(text, sizeof text, ns);
     zyxrt_buf_write(handle, (const unsigned char *)text, n);
 }
+
+void zyxrt_buf_write_i128(void *handle, int64_t hi, uint64_t lo) {
+    char text[48];
+    size_t n = zyxrt_fmt_i128(text, sizeof text, hi, lo);
+    zyxrt_buf_write(handle, (const unsigned char *)text, n);
+}
+
+void zyxrt_buf_write_u128(void *handle, uint64_t hi, uint64_t lo) {
+    char text[48];
+    size_t n = zyxrt_fmt_u128(text, sizeof text, hi, lo);
+    zyxrt_buf_write(handle, (const unsigned char *)text, n);
+}

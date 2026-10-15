@@ -4,6 +4,7 @@ package llvmgen
 
 import (
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 
@@ -347,37 +348,71 @@ func (g *generator) addValue(module string, buf string, v *value) bool {
 		g.emit("  call void @zyxrt_buf_write(ptr %s, ptr %s, %s %s)", buf, ptr, g.ptrInt(), size)
 		return true
 	}
-	fn, argLL, ok := g.bufWriter(typ)
+	fn, args, ok := g.bufWriter(typ)
 	if !ok {
 		return g.addShown(module, buf, v)
 	}
-	g.declareRuntime(fn, "void", "ptr", argLL)
-	g.emit("  call void @%s(ptr %s, %s %s)", fn, buf, argLL, v.text)
+	regs := g.bufArgs(typ, v)
+	lls := append([]string{"ptr"}, args...)
+	vals := append([]string{buf}, regs...)
+	g.declareRuntime(fn, "void", lls...)
+	g.emit("  call void @%s(%s)", fn, typedArgs(lls, vals))
 	return true
 }
 
 // bufWriter returns the runtime writer that appends one value to a buffer, in
-// the form the language writes that value in. The language gives every
-// primitive its text from this table rather than from a Show declaration, so
-// an interpolated primitive and a Show call on one follow the same rule.
-func (g *generator) bufWriter(typ *types.Type) (string, string, bool) {
+// the form the language writes that value in, and the LLVM types of the
+// arguments it takes after the buffer. The language gives every primitive its
+// text from this table rather than from a Show declaration, so an
+// interpolated primitive and a Show call on one follow the same rule.
+func (g *generator) bufWriter(typ *types.Type) (string, []string, bool) {
 	switch {
 	case typ.IsFloat():
-		return "zyxrt_buf_write_f64", g.llType(typ), true
+		return "zyxrt_buf_write_f64", []string{g.llType(typ)}, true
 	case typ.Kind == types.KindBool:
-		return "zyxrt_buf_write_bool", "i8", true
+		return "zyxrt_buf_write_bool", []string{"i8"}, true
 	case typ.Kind == types.KindChar:
-		return "zyxrt_buf_write_char", "i32", true
+		return "zyxrt_buf_write_char", []string{"i32"}, true
 	case typ.Kind == types.KindDuration:
 		// A duration is a count of nanoseconds and nothing else, so its text
 		// is that count.
-		return "zyxrt_buf_write_dur", g.ptrInt(), true
+		return "zyxrt_buf_write_dur", []string{g.ptrInt()}, true
+	case typ.Kind == types.KindInt128:
+		return "zyxrt_buf_write_i128", []string{g.ptrInt(), g.ptrInt()}, true
+	case typ.Kind == types.KindUint128:
+		return "zyxrt_buf_write_u128", []string{g.ptrInt(), g.ptrInt()}, true
 	case typ.IsSigned():
-		return "zyxrt_buf_write_i64", g.ptrInt(), true
+		return "zyxrt_buf_write_i64", []string{g.ptrInt()}, true
 	case typ.IsInteger():
-		return "zyxrt_buf_write_u64", g.ptrInt(), true
+		return "zyxrt_buf_write_u64", []string{g.ptrInt()}, true
 	}
-	return "", "", false
+	return "", nil, false
+}
+
+// bufArgs returns the registers that carry a value to the writer the fixed
+// table names. A 128-bit value is handed over as its two halves, because the
+// runtime is portable C11 and has no 128-bit type to receive it.
+func (g *generator) bufArgs(typ *types.Type, v *value) []string {
+	if typ.Kind != types.KindInt128 && typ.Kind != types.KindUint128 {
+		return []string{v.text}
+	}
+	high := g.newReg()
+	g.emit("  %s = lshr i128 %s, 64", high, v.text)
+	upper := g.newReg()
+	g.emit("  %s = trunc i128 %s to %s", upper, high, g.ptrInt())
+	lower := g.newReg()
+	g.emit("  %s = trunc i128 %s to %s", lower, v.text, g.ptrInt())
+	return []string{upper, lower}
+}
+
+// typedArgs renders the LLVM types of a call beside the registers that fill
+// them.
+func typedArgs(lls, regs []string) string {
+	parts := make([]string, len(lls))
+	for i := range lls {
+		parts[i] = lls[i] + " " + regs[i]
+	}
+	return strings.Join(parts, ", ")
 }
 
 // builtinShow reports whether the language gives the type its Show from the
@@ -433,9 +468,9 @@ func hashable(t *types.Type) bool {
 	}
 	switch t.Kind {
 	case types.KindBool, types.KindInt8, types.KindInt16, types.KindInt32,
-		types.KindInt64, types.KindUint8, types.KindUint16, types.KindUint32,
-		types.KindUint64, types.KindUsize, types.KindChar, types.KindRaw,
-		types.KindDuration, types.KindStr:
+		types.KindInt64, types.KindInt128, types.KindUint8, types.KindUint16,
+		types.KindUint32, types.KindUint64, types.KindUint128, types.KindUsize,
+		types.KindChar, types.KindRaw, types.KindDuration, types.KindStr:
 		return true
 	}
 	return false
@@ -547,12 +582,12 @@ func (g *generator) literal(module string, n *zyxc.Node, want *types.Type) *valu
 		}
 		return &value{text: strconv.FormatInt(int64(runes[0]), 10), ll: "i32", typ: typ}
 	case "int":
-		v, err := parseIntLiteral(text)
+		digits, err := intLiteralText(text)
 		if err != nil {
 			g.fail(fmt.Errorf("llvmgen: %q is not an integer", text))
 			return nil
 		}
-		return &value{text: strconv.FormatUint(v, 10), ll: g.llType(typ), typ: typ}
+		return &value{text: digits, ll: g.llType(typ), typ: typ}
 	case "float":
 		v, err := strconv.ParseFloat(text, 64)
 		if err != nil {
@@ -570,8 +605,25 @@ func (g *generator) literal(module string, n *zyxc.Node, want *types.Type) *valu
 	return nil
 }
 
-// parseIntLiteral parses the source text of an integer literal.
-func parseIntLiteral(text string) (uint64, error) {
+// intLiteralText returns the decimal text of an integer literal, whatever
+// base and separators the source wrote it in. A literal may name a value of
+// any width, so one that does not fit a machine word is carried at its own
+// width rather than truncated.
+func intLiteralText(text string) (string, error) {
+	digits, base := splitLiteral(text)
+	if v, err := strconv.ParseUint(digits, base, 64); err == nil {
+		return strconv.FormatUint(v, 10), nil
+	}
+	v, ok := new(big.Int).SetString(digits, base)
+	if !ok {
+		return "", fmt.Errorf("an integer literal")
+	}
+	return v.String(), nil
+}
+
+// splitLiteral returns the digits of an integer literal and the base they are
+// written in.
+func splitLiteral(text string) (string, int) {
 	clean := strings.ReplaceAll(text, "_", "")
 	base := 10
 	if len(clean) > 2 && clean[0] == '0' {
@@ -584,7 +636,7 @@ func parseIntLiteral(text string) (uint64, error) {
 			base, clean = 8, clean[2:]
 		}
 	}
-	return strconv.ParseUint(clean, base, 64)
+	return clean, base
 }
 
 // binary lowers an operator application.

@@ -115,6 +115,10 @@ size_t zyxrt_fmt_u64(char *out, size_t cap, uint64_t v);
 size_t zyxrt_fmt_f64(char *out, size_t cap, double v);
 size_t zyxrt_fmt_bool(char *out, size_t cap, int8_t v);
 size_t zyxrt_fmt_char(char *out, size_t cap, uint32_t c);
+/* A 128-bit value crosses as its two halves, because the runtime is portable
+   C11 and has no 128-bit type of its own. */
+size_t zyxrt_fmt_i128(char *out, size_t cap, int64_t hi, uint64_t lo);
+size_t zyxrt_fmt_u128(char *out, size_t cap, uint64_t hi, uint64_t lo);
 
 /* The text of one value is appended to a buffer, so a value costs one pass
    and never becomes a string of its own. */
@@ -124,6 +128,8 @@ void zyxrt_buf_write_f64(void *handle, double v);
 void zyxrt_buf_write_bool(void *handle, int8_t v);
 void zyxrt_buf_write_char(void *handle, uint32_t c);
 void zyxrt_buf_write_dur(void *handle, uint64_t ns);
+void zyxrt_buf_write_i128(void *handle, int64_t hi, uint64_t lo);
+void zyxrt_buf_write_u128(void *handle, uint64_t hi, uint64_t lo);
 
 /* Process entry. The generated main calls this with the address of the zyx
    main function, and the runtime runs it on the root region. */
