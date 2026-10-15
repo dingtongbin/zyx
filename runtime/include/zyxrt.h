@@ -83,6 +83,20 @@ void zyxrt_region_release(void *region, void *object, size_t size);
    the bytes rather than the two pointers. */
 int8_t zyxrt_str_eq(const char *a, size_t an, const char *b, size_t bn);
 
+/* The text of one value, in the same form the printing helpers write. The
+   text belongs to the region, and its address and length are reported
+   through the out parameters. */
+void zyxrt_i64_str(int64_t v, const char **out, size_t *len);
+void zyxrt_u64_str(uint64_t v, const char **out, size_t *len);
+void zyxrt_f64_str(double v, const char **out, size_t *len);
+void zyxrt_bool_str(int8_t v, const char **out, size_t *len);
+void zyxrt_char_str(uint32_t c, const char **out, size_t *len);
+
+/* A builder gathers the pieces of one text in a single pass. */
+void *zyxrt_strbuf_new(void);
+void zyxrt_strbuf_add(void *handle, const char *p, size_t n);
+const char *zyxrt_strbuf_finish(void *handle, size_t *len);
+
 /* Process entry. The generated main calls this with the address of the zyx
    main function, and the runtime runs it on the root region. */
 typedef void (*zyxrt_main_fn)(void *arg);

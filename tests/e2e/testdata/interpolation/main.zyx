@@ -1,0 +1,26 @@
+package main
+
+import "std/fmt"
+
+struct Point {
+    x: i64
+    y: i64
+    impl Show {
+        func Show() -> str {
+            return f"({self.x}, {self.y})"
+        }
+    }
+}
+
+func main() {
+    var name = "world"
+    fmt.Println(f"hello, {name}")
+    var n = 42
+    var x = 2.5
+    var ok = true
+    var ch = 'A'
+    fmt.Println(f"{n}|{x}|{ok}|{ch}|{name}")
+    var p = Point { x: 1, y: 2}
+    fmt.Println(f"p = {p}")
+    fmt.Println(f"")
+}

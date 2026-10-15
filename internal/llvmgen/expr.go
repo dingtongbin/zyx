@@ -282,6 +282,117 @@ func (g *generator) parts(n *zyxc.Node) int {
 	return count
 }
 
+// fstring lowers an interpolated string. The pieces are gathered in order
+// into one text, so the whole string costs one buffer rather than one copy
+// per piece. A value is written the way the language writes it, which is what
+// the printing helpers do, so an interpolated number and a printed number
+// read the same.
+func (g *generator) fstring(module string, n *zyxc.Node) *value {
+	g.declareRuntime("zyxrt_strbuf_new", "ptr")
+	buf := g.newReg()
+	g.emit("  %s = call ptr @zyxrt_strbuf_new()", buf)
+	for _, child := range n.Children {
+		switch child.Kind {
+		case "part-text":
+			text := ""
+			if len(child.Payload) > 0 {
+				text = child.Payload[0]
+			}
+			g.addText(buf, text)
+		case "part-expr":
+			v := g.load(g.expr(module, g.sole(child), nil))
+			if v == nil || !g.addValue(module, buf, v) {
+				return nil
+			}
+		}
+	}
+	length := g.alloca(types.Usize)
+	g.declareRuntime("zyxrt_strbuf_finish", "ptr", "ptr", "ptr")
+	text := g.newReg()
+	g.emit("  %s = call ptr @zyxrt_strbuf_finish(ptr %s, ptr %s)", text, buf, length)
+	size := g.newReg()
+	g.emit("  %s = load %s, ptr %s", size, g.ptrInt(), length)
+	ll := g.llType(types.Str)
+	first := g.newReg()
+	g.emit("  %s = insertvalue %s undef, ptr %s, 0", first, ll, text)
+	out := g.newReg()
+	g.emit("  %s = insertvalue %s %s, %s %s, 1", out, ll, first, g.ptrInt(), size)
+	return &value{text: out, ll: ll, typ: types.Str}
+}
+
+// addText appends one literal piece to the text being gathered.
+func (g *generator) addText(buf, text string) {
+	if text == "" {
+		return
+	}
+	global := g.m.stringGlobal(text)
+	g.declareRuntime("zyxrt_strbuf_add", "void", "ptr", "ptr", g.ptrInt())
+	g.emit("  call void @zyxrt_strbuf_add(ptr %s, ptr %s, %s %d)", buf, global, g.ptrInt(), len(text))
+}
+
+// addValue appends one value to the text being gathered, in the form the
+// language writes that value in.
+func (g *generator) addValue(module string, buf string, v *value) bool {
+	typ := v.typ
+	if typ == nil {
+		g.fail(fmt.Errorf("llvmgen: the type of an interpolated value is not settled"))
+		return false
+	}
+	if typ.Kind == types.KindStr {
+		ptr, size := g.splitFat(v)
+		g.declareRuntime("zyxrt_strbuf_add", "void", "ptr", "ptr", g.ptrInt())
+		g.emit("  call void @zyxrt_strbuf_add(ptr %s, ptr %s, %s %s)", buf, ptr, g.ptrInt(), size)
+		return true
+	}
+	fn, argLL := "", ""
+	switch {
+	case typ.IsFloat():
+		fn, argLL = "zyxrt_f64_str", g.llType(typ)
+	case typ.Kind == types.KindBool:
+		fn, argLL = "zyxrt_bool_str", "i8"
+	case typ.Kind == types.KindChar:
+		fn, argLL = "zyxrt_char_str", "i32"
+	case typ.IsSigned():
+		fn, argLL = "zyxrt_i64_str", g.ptrInt()
+	case typ.IsInteger():
+		fn, argLL = "zyxrt_u64_str", g.ptrInt()
+	default:
+		return g.addShown(module, buf, v)
+	}
+	size := g.alloca(types.Usize)
+	text := g.alloca(types.Raw)
+	g.declareRuntime(fn, "void", argLL, "ptr", "ptr")
+	g.emit("  call void @%s(%s %s, ptr %s, ptr %s)", fn, argLL, v.text, text, size)
+	g.appendGathered(buf, text, size)
+	return true
+}
+
+// addShown appends a value of a declared type, which supplies the form
+// through its Show.
+func (g *generator) addShown(module string, buf string, v *value) bool {
+	sym := g.implMethod(v.typ, types.Show, "Show")
+	if sym == "" {
+		g.fail(fmt.Errorf("llvmgen: %s cannot be interpolated: it has no Show", v.typ))
+		return false
+	}
+	g.declareRuntime("zyxrt_strbuf_add", "void", "ptr", "ptr", g.ptrInt())
+	shown := g.newReg()
+	g.emit("  %s = call %s @%s(ptr %s)", shown, g.llType(types.Str), llvmName(sym), g.addrText(v))
+	ptr, size := g.splitFat(&value{text: shown, ll: g.llType(types.Str), typ: types.Str})
+	g.emit("  call void @zyxrt_strbuf_add(ptr %s, ptr %s, %s %s)", buf, ptr, g.ptrInt(), size)
+	return true
+}
+
+// appendGathered appends the text a formatting function reported.
+func (g *generator) appendGathered(buf, text, size string) {
+	ptr := g.newReg()
+	g.emit("  %s = load ptr, ptr %s", ptr, text)
+	length := g.newReg()
+	g.emit("  %s = load %s, ptr %s", length, g.ptrInt(), size)
+	g.declareRuntime("zyxrt_strbuf_add", "void", "ptr", "ptr", g.ptrInt())
+	g.emit("  call void @zyxrt_strbuf_add(ptr %s, ptr %s, %s %s)", buf, ptr, g.ptrInt(), length)
+}
+
 // literal lowers a literal. The kind the format wrote settles which literal
 // form it is; the annotated type settles only the width of a number.
 func (g *generator) literal(module string, n *zyxc.Node, want *types.Type) *value {
@@ -291,8 +402,9 @@ func (g *generator) literal(module string, n *zyxc.Node, want *types.Type) *valu
 	}
 	kind, text := n.Payload[0], n.Payload[1]
 	if kind == "fstring" {
-		g.fail(fmt.Errorf("llvmgen: an interpolated string is not lowered"))
-		return nil
+		// An interpolated string is a literal whose pieces are children, so
+		// it is gathered rather than written out as one text.
+		return g.fstring(module, n)
 	}
 	typ := want
 	if typ == nil {
