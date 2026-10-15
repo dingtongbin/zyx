@@ -692,7 +692,8 @@ func (b *builder) selectArm(arm *ast.SelectArm) *Node {
 	var n *Node
 	switch arm.Kind {
 	case ast.SelectRecv:
-		n = New("recv-arm", nameOr(arm.RecvValue), nameOr(arm.RecvOk))
+		n = New("recv-arm", nameOr(arm.RecvValue), b.symID(arm.RecvValue),
+			nameOr(arm.RecvOk), b.symID(arm.RecvOk))
 		n.Child(b.wrap("chan", b.expr(arm.Chan)))
 	case ast.SelectSend:
 		n = New("send-arm")

@@ -47,6 +47,9 @@ void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg);
    the coroutine is released, so a caller never reaches freed memory. */
 void *zyxrt_coro_join(void *handle, void **panic);
 int zyxrt_coro_try_join(void *handle, void **result, void **panic);
+/* zyxrt_sched_yield lets another ready coroutine run. A select uses it when
+   no arm is ready and the select has no default. */
+void zyxrt_sched_yield(void);
 /* zyxrt_coro_set_result records the value the running coroutine produced,
    which the handle's Join returns. A value that fits in a register crosses
    the boundary as itself; an object needs a copy, which the boundary marks

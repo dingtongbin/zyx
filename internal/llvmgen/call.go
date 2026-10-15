@@ -106,6 +106,11 @@ func (g *generator) methodCall(module string, n *zyxc.Node) *value {
 	if recv == nil {
 		return nil
 	}
+	if recv.typ.Kind == types.KindChan {
+		// A channel is an opaque runtime handle: its operations have no
+		// declaration in any tree.
+		return g.chanCall(module, n, g.load(recv), n.Payload[0])
+	}
 	decl := g.tab.decl(sym)
 	if decl == nil || decl.Kind != "func" {
 		g.fail(fmt.Errorf("llvmgen: the method %s has no declaration (%s)", n.Payload[0], sym))

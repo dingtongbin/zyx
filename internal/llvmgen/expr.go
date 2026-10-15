@@ -138,6 +138,8 @@ func (g *generator) expr(module string, n *zyxc.Node, want *types.Type) *value {
 		return g.tupleIndex(module, n)
 	case "slice":
 		return g.sliceExpr(module, n)
+	case "new":
+		return g.newExpr(module, n)
 	case "struct-lit":
 		return g.structLit(module, n)
 	case "variant-lit":

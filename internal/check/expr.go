@@ -819,6 +819,8 @@ func (c *checker) newType(v *ast.NewExpr) *types.Type {
 	switch {
 	case typ.Kind == types.KindContainer:
 		return c.newContainer(v, typ)
+	case typ.Kind == types.KindChan:
+		return c.newChan(v, typ)
 	case typ.Kind == types.KindStruct || typ.Kind == types.KindExternStruct:
 		return c.newStruct(v, typ)
 	}
@@ -826,6 +828,21 @@ func (c *checker) newType(v *ast.NewExpr) *types.Type {
 		"build a struct through new, or use a construction literal",
 		"%s cannot be built with new", typ)
 	c.checkExprs(v.Args)
+	return typ
+}
+
+// newChan checks `new chan<T>(cap)`, which takes the buffer capacity. A
+// capacity of zero builds a rendezvous channel, so the argument may be
+// omitted.
+func (c *checker) newChan(v *ast.NewExpr, typ *types.Type) *types.Type {
+	if len(v.Args) > 1 {
+		c.errorHelp(diag.CodeArgCount, v.Sp,
+			"pass the buffer capacity, or nothing for a rendezvous channel",
+			"a channel takes at most one argument, got %d", len(v.Args))
+	}
+	for _, a := range v.Args {
+		c.checkExpr(a, types.Usize)
+	}
 	return typ
 }
 
