@@ -3,10 +3,12 @@
 package check
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 
 	"zyx/internal/ast"
+	"zyx/internal/cheader"
 	"zyx/internal/diag"
 	"zyx/internal/resolve"
 	"zyx/internal/source"
@@ -155,16 +157,7 @@ func (c *checker) checkClone(recv *types.Type, sp source.Span) *types.Type {
 // checkQualifiedCall checks `pkg.Fn(args)` and `c.fn(args)`.
 func (c *checker) checkQualifiedCall(sel *ast.SelectorExpr, v *ast.CallExpr, pkg *resolve.Symbol) *types.Type {
 	if pkg.Name == "c" {
-		// The signature of a C function comes from the header symbol table,
-		// which the toolchain stage supplies, so only the arguments are
-		// checked here.
-		prev := c.addrOK
-		c.addrOK = true
-		for _, a := range v.Args {
-			c.checkExpr(a, nil)
-		}
-		c.addrOK = prev
-		return void
+		return c.checkCCall(sel, v)
 	}
 	member := c.symOf(sel.Name)
 	if member == nil {
@@ -184,6 +177,149 @@ func (c *checker) checkQualifiedCall(sel *ast.SelectorExpr, v *ast.CallExpr, pkg
 	}
 	c.out.Nodes[sel.Name] = sig
 	return c.checkArgs(sig, v.Args, sel.Name, sel.Name.Sp, c.requiredArgs(sel.Name), false, nil)
+}
+
+// checkCCall checks a call into the C namespace. The signature comes from the
+// header the package imported, so the arguments are checked against the
+// declaration and the call answers with the declaration's result.
+func (c *checker) checkCCall(sel *ast.SelectorExpr, v *ast.CallExpr) *types.Type {
+	name := sel.Name.Name
+	fn, ok := c.cFunction(name)
+	if !ok {
+		c.errorHelp(diag.CodeUndefinedName, sel.Name.Sp,
+			"import the header that declares it",
+			"%s is not declared by an imported C header", name)
+		return nil
+	}
+	// An argument may be the address of a value, which only a C call takes.
+	prev := c.addrOK
+	c.addrOK = true
+	defer func() { c.addrOK = prev }()
+
+	// A str and a view cross as the pointer and the length they are, so one
+	// argument can fill two parameters.
+	at := 0
+	for _, a := range v.Args {
+		var want *types.Type
+		if at < len(fn.Params) {
+			want = fn.Params[at]
+		}
+		t := c.checkExpr(a, want)
+		if t == nil || t.Kind == types.Invalid {
+			return nil
+		}
+		width := 1
+		if t.Kind == types.KindStr || t.Kind == types.KindSlice {
+			width = 2
+		}
+		if at+width > len(fn.Params) {
+			if !fn.Variadic {
+				c.errorHelp(diag.CodeArgCount, a.Span(),
+					"pass the declared number of arguments",
+					"%s takes %d arguments", name, len(fn.Params))
+				return nil
+			}
+			at += width
+			continue
+		}
+		if !cArgFits(t, fn.Params[at:at+width]) {
+			c.errorHelp(diag.CodeTypeMismatch, a.Span(),
+				"pass a value of the declared type",
+				"%s takes %s here, not %s", name, cArgText(fn.Params[at:at+width]), t)
+			return nil
+		}
+		at += width
+	}
+	if at != len(fn.Params) && !fn.Variadic {
+		c.errorHelp(diag.CodeArgCount, sel.Name.Sp,
+			"pass the declared number of arguments",
+			"%s takes %d arguments, %d given", name, len(fn.Params), at)
+		return nil
+	}
+	if fn.Result == nil {
+		return void
+	}
+	return fn.Result
+}
+
+// cFunction returns the declaration of a C function, searching the headers
+// the package imported.
+func (c *checker) cFunction(name string) (*cheader.Func, bool) {
+	for _, header := range sortedKeys(c.cdecls) {
+		if fn, ok := c.cdecls[header].Functions[name]; ok {
+			return fn, true
+		}
+	}
+	return nil, false
+}
+
+// cArgFits reports whether a language value fits the C parameters its
+// position fills.
+//
+// The C boundary is a boundary of representations: a bool is one byte and a
+// char is four, and an integer of the same width crosses as the parameter
+// whether or not the signedness matches, because the bytes are the same. A
+// str and a view fill the pointer and the length they are.
+func cArgFits(t *types.Type, params []*types.Type) bool {
+	switch len(params) {
+	case 2:
+		return types.Identical(params[0], types.Raw) && params[1].IsInteger()
+	case 1:
+	default:
+		return false
+	}
+	p := params[0]
+	if types.Identical(t, p) {
+		return true
+	}
+	if t.IsNumeric() && p.IsNumeric() {
+		return cWidth(t) == cWidth(p)
+	}
+	switch t.Kind {
+	case types.KindBool:
+		return cWidth(p) == 1
+	case types.KindChar:
+		return cWidth(p) == 4
+	}
+	return false
+}
+
+// cWidth returns the byte width of an integer type, and zero for a type that
+// is not one.
+func cWidth(t *types.Type) int {
+	switch t.Kind {
+	case types.KindInt8, types.KindUint8:
+		return 1
+	case types.KindInt16, types.KindUint16:
+		return 2
+	case types.KindInt32, types.KindUint32:
+		return 4
+	case types.KindInt64, types.KindUint64, types.KindUsize:
+		return 8
+	case types.KindInt128, types.KindUint128:
+		return 16
+	}
+	return 0
+}
+
+// cArgText renders the parameters one argument fills.
+func cArgText(params []*types.Type) string {
+	parts := make([]string, 0, len(params))
+	for _, pt := range params {
+		parts = append(parts, pt.String())
+	}
+	return strings.Join(parts, ", ")
+}
+
+// sortedKeys returns the keys of a table in byte order, so a search over
+// several headers does not depend on the order they were read in.
+func sortedKeys(t map[string]*cheader.Table) []string {
+	out := make([]string, 0, len(t))
+	for key := range t {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // checkVariantCall checks `Enum.Variant(args)`. The enum's type arguments

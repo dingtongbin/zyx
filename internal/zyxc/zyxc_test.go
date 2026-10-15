@@ -29,7 +29,7 @@ func buildSource(t *testing.T, src string) *File {
 		t.Fatalf("resolve: %v", rdiags)
 	}
 	target := toolchain.HostTarget()
-	cpkg, cdiags := check.Check(pkg, rinfo, nil, target)
+	cpkg, cdiags := check.Check(pkg, rinfo, nil, target, nil)
 	if len(cdiags) != 0 {
 		t.Fatalf("check: %v", cdiags)
 	}
@@ -38,7 +38,7 @@ func buildSource(t *testing.T, src string) *File {
 	if len(mdiags) != 0 {
 		t.Fatalf("marks: %v", mdiags)
 	}
-	ir, err := Build(pkg, rinfo, cpkg, minfo, cinfo, target.Triple)
+	ir, err := Build(pkg, rinfo, cpkg, minfo, cinfo, target.Triple, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,8 +17,8 @@ import (
 var coveredKinds = []string{
 	"addr", "alias", "arg", "arm", "array-lit", "array-repeat", "assign", "assign-op",
 	"binary",
-	"bind", "bind-const", "block", "body", "break", "c-call", "call", "callee",
-	"callee-type", "chan", "cond", "const", "continue", "convert", "count",
+	"c-alias", "c-const", "c-func", "c-global", "c-record", "c-variadic",
+	"bind", "bind-const", "block", "body", "break", "c-call", "call", "callee", "callee-type", "chan", "cond", "const", "continue", "convert", "count",
 	"default-arm", "defer", "dur", "elem", "else", "entry", "enum", "expr-stmt",
 	"extern-struct", "extern-union", "field", "field-decl", "field-init", "for",
 	"for-in", "func", "func-ref", "hi", "idx", "if", "impl", "import", "import-c",
@@ -43,7 +43,8 @@ var coveredKinds = []string{
 // test below is what makes the two agree.
 var specKinds = []string{
 	"addr", "alias", "arm", "array-lit", "array-repeat", "assign", "assign-op",
-	"binary", "bind", "bind-const", "block", "break", "call", "c-call", "const",
+	"binary",
+	"c-alias", "c-const", "c-func", "c-global", "c-record", "c-variadic", "bind", "bind-const", "block", "break", "call", "c-call", "const",
 	"continue", "convert", "default-arm", "defer", "dur", "enum", "expr-stmt",
 	"extern-struct", "extern-union", "field", "field-decl", "for", "for-in", "func",
 	"func-ref", "if", "impl", "import", "import-c", "index", "interface", "is",
@@ -403,11 +404,6 @@ func TestInterpolationWritesIntoABuffer(t *testing.T) {
 // reaches is a construct no machine code carries yet, so only the checker
 // verifies it.
 var deferredRunning = map[string]string{
-	// A construct that lives in an imported package. The tool prints one
-	// package's tree at a time, and it prints the entry package, so a kind
-	// whose only use is in a library does not show up here.
-	"c-call":   inImported,
-	"import-c": inImported,
 	// A construct that exists only while the program is compiled, so no
 	// machine code carries it by nature.
 	"alias":      compileOnly,

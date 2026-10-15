@@ -302,15 +302,45 @@ func (g *generator) cCall(module string, n *zyxc.Node) *value {
 			types = append(types, ll)
 		}
 	}
+	result := g.typeOfNode(n.First("type"), module)
+	ret := "void"
+	if result != nil {
+		var ok bool
+		ret, ok = g.cReturn(result)
+		if !ok {
+			return nil
+		}
+	}
 	if !g.m.declared[symbol] {
 		// The C namespace carries no declaration, so the first call of a
 		// symbol settles the shape of the one declaration the module
-		// writes for it.
+		// writes for it. The check holds every call to the header's own
+		// signature, so the calls agree on the shape.
 		g.m.declared[symbol] = true
-		fmt.Fprintf(&g.m.funcs, "declare void @%s(%s)\n", llvmName(symbol), strings.Join(types, ", "))
+		fmt.Fprintf(&g.m.funcs, "declare %s @%s(%s)\n", ret, llvmName(symbol), strings.Join(types, ", "))
 	}
-	g.emit("  call void @%s(%s)", llvmName(symbol), strings.Join(parts, ", "))
-	return &value{ll: "void"}
+	if result == nil {
+		g.emit("  call void @%s(%s)", llvmName(symbol), strings.Join(parts, ", "))
+		return &value{ll: "void"}
+	}
+	reg := g.newReg()
+	g.emit("  %s = call %s @%s(%s)", reg, ret, llvmName(symbol), strings.Join(parts, ", "))
+	return &value{text: reg, ll: ret, typ: result}
+}
+
+// cReturn returns the LLVM type of the value a C function answers with. A
+// scalar and an address cross as themselves; a record by value needs the C
+// ABI of the target, which is not lowered.
+func (g *generator) cReturn(t *types.Type) (string, bool) {
+	switch t.Kind {
+	case types.KindBool, types.KindChar, types.KindRaw, types.KindFunc:
+		return g.llType(t), true
+	}
+	if t.IsNumeric() {
+		return g.llType(t), true
+	}
+	g.fail(fmt.Errorf("llvmgen: a C function that answers with %s is not lowered", t))
+	return "", false
 }
 
 // panicCall lowers the built-in panic.

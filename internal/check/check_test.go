@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"zyx/internal/ast"
+	"zyx/internal/cheader"
 	"zyx/internal/diag"
 	"zyx/internal/parser"
 	"zyx/internal/resolve"
@@ -48,7 +49,18 @@ func checkSource(t *testing.T, path string, rimports resolve.Imports, cimports I
 	if len(rdiags) != 0 {
 		t.Fatalf("resolve diagnostics: %v", rdiags)
 	}
-	return Check(pkg, info, cimports, toolchain.HostTarget())
+	return Check(pkg, info, cimports, toolchain.HostTarget(), cTestTable())
+}
+
+// cTestTable is the C surface the checker tests call through. It declares the
+// functions they name as variadic, so any argument fits: the tests walk a C
+// call, and a header's own signatures are checked by their own test.
+func cTestTable() map[string]*cheader.Table {
+	return map[string]*cheader.Table{"test.h": {Functions: map[string]*cheader.Func{
+		"printf": {Name: "printf", Variadic: true},
+		"scanf":  {Name: "scanf", Variadic: true},
+		"fwrite": {Name: "fwrite", Variadic: true},
+	}}}
 }
 
 // checkedDep resolves and checks a dependency package.
@@ -59,7 +71,7 @@ func checkedDep(t *testing.T, path, src string) (*resolve.Interface, *Interface)
 	if len(rdiags) != 0 {
 		t.Fatalf("resolve %s: %v", path, rdiags)
 	}
-	out, cdiags := Check(pkg, info, nil, toolchain.HostTarget())
+	out, cdiags := Check(pkg, info, nil, toolchain.HostTarget(), nil)
 	if len(cdiags) != 0 {
 		t.Fatalf("check %s: %v", path, cdiags)
 	}

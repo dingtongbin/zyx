@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"zyx/internal/ast"
+	"zyx/internal/cheader"
 	"zyx/internal/check"
 	"zyx/internal/coro"
 	"zyx/internal/marks"
@@ -20,8 +21,8 @@ import (
 // Build renders one package's analyzed form as a .zyxc tree: the imports
 // first in byte order, then every declaration in source order, with the
 // symbol id of every reference and the marks of every operation.
-func Build(pkg *resolve.Package, rinfo *resolve.Info, cpkg *check.Package, minfo *marks.Info, cinfo *coro.Info, target string) (*File, error) {
-	b := &builder{pkg: pkg, rinfo: rinfo, cpkg: cpkg, marks: minfo, coro: cinfo, target: target}
+func Build(pkg *resolve.Package, rinfo *resolve.Info, cpkg *check.Package, minfo *marks.Info, cinfo *coro.Info, target string, cdecls map[string]*cheader.Table) (*File, error) {
+	b := &builder{pkg: pkg, rinfo: rinfo, cpkg: cpkg, marks: minfo, coro: cinfo, target: target, cdecls: cdecls}
 	f := &File{Target: target, Module: pkg.Path}
 	var imports []*Node
 	for _, file := range pkg.Files {
@@ -102,6 +103,9 @@ type builder struct {
 	coro  *coro.Info
 	// target is the triple the layout of every type is settled for.
 	target string
+	// cdecls holds the declarations of every C header the package imported,
+	// keyed by the header they came from.
+	cdecls map[string]*cheader.Table
 }
 
 // mark attaches the marks of a node. Every statement and every expression
@@ -184,12 +188,57 @@ func packageQualifier(path string) string {
 	return path
 }
 
-// importNode renders one import declaration.
+// importNode renders one import declaration. A C header carries the
+// declarations clang read from it, so the intermediate form holds the whole C
+// surface a program was compiled against.
 func (b *builder) importNode(imp *ast.ImportDecl) *Node {
 	if imp.CHeader {
-		return b.at(New("import-c", imp.Path), imp.Span())
+		n := b.at(New("import-c", imp.Path), imp.Span())
+		table := b.cdecls[imp.Path]
+		if table == nil {
+			return n
+		}
+		for _, name := range table.Names() {
+			n.Child(cDeclaration(table, name))
+		}
+		return n
 	}
 	return b.at(New("import", imp.Path), imp.Span())
+}
+
+// cDeclaration renders one declaration a C header exposes.
+func cDeclaration(table *cheader.Table, name string) *Node {
+	if fn, ok := table.Functions[name]; ok {
+		n := New("c-func", name)
+		for i, pt := range fn.Params {
+			p := New("param", fn.Names[i], pt.String())
+			n.Child(p)
+		}
+		if fn.Result != nil {
+			n.Child(New("result", fn.Result.String()))
+		}
+		if fn.Variadic {
+			n.Child(New("c-variadic"))
+		}
+		return n
+	}
+	if record, ok := table.Records[name]; ok {
+		kind := "struct"
+		if record.Union {
+			kind = "union"
+		}
+		return New("c-record", name, kind)
+	}
+	if alias, ok := table.Aliases[name]; ok {
+		return New("c-alias", name, alias.String())
+	}
+	if value, ok := table.Constants[name]; ok {
+		return New("c-const", name, strconv.FormatInt(value, 10))
+	}
+	if global, ok := table.Globals[name]; ok {
+		return New("c-global", name, global.String())
+	}
+	return nil
 }
 
 // decl renders one top-level declaration.

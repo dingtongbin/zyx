@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"zyx/internal/ast"
+	"zyx/internal/cheader"
 	"zyx/internal/check"
 	"zyx/internal/coro"
 	"zyx/internal/diag"
@@ -322,7 +323,13 @@ func (s *Session) frontEndPackage(pkg *Package, resolveIfaces map[string]*resolv
 		return res
 	}
 
-	checked, cdiags := check.Check(rpkg, rinfo, checkDeps(checkIfaces), s.Loader.Target)
+	cdecls, hdiags := s.cTables(pkg)
+	res.Diags = append(res.Diags, hdiags...)
+	if len(hdiags) != 0 {
+		return res
+	}
+
+	checked, cdiags := check.Check(rpkg, rinfo, checkDeps(checkIfaces), s.Loader.Target, cdecls)
 	res.Checked = checked
 	res.Diags = append(res.Diags, cdiags...)
 	if len(cdiags) != 0 {
@@ -337,7 +344,7 @@ func (s *Session) frontEndPackage(pkg *Package, resolveIfaces map[string]*resolv
 		return res
 	}
 
-	ir, err := zyxc.Build(rpkg, rinfo, checked, model, cinfo, s.Loader.Target.Triple)
+	ir, err := zyxc.Build(rpkg, rinfo, checked, model, cinfo, s.Loader.Target.Triple, cdecls)
 	if err != nil {
 		res.Diags = append(res.Diags, diag.Diagnostic{Code: diag.CodeEmission, Message: err.Error()})
 		return res
@@ -345,6 +352,43 @@ func (s *Session) frontEndPackage(pkg *Package, resolveIfaces map[string]*resolv
 	res.IR = ir
 	res.Text = zyxc.Format(ir)
 	return res
+}
+
+// cTables reads the C headers a package imported. The declarations come from
+// clang, which owns the C language, so the checker sees what a header
+// actually declares rather than what a name suggests.
+func (s *Session) cTables(pkg *Package) (map[string]*cheader.Table, []diag.Diagnostic) {
+	if len(pkg.CHeaders) == 0 {
+		return nil, nil
+	}
+	tc, err := toolchain.Locate()
+	if err != nil {
+		return nil, []diag.Diagnostic{{Code: diag.CodeCHeader, Message: err.Error()}}
+	}
+	includes := append([]string{pkg.Dir}, s.runtimeIncludes()...)
+	out := map[string]*cheader.Table{}
+	for _, header := range pkg.CHeaders {
+		table, err := cheader.Parse(tc.Clang, header, includes)
+		if err != nil {
+			return nil, []diag.Diagnostic{{Code: diag.CodeCHeader, Message: err.Error()}}
+		}
+		out[header] = table
+	}
+	return out, nil
+}
+
+// runtimeIncludes returns the directories the C boundary searches for the
+// runtime's own headers.
+func (s *Session) runtimeIncludes() []string {
+	tc, err := toolchain.Locate()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, flag := range tc.IncludeFlags() {
+		out = append(out, strings.TrimPrefix(flag, "-I"))
+	}
+	return out
 }
 
 // resolveDeps adapts a table of resolved interfaces to the resolver.

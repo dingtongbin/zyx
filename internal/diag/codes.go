@@ -112,6 +112,9 @@ const (
 	// CodeCNamespace reports use of the `c` namespace in a file that does
 	// not import a C header.
 	CodeCNamespace Code = "E3015"
+	// CodeCHeader reports a C header that clang does not accept, so the
+	// declarations it would expose cannot be read.
+	CodeCHeader Code = "E3016"
 	// CodeUppercaseLocal reports a local binding or parameter whose name
 	// starts with an uppercase letter. Only package-level names may be
 	// exported.

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"zyx/internal/ast"
+	"zyx/internal/cheader"
 	"zyx/internal/check"
 	"zyx/internal/coro"
 	"zyx/internal/diag"
@@ -27,7 +28,9 @@ func marksOf(t *testing.T, src string) (*Info, []diag.Diagnostic) {
 	if len(rdiags) != 0 {
 		t.Fatalf("resolve: %v", rdiags)
 	}
-	cpkg, cdiags := check.Check(pkg, rinfo, nil, toolchain.HostTarget())
+	cpkg, cdiags := check.Check(pkg, rinfo, nil, toolchain.HostTarget(), map[string]*cheader.Table{"test.h": {Functions: map[string]*cheader.Func{
+		"printf": {Name: "printf", Variadic: true},
+	}}})
 	if len(cdiags) != 0 {
 		t.Fatalf("check: %v", cdiags)
 	}

@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"zyx/internal/ast"
+	"zyx/internal/cheader"
 	"zyx/internal/diag"
 	"zyx/internal/resolve"
 	"zyx/internal/source"
@@ -235,8 +236,8 @@ func (p *Package) SyncSafe(t *types.Type) bool {
 
 // Check type-checks one package's declarations for a target. The target
 // decides the layout queries a compile-time expression may run.
-func Check(pkg *resolve.Package, info *resolve.Info, imports Imports, target toolchain.Target) (*Package, []diag.Diagnostic) {
-	c := newChecker(pkg, info, imports, target)
+func Check(pkg *resolve.Package, info *resolve.Info, imports Imports, target toolchain.Target, cdecls map[string]*cheader.Table) (*Package, []diag.Diagnostic) {
+	c := newChecker(pkg, info, imports, target, cdecls)
 	c.run()
 	return c.out, c.diags
 }
@@ -286,6 +287,9 @@ type checker struct {
 	// negations counts the negations a literal is written under, which is
 	// what lets its magnitude reach the smallest negative value of its type.
 	negations int
+	// cdecls holds the declarations of every C header the package imported,
+	// keyed by the header they came from.
+	cdecls map[string]*cheader.Table
 	// consts caches the value of every constant, keyed by symbol id.
 	consts map[string]*Value
 	// frames holds the compile-time call frames, innermost last.
@@ -293,7 +297,7 @@ type checker struct {
 }
 
 // newChecker returns a checker with the package's output maps in place.
-func newChecker(pkg *resolve.Package, info *resolve.Info, imports Imports, target toolchain.Target) *checker {
+func newChecker(pkg *resolve.Package, info *resolve.Info, imports Imports, target toolchain.Target, cdecls map[string]*cheader.Table) *checker {
 	c := &checker{
 		pkg:     pkg,
 		info:    info,
@@ -303,6 +307,7 @@ func newChecker(pkg *resolve.Package, info *resolve.Info, imports Imports, targe
 		bySym:   map[string]*types.Type{},
 		aliases: map[*ast.TypeAlias]bool{},
 		consts:  map[string]*Value{},
+		cdecls:  cdecls,
 	}
 	c.out = &Package{
 		Path:            c.path,

@@ -1,0 +1,22 @@
+package main
+
+import "std/fmt"
+
+import c "mine.h"
+import c "zyxrt.h"
+
+func main() {
+    var a = "abc"
+    var b = "abc"
+    var other = "abd"
+    // A str crosses as the pointer and the length it is, so it fills the two
+    // C parameters of one text, and the result is the one the header
+    // declares.
+    fmt.PrintBool(c.zyxrt_str_eq(a, b) != 0)
+    fmt.PrintNl()
+    fmt.PrintBool(c.zyxrt_str_eq(a, other) != 0)
+    fmt.PrintNl()
+    // A C function with no result is a statement.
+    c.zyxrt_print_str(a)
+    c.zyxrt_print_nl()
+}
