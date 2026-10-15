@@ -227,6 +227,9 @@ const (
 	// CodeKeyType reports a map or set key type that implements no equality
 	// and hash, which the container reaches through.
 	CodeKeyType Code = "E4039"
+	// CodeLiteralRange reports an integer literal whose value does not fit
+	// the type it is written with.
+	CodeLiteralRange Code = "E4040"
 )
 
 // Memory and region diagnostics occupy the E5001-E5099 range.

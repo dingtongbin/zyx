@@ -258,15 +258,20 @@ func (p *parser) parsePrimary() ast.Expr {
 	return &ast.Ident{Sp: p.spanFrom(start)}
 }
 
-// literalValue returns the payload a literal node keeps: decoded text for
-// char, string, and byte string literals, source text for numbers and
-// booleans.
+// literalValue returns the text a literal carries: the decoded text of a
+// character, string, or byte string literal, and the source text of a number
+// or a boolean. A numeric suffix names the literal's type and is recorded on
+// its own, so the value is the digits that precede it.
 func literalValue(tok token.Token) string {
 	switch tok.Kind {
 	case token.Char, token.Str, token.ByteStr:
 		return tok.Str
 	}
-	return tok.Text()
+	text := tok.Text()
+	if tok.Suffix != token.SuffixNone {
+		text = strings.TrimSuffix(text, tok.Suffix.String())
+	}
+	return text
 }
 
 // parseParen parses `(expr)` or the tuple `(a, b)`. A single parenthesized

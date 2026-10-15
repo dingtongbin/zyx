@@ -279,6 +279,9 @@ type checker struct {
 	addrOK bool
 	// target is the target the package is checked for.
 	target toolchain.Target
+	// negations counts the negations a literal is written under, which is
+	// what lets its magnitude reach the smallest negative value of its type.
+	negations int
 	// consts caches the value of every constant, keyed by symbol id.
 	consts map[string]*Value
 	// frames holds the compile-time call frames, innermost last.

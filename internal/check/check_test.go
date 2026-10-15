@@ -596,6 +596,54 @@ struct Server {
 	wantClean(t, diags)
 }
 
+// TestIntegerLiteralRange checks that an integer literal must fit the type it
+// is written with, and that a negated literal may reach the magnitude of the
+// smallest negative value, which is the one value a signed type holds that has
+// no positive counterpart.
+func TestIntegerLiteralRange(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		code diag.Code
+	}{
+		{"i8 maximum", "func f() -> i8 => 127", ""},
+		{"i8 minimum", "func f() -> i8 => -128", ""},
+		{"i8 overflows", "func f() -> i8 => 128", diag.CodeLiteralRange},
+		{"i8 underflows", "func f() -> i8 => -129", diag.CodeLiteralRange},
+		{"u8 maximum", "func f() -> u8 => 255", ""},
+		{"u8 overflows", "func f() -> u8 => 256", diag.CodeLiteralRange},
+		{"i32 minimum", "func f() -> i32 => -2147483648", ""},
+		{"i64 minimum", "func f() -> i64 => -9223372036854775808", ""},
+		{"i64 overflows", "func f() -> i64 => 9223372036854775808", diag.CodeLiteralRange},
+		{"u64 maximum", "func f() -> u64 => 18446744073709551615", ""},
+		{"u64 overflows", "func f() -> u64 => 18446744073709551616", diag.CodeLiteralRange},
+		{"i128 minimum", "func f() -> i128 => -170141183460469231731687303715884105728", ""},
+		{"i128 overflows", "func f() -> i128 => 170141183460469231731687303715884105728", diag.CodeLiteralRange},
+		{"u128 maximum", "func f() -> u128 => 340282366920938463463374607431768211455", ""},
+		{"u128 overflows", "func f() -> u128 => 340282366920938463463374607431768211456", diag.CodeLiteralRange},
+		{"a suffix names the type", "func f() -> i8 => 127i8", ""},
+		{"a suffixed literal overflows", "func f() -> i8 => 300i8", diag.CodeLiteralRange},
+		{"digit separators fit", "func f() -> i32 => 1_000_000", ""},
+		{"hexadecimal fits", "func f() -> u8 => 0xFF", ""},
+		{"hexadecimal overflows", "func f() -> u8 => 0x100", diag.CodeLiteralRange},
+		{"binary fits", "func f() -> u8 => 0b1111_1111", ""},
+		{"octal fits", "func f() -> u8 => 0o377", ""},
+		{"a conversion names the type", "func f() -> u64 => u64(18446744073709551615)", ""},
+		{"a conversion holds its literal to the type", "func f() -> i8 => i8(300)", diag.CodeLiteralRange},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			src := "package server\n\n" + c.body + "\n"
+			_, diags := checkSource(t, "server", nil, nil, src)
+			if c.code == "" {
+				wantClean(t, diags)
+				return
+			}
+			wantCode(t, diags, c.code)
+		})
+	}
+}
+
 func TestExternFuncBody(t *testing.T) {
 	src := `package server
 

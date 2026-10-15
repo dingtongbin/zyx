@@ -527,6 +527,25 @@ func (g *generator) builtinHashCall(module string, n *zyxc.Node, v *value) *valu
 	return &value{text: reg, ll: g.ptrInt(), typ: types.Uint64}
 }
 
+// foldedNegation returns the value of a negated integer literal, or nil when
+// the node is not one. The value is turned at its own width, so a literal
+// that names the smallest negative value of its type is written as one.
+func (g *generator) foldedNegation(module string, lit *zyxc.Node) *value {
+	if lit == nil || lit.Kind != "lit" || len(lit.Payload) < 2 || lit.Payload[0] != "int" {
+		return nil
+	}
+	typ := g.typeOfNode(lit.First("type"), module)
+	if typ == nil || !typ.IsInteger() {
+		return nil
+	}
+	v, ok := new(big.Int).SetString(strings.ReplaceAll(lit.Payload[1], "_", ""), 0)
+	if !ok {
+		return nil
+	}
+	v.Neg(v)
+	return &value{text: v.String(), ll: g.llType(typ), typ: typ}
+}
+
 // addShown appends a value of a declared type, which writes itself into the
 // buffer through its Show. The method takes the value as its receiver and the
 // buffer as its argument, so nothing becomes a string in between.
@@ -859,7 +878,16 @@ func (g *generator) unary(module string, n *zyxc.Node) *value {
 	if len(n.Payload) > 0 {
 		op = n.Payload[0]
 	}
-	v := g.load(g.expr(module, g.wrapped(n, "operand"), nil))
+	operand := g.wrapped(n, "operand")
+	// A negation applied to a literal is a constant rather than an operation,
+	// so it is folded: the smallest negative value of a type has no positive
+	// counterpart to negate, and folding is what makes it writable.
+	if op == "-" {
+		if folded := g.foldedNegation(module, operand); folded != nil {
+			return folded
+		}
+	}
+	v := g.load(g.expr(module, operand, nil))
 	if v == nil {
 		return nil
 	}

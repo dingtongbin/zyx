@@ -3,6 +3,9 @@
 package check
 
 import (
+	"math/big"
+	"strings"
+
 	"zyx/internal/ast"
 	"zyx/internal/diag"
 	"zyx/internal/resolve"
@@ -124,13 +127,15 @@ func (c *checker) checkStaticUse(sym *resolve.Symbol, id *ast.Ident) {
 func (c *checker) literalType(lit *ast.Literal, want *types.Type) *types.Type {
 	switch lit.Kind {
 	case token.Int:
-		if t := suffixType(lit.Suffix); t != nil {
-			return t
+		t := types.Int64
+		switch {
+		case suffixType(lit.Suffix) != nil:
+			t = suffixType(lit.Suffix)
+		case want != nil && (want.IsInteger() || want.IsFloat()):
+			t = want
 		}
-		if want != nil && (want.IsInteger() || want.IsFloat()) {
-			return want
-		}
-		return types.Int64
+		c.checkLiteralRange(lit, t)
+		return t
 	case token.Float:
 		if t := suffixType(lit.Suffix); t != nil {
 			return t
@@ -212,6 +217,55 @@ func (c *checker) showable(t *types.Type) bool {
 		return true
 	}
 	return c.implements(t, types.Show)
+}
+
+// checkLiteralRange reports an integer literal whose value does not fit the
+// type it is written with. A literal that a negation applies to may reach the
+// magnitude of the smallest negative value, which is the one value a signed
+// type holds that has no positive counterpart.
+func (c *checker) checkLiteralRange(lit *ast.Literal, t *types.Type) {
+	width := c.intBitWidth(t)
+	if width == 0 {
+		return
+	}
+	value, ok := new(big.Int).SetString(strings.ReplaceAll(lit.Value, "_", ""), 0)
+	if !ok {
+		return
+	}
+	limit := new(big.Int).Lsh(big.NewInt(1), uint(width))
+	if t.IsSigned() {
+		limit.Lsh(big.NewInt(1), uint(width-1))
+		if c.negations == 0 {
+			limit.Sub(limit, big.NewInt(1))
+		}
+	} else {
+		limit.Sub(limit, big.NewInt(1))
+	}
+	if value.Cmp(limit) > 0 {
+		c.errorHelp(diag.CodeLiteralRange, lit.Sp,
+			"write a literal that fits the type",
+			"%s does not fit in %s", lit.Value, t)
+	}
+}
+
+// intBitWidth returns the bit width of an integer type on the target, and zero
+// for a type that is not an integer.
+func (c *checker) intBitWidth(t *types.Type) int {
+	switch t.Kind {
+	case types.KindInt8, types.KindUint8:
+		return 8
+	case types.KindInt16, types.KindUint16:
+		return 16
+	case types.KindInt32, types.KindUint32:
+		return 32
+	case types.KindInt64, types.KindUint64:
+		return 64
+	case types.KindInt128, types.KindUint128:
+		return 128
+	case types.KindUsize:
+		return int(c.target.Layout().PtrSize * 8)
+	}
+	return 0
 }
 
 // binaryType checks a binary operator against the operand rules of the
@@ -322,6 +376,15 @@ func (c *checker) equalityOK(t *types.Type) bool {
 
 // unaryType checks a prefix operator.
 func (c *checker) unaryType(v *ast.UnaryExpr, want *types.Type) *types.Type {
+	// A negation of an integer literal is a constant, so its magnitude may
+	// reach the smallest negative value of its type, which is the one value a
+	// signed type holds that has no positive counterpart.
+	if v.Op == token.Minus {
+		if lit, ok := v.X.(*ast.Literal); ok && lit.Kind == token.Int {
+			c.negations++
+			defer func() { c.negations-- }()
+		}
+	}
 	t := c.checkExpr(v.X, want)
 	if t == nil || t.Kind == types.Invalid {
 		return t
