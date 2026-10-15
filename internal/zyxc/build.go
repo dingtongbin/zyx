@@ -104,8 +104,12 @@ type builder struct {
 	target string
 }
 
-// marks attaches the marks of a node.
+// mark attaches the marks of a node. Every statement and every expression
+// passes through here, so a mark the analysis recorded reaches the format.
 func (b *builder) mark(n *Node, at ast.Node) *Node {
+	if n == nil {
+		return nil
+	}
 	for _, m := range b.marks.MarksOf(at) {
 		n.Mark(m.Name, m.Arg)
 	}
@@ -523,7 +527,15 @@ func (b *builder) block(s *ast.BlockStmt) *Node {
 }
 
 // stmt renders one statement.
+// stmt renders a statement and attaches its marks. Every statement reaches
+// the format through here, so a mark the analysis recorded is never lost on
+// the way.
 func (b *builder) stmt(s ast.Stmt) *Node {
+	return b.mark(b.stmtNode(s), s)
+}
+
+// stmtNode renders a statement without its marks.
+func (b *builder) stmtNode(s ast.Stmt) *Node {
 	switch v := s.(type) {
 	case nil:
 		return nil
@@ -531,7 +543,7 @@ func (b *builder) stmt(s ast.Stmt) *Node {
 		return b.block(v)
 	case *ast.ExprStmt:
 		n := New("expr-stmt").Child(b.expr(v.X))
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	case *ast.AssignStmt:
 		return b.assignNode(v)
 	case *ast.VarDecl:
@@ -585,7 +597,7 @@ func (b *builder) stmt(s ast.Stmt) *Node {
 		return b.at(n, v.Sp)
 	case *ast.DeferStmt:
 		n := New("defer").Child(b.wrap("call", b.expr(v.Call)))
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	case *ast.RegionStmt:
 		name := ""
 		for _, m := range b.marks.MarksOf(v) {
@@ -598,7 +610,7 @@ func (b *builder) stmt(s ast.Stmt) *Node {
 			n.Mark("defers", "")
 		}
 		n.Child(b.wrap("body", b.block(v.Body)))
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	case *ast.ComptimeBlockStmt:
 		n := New("block").Child(b.block(v.Body))
 		return b.at(n, v.Sp)
@@ -613,7 +625,7 @@ func (b *builder) stmt(s ast.Stmt) *Node {
 		for _, arm := range v.Arms {
 			n.Child(b.selectArm(arm))
 		}
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	}
 	b.fail(s, "statement "+nodeName(s))
 	return nil
@@ -634,12 +646,12 @@ func (b *builder) assignNode(v *ast.AssignStmt) *Node {
 		n := New("assign")
 		n.Child(b.wrap("target", b.expr(v.Target)))
 		n.Child(b.wrap("value", b.expr(v.Value)))
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	}
 	n := New("assign-op", v.Op.String())
 	n.Child(b.wrap("target", b.expr(v.Target)))
 	n.Child(b.wrap("value", b.expr(v.Value)))
-	return b.mark(b.at(n, v.Sp), v)
+	return b.at(n, v.Sp)
 }
 
 // forNode renders one of the three loop forms.
@@ -673,7 +685,7 @@ func (b *builder) forNode(v *ast.ForStmt) *Node {
 		n.Child(b.wrap("cond", b.expr(v.Iter)))
 	}
 	n.Child(b.wrap("body", b.stmt(v.Body)))
-	return b.mark(b.at(n, v.Sp), v)
+	return b.at(n, v.Sp)
 }
 
 // armNode renders one match arm.
@@ -829,7 +841,7 @@ func (b *builder) annotate(n *Node, e ast.Expr) *Node {
 // inference: the type of a literal, of a call whose callee carries no
 // declaration, and of an unannotated binding.
 func (b *builder) expr(e ast.Expr) *Node {
-	return b.annotate(b.exprNode(e), e)
+	return b.mark(b.annotate(b.exprNode(e), e), e)
 }
 
 // exprNode renders an expression without its type annotation.
@@ -881,7 +893,7 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 			n.Child(b.wrap("recv", b.expr(v.X)))
 			n.Child(b.wrap("lo", b.expr(r.Lo)))
 			n.Child(b.wrap("hi", b.expr(r.Hi)))
-			return b.mark(b.at(n, v.Sp), v)
+			return b.at(n, v.Sp)
 		}
 		n := New("index")
 		n.Child(b.wrap("recv", b.expr(v.X)))
@@ -897,7 +909,7 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 		for _, a := range v.Args {
 			n.Child(b.wrap("arg", b.expr(a)))
 		}
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	case *ast.TryExpr:
 		n := New("try").Child(b.wrap("call", b.expr(v.X)))
 		return b.at(n, v.Sp)
@@ -907,7 +919,7 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 			n.Mark("watched", "")
 			n.Child(b.wrap("watcher", b.expr(v.Watcher)))
 		}
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	case *ast.FastExpr:
 		n := New("c-call", "")
 		if call, ok := v.X.(*ast.CallExpr); ok {
@@ -915,7 +927,7 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 			for _, a := range call.Args {
 				n.Child(b.wrap("arg", b.expr(a)))
 			}
-			return b.mark(b.at(n, call.Sp), v)
+			return b.at(n, call.Sp)
 		}
 		return b.expr(v.X)
 	case *ast.FuncRefExpr:
@@ -947,12 +959,12 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 		for _, x := range v.Elems {
 			n.Child(b.wrap("elem", b.expr(x)))
 		}
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	case *ast.ArrayRepeatExpr:
 		n := New("array-repeat")
 		n.Child(b.wrap("elem", b.expr(v.Elem)))
 		n.Child(b.wrap("count", b.expr(v.Count)))
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	case *ast.AggregateLitExpr:
 		return b.aggregate(v)
 	}
@@ -1080,7 +1092,7 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 		case b.isCCall(sel):
 			n := New("c-call", sel.Name.Name)
 			n.Child(b.args(v.Args)...)
-			return b.mark(b.at(n, v.Sp), v)
+			return b.at(n, v.Sp)
 		case b.namespace(sel) != "":
 			// meta.size_of(T) and dur.ms(100) are their own node kinds,
 			// because the backend settles them without a call.
@@ -1102,7 +1114,7 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 			if child := b.calleeTypeNode(sel.Name); child != nil {
 				n.Child(child)
 			}
-			return b.mark(b.at(n, v.Sp), v)
+			return b.at(n, v.Sp)
 		case b.isQualified(sel):
 			n := New("qual", nameOr(qualifierName(sel)), sel.Name.Name, b.symID(sel.Name))
 			n.Child(b.args(v.Args)...)
@@ -1341,5 +1353,5 @@ func (b *builder) aggregate(v *ast.AggregateLitExpr) *Node {
 			n.Child(e)
 		}
 	}
-	return b.mark(b.at(n, v.Sp), v)
+	return b.at(n, v.Sp)
 }
