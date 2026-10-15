@@ -59,7 +59,7 @@ func (g *generator) indirectCall(module string, n *zyxc.Node, callee *zyxc.Node)
 	}
 	var parts []string
 	for i, pt := range sig.Elems {
-		v := g.load(g.expr(module, args[i], pt))
+		v := g.conform(g.load(g.expr(module, args[i], pt)), pt)
 		if v == nil {
 			return nil
 		}
@@ -110,6 +110,11 @@ func (g *generator) methodCall(module string, n *zyxc.Node) *value {
 		// A channel is an opaque runtime handle: its operations have no
 		// declaration in any tree.
 		return g.chanCall(module, n, g.load(recv), n.Payload[0])
+	}
+	if recv.typ.Kind == types.KindInterface {
+		// An interface method is reached through the method table the value
+		// carries.
+		return g.ifaceCall(module, n, recv, n.Payload[0])
 	}
 	decl := g.tab.decl(sym)
 	if decl == nil || decl.Kind != "func" {
@@ -180,6 +185,12 @@ func (g *generator) directCall(module string, n *zyxc.Node, sym string, recv *va
 		if v == nil {
 			return nil
 		}
+		if want != nil && want.Kind == types.KindInterface && v.typ.Kind != types.KindInterface {
+			// A concrete argument becomes an interface value at the call.
+			if v = g.ifaceValue(want, v); v == nil {
+				return nil
+			}
+		}
 		args = append(args, v)
 	}
 	if len(args) != len(ptypes) {
@@ -206,7 +217,10 @@ func (g *generator) directCall(module string, n *zyxc.Node, sym string, recv *va
 			parts = append(parts, g.cArguments(a)...)
 			continue
 		}
-		v := g.load(a)
+		v := g.conform(g.load(a), a.typ)
+		if v == nil {
+			return nil
+		}
 		parts = append(parts, g.llPass(a.typ)+" "+v.text)
 	}
 	if result == nil {

@@ -297,6 +297,13 @@ func (g *generator) returnStmt(module string, n *zyxc.Node) {
 		g.terminator("  br label %%%s", g.fn.ret)
 		return
 	}
+	if g.fn.result.Kind == types.KindInterface && v.typ.Kind != types.KindInterface {
+		// A concrete result becomes an interface value on the way out.
+		if v = g.ifaceValue(g.fn.result, v); v == nil {
+			g.terminator("  br label %%%s", g.fn.ret)
+			return
+		}
+	}
 	// The result is kept in a local that the shared return block reads, so
 	// that every return path converges on one epilogue.
 	if g.fn.resultSlot == "" {

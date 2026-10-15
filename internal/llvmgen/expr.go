@@ -71,6 +71,15 @@ func (g *generator) addrText(v *value) string {
 // storage is the object itself, which a reference type copies rather than
 // points at.
 func (g *generator) storeInto(addr string, typ *types.Type, v *value, inline bool) {
+	if typ != nil && typ.Kind == types.KindInterface && v.typ != nil && v.typ.Kind != types.KindInterface {
+		// A concrete value becomes an interface value where it is stored,
+		// which is what an implicit conversion is.
+		converted := g.ifaceValue(typ, v)
+		if converted == nil {
+			return
+		}
+		v = converted
+	}
 	if byAddress(typ) {
 		if inline {
 			g.copyObject(addr, g.addrText(v), typ)
@@ -82,6 +91,26 @@ func (g *generator) storeInto(addr string, typ *types.Type, v *value, inline boo
 	}
 	r := g.load(v)
 	g.emit("  store %s %s, ptr %s", r.ll, r.text, addr)
+}
+
+// conform returns a value whose representation matches the type it is passed
+// as. A bool is one bit in the result of a comparison and a byte in memory and
+// in a parameter, so the two are converted where a value crosses between them.
+func (g *generator) conform(v *value, typ *types.Type) *value {
+	if v == nil || typ == nil {
+		return v
+	}
+	want := g.llPass(typ)
+	if v.ll == want || want == "void" {
+		return v
+	}
+	if v.ll == "i1" && strings.HasPrefix(want, "i") {
+		reg := g.newReg()
+		g.emit("  %s = zext i1 %s to %s", reg, v.text, want)
+		return &value{text: reg, ll: want, typ: typ}
+	}
+	g.fail(fmt.Errorf("llvmgen: %s is passed as %s, not %s", v.typ, v.ll, want))
+	return nil
 }
 
 // copyObject copies one object onto another, which is what assigning a
@@ -170,6 +199,8 @@ func (g *generator) expr(module string, n *zyxc.Node, want *types.Type) *value {
 		return g.join(module, n)
 	case "try":
 		return g.tryCall(module, n)
+	case "is":
+		return g.isCheck(module, n)
 	case "meta":
 		return g.metaCall(module, n)
 	case "dur":

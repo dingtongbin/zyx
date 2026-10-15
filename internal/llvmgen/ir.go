@@ -33,17 +33,23 @@ type module struct {
 	defined map[string]bool
 	// globalInits holds the top-level initializers that are not constants.
 	globalInits []globalInit
-	next        int
+	// ifaceTables maps a concrete type and an interface onto the name of the
+	// method table the one presents for the other.
+	ifaceTables map[string]string
+	// ifaceDefs holds the method tables in creation order.
+	ifaceDefs []string
+	next      int
 }
 
 // newModule returns an empty module.
 func newModule(target string) *module {
 	return &module{
-		target:   target,
-		names:    map[string]string{},
-		strs:     map[string]string{},
-		declared: map[string]bool{},
-		defined:  map[string]bool{},
+		target:      target,
+		names:       map[string]string{},
+		strs:        map[string]string{},
+		ifaceTables: map[string]string{},
+		declared:    map[string]bool{},
+		defined:     map[string]bool{},
 	}
 }
 
@@ -57,6 +63,9 @@ func (m *module) text() []byte {
 	}
 	for _, g := range m.globals {
 		b.WriteString(g)
+	}
+	for _, def := range m.ifaceDefs {
+		b.WriteString(def)
 	}
 	b.WriteString(m.funcs.String())
 	return []byte(b.String())
