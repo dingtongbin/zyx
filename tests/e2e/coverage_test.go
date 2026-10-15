@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"zyx/internal/toolchain"
 	"zyx/internal/zyxc"
 )
 
@@ -299,6 +300,27 @@ func TestEverySpecKindIsExercisedOrDeferred(t *testing.T) {
 	if len(unexercised) != 0 {
 		t.Errorf("no corpus reaches these kinds and none is deferred: %s",
 			strings.Join(unexercised, " "))
+	}
+}
+
+// TestStaticReleaseReachesTheBackend checks that an object the analysis marks
+// as no longer used is released through the runtime. The value the program
+// computes proves the release does not happen before the use it follows,
+// which is what a wrong placement would break.
+func TestStaticReleaseReachesTheBackend(t *testing.T) {
+	if _, err := toolchain.Locate(); err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	dir := copyTree(t, filepath.Join("testdata", "release"))
+	stdout, stderr, code := run(dir, "emit-llvm", ".")
+	if code != 0 {
+		t.Fatalf("emit-llvm failed with %d:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "call void @zyxrt_region_release") {
+		t.Errorf("no object is released:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "zyxrt_region_current") {
+		t.Errorf("the release does not name a region:\n%s", stdout)
 	}
 }
 

@@ -42,6 +42,15 @@ type generator struct {
 	labels int
 	// thunks counts the coroutine entry points emitted.
 	thunks int
+	// pending holds the objects the current statement has finished with,
+	// which are released when the statement ends.
+	pending []pendingRelease
+}
+
+// A pendingRelease is one object the analysis marked as no longer used.
+type pendingRelease struct {
+	typ  *types.Type
+	addr string
 }
 
 // A funcState carries the state of one function's emission.
@@ -86,8 +95,11 @@ func (g *generator) emit(format string, args ...any) {
 	fmt.Fprintf(&g.fn.body, format+"\n", args...)
 }
 
-// terminator writes a line that ends a basic block.
+// terminator writes a line that ends a basic block. The objects the block
+// finished with are released first, so no release lands after a terminator,
+// where it could never run.
 func (g *generator) terminator(format string, args ...any) {
+	g.flushReleases(0)
 	g.emit(format, args...)
 	g.fn.terminated = true
 }

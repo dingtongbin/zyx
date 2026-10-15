@@ -141,6 +141,26 @@ func (g *generator) toBool(v *value) string {
 // expression, so the annotation wins over want, which only settles a node
 // the backend synthesized itself.
 func (g *generator) expr(module string, n *zyxc.Node, want *types.Type) *value {
+	v := g.exprValue(module, n, want)
+	if n != nil && hasMark(n, "static-release") && v != nil && releasable(v.typ) {
+		// The mark names the last use, not the last read of the value: the
+		// expression that consumes it still runs. The release is therefore
+		// held until the statement ends.
+		g.pending = append(g.pending, pendingRelease{typ: v.typ, addr: g.addrText(v)})
+	}
+	return v
+}
+
+// releasable reports whether the backend can return a value's object to its
+// region on its own. A reference object it allocated is its own storage; a
+// string or a slice points at a buffer the runtime owns, or at a literal in
+// read-only storage, so releasing it needs the runtime that made it.
+func releasable(t *types.Type) bool {
+	return t != nil && byAddress(t)
+}
+
+// exprValue lowers one expression without releasing anything.
+func (g *generator) exprValue(module string, n *zyxc.Node, want *types.Type) *value {
 	if n == nil {
 		g.fail(fmt.Errorf("llvmgen: a missing expression"))
 		return nil

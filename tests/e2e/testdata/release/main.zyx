@@ -1,0 +1,19 @@
+package main
+
+import "std/fmt"
+
+struct Big {
+    a: i64
+    b: i64
+}
+
+func make() -> i64 {
+    var one = Big { a: 1, b: 2}
+    var two = Big { a: 3, b: 4}
+    return one.a + two.b
+}
+
+func main() {
+    fmt.PrintI64(make())
+    fmt.PrintNl()
+}
