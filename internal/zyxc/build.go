@@ -1070,12 +1070,14 @@ func (b *builder) isTypeCallee(id *ast.Ident) bool {
 	return false
 }
 
-// literalNode renders a literal. An interpolated string keeps every segment
-// in order, so the backend rebuilds the text without guessing where the
-// holes were.
+// literalNode renders a literal. The kind is written out, so the backend
+// never has to recover it from the type annotation. An interpolated string
+// keeps every segment in order, so the text can be rebuilt without guessing
+// where the holes were.
 func (b *builder) literalNode(lit *ast.Literal) *Node {
-	if lit.Kind.String() == "fstring" {
-		n := New("lit", lit.Value)
+	kind := literalKind(lit)
+	if kind == "fstring" {
+		n := New("lit", kind, lit.Value)
 		for _, part := range lit.Parts {
 			if part.X == nil {
 				n.Child(New("part-text", part.Text))
@@ -1085,7 +1087,28 @@ func (b *builder) literalNode(lit *ast.Literal) *Node {
 		}
 		return b.at(n, lit.Sp)
 	}
-	return b.at(New("lit", lit.Value), lit.Sp)
+	return b.at(New("lit", kind, lit.Value), lit.Sp)
+}
+
+// literalKind returns the spelling the format writes for a literal's kind.
+func literalKind(lit *ast.Literal) string {
+	switch lit.Kind.String() {
+	case "int":
+		return "int"
+	case "float":
+		return "float"
+	case "str":
+		return "str"
+	case "char":
+		return "char"
+	case "bytestring":
+		return "bytes"
+	case "fstring":
+		return "fstring"
+	case "true", "false":
+		return "bool"
+	}
+	return "invalid"
 }
 
 // selector renders a field access, a method value, a qualified name, a

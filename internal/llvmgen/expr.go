@@ -208,31 +208,31 @@ func (g *generator) parts(n *zyxc.Node) int {
 	return count
 }
 
-// literal lowers a literal. The annotated type settles which literal form
-// it is: a character, a string, a number, or a boolean.
+// literal lowers a literal. The kind the format wrote settles which literal
+// form it is; the annotated type settles only the width of a number.
 func (g *generator) literal(module string, n *zyxc.Node, want *types.Type) *value {
-	if len(n.Payload) == 0 {
-		g.fail(fmt.Errorf("llvmgen: a literal needs a value"))
+	if len(n.Payload) < 2 {
+		g.fail(fmt.Errorf("llvmgen: a literal needs a kind and a value"))
 		return nil
 	}
-	if g.parts(n) != 0 {
+	kind, text := n.Payload[0], n.Payload[1]
+	if kind == "fstring" {
 		g.fail(fmt.Errorf("llvmgen: an interpolated string is not lowered"))
 		return nil
 	}
-	text := n.Payload[0]
 	typ := want
 	if typ == nil {
 		g.fail(fmt.Errorf("llvmgen: the type of literal %q is not settled", text))
 		return nil
 	}
-	switch {
-	case typ.IsBool():
+	switch kind {
+	case "bool":
 		v := "0"
 		if text == "true" {
 			v = "1"
 		}
 		return &value{text: v, ll: "i8", typ: typ}
-	case typ.IsStr():
+	case "str":
 		global := g.m.stringGlobal(text)
 		ptr := g.newReg()
 		g.emit("  %s = getelementptr inbounds [%d x i8], ptr %s, i64 0, i64 0", ptr, len(text), global)
@@ -241,34 +241,34 @@ func (g *generator) literal(module string, n *zyxc.Node, want *types.Type) *valu
 		out := g.newReg()
 		g.emit("  %s = insertvalue { ptr, %s } %s, %s %d, 1", out, g.ptrInt(), lenReg, g.ptrInt(), len(text))
 		return &value{text: out, ll: "{ ptr, " + g.ptrInt() + " }", typ: typ}
-	case typ.IsChar():
+	case "char":
 		runes := []rune(text)
 		if len(runes) != 1 {
 			g.fail(fmt.Errorf("llvmgen: %q is not one character", text))
 			return nil
 		}
 		return &value{text: strconv.FormatInt(int64(runes[0]), 10), ll: "i32", typ: typ}
-	case typ.IsInteger():
+	case "int":
 		v, err := parseIntLiteral(text)
 		if err != nil {
 			g.fail(fmt.Errorf("llvmgen: %q is not an integer", text))
 			return nil
 		}
 		return &value{text: strconv.FormatUint(v, 10), ll: g.llType(typ), typ: typ}
-	case typ.IsFloat():
+	case "float":
 		v, err := strconv.ParseFloat(text, 64)
 		if err != nil {
 			g.fail(fmt.Errorf("llvmgen: %q is not a number", text))
 			return nil
 		}
 		ll := g.llType(typ)
-		text := strconv.FormatFloat(v, 'g', -1, 64)
-		if !strings.ContainsAny(text, ".eEni") {
-			text += ".0"
+		out := strconv.FormatFloat(v, 'g', -1, 64)
+		if !strings.ContainsAny(out, ".eEni") {
+			out += ".0"
 		}
-		return &value{text: text, ll: ll, typ: typ}
+		return &value{text: out, ll: ll, typ: typ}
 	}
-	g.fail(fmt.Errorf("llvmgen: a %s literal is not lowered", typ))
+	g.fail(fmt.Errorf("llvmgen: a %s literal is not lowered", kind))
 	return nil
 }
 
