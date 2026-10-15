@@ -514,8 +514,51 @@ func (c *checker) buildTypeName(v *ast.TypeName) *types.Type {
 		args = append(args, c.buildType(a))
 	}
 	out := base.Instantiate(args...)
+	c.checkKeyType(v, out)
 	c.out.Nodes[v] = out
 	return out
+}
+
+// checkKeyType verifies that the key of a map or a set implements the
+// equality and the hash the container reaches through, which the language
+// requires of every key. A key that is a type parameter satisfies it through
+// the constraints it declares.
+func (c *checker) checkKeyType(v *ast.TypeName, t *types.Type) {
+	if t == nil || t.Kind != types.KindContainer || (t.Name != "Map" && t.Name != "Set") {
+		return
+	}
+	key := arg(t, 0)
+	if key == nil || key.Kind == types.Invalid {
+		return
+	}
+	if key.Kind == types.KindTypeParam {
+		if !hasConstraint(key, types.Eq) || !hasConstraint(key, types.Hash) {
+			c.errorHelp(diag.CodeKeyType, v.Sp,
+				"constrain the key with Eq and Hash",
+				"%s cannot be a key: it does not require Eq and Hash", key)
+		}
+		return
+	}
+	if types.ContainsTypeParam(key) {
+		// The key is settled when the generic declaration is instantiated,
+		// so there is nothing to decide here.
+		return
+	}
+	if !c.implements(key, types.Eq) || !c.implements(key, types.Hash) {
+		c.errorHelp(diag.CodeKeyType, v.Sp,
+			"use a key that implements Eq and Hash",
+			"%s cannot be a key: it implements no Eq and Hash", key)
+	}
+}
+
+// hasConstraint reports whether a type parameter requires the interface.
+func hasConstraint(param *types.Type, iface *types.Type) bool {
+	for _, con := range param.Constraints {
+		if con.ID == iface.ID {
+			return true
+		}
+	}
+	return false
 }
 
 // baseType resolves the name at the head of a type expression.

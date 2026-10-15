@@ -3,6 +3,17 @@ package main
 import "std/fmt"
 
 const tick: Duration = dur.us(7)
+
+struct Pair {
+    x: i64
+    y: i64
+    impl Eq {
+        func Eq(other: Pair) -> bool => self.x == other.x && self.y == other.y
+    }
+    impl Hash {
+        func Hash() -> u64 => u64(self.x) * 31 + u64(self.y)
+    }
+}
 // Same reports whether two values of one type are equal, through the Eq the
 // language gives the type itself.
 
@@ -15,6 +26,10 @@ func Same<T: Eq>(a: T, b: T) -> bool {
 func Fingerprint<T: Hash>(v: T) -> u64 {
     return v.Hash()
 }
+// Identity has an expression body, which a generic declaration reaches
+// through its type parameters rather than its parameters.
+
+func Identity<T>(v: T) -> T => v
 
 func main() {
     fmt.PrintBool(Same(1, 1))
@@ -32,6 +47,17 @@ func main() {
     fmt.PrintBool(Same('x', 'x'))
     fmt.PrintNl()
     fmt.PrintBool(Same(tick, tick))
+    fmt.PrintNl()
+    // A declared type supplies its own Eq and Hash, written with an
+    // expression body.
+    var a = Pair { x: 1, y: 2}
+    var b = Pair { x: 1, y: 2}
+    var far = Pair { x: 3, y: 4}
+    fmt.PrintBool(Same(a, b))
+    fmt.PrintNl()
+    fmt.PrintBool(Same(a, far))
+    fmt.PrintNl()
+    fmt.PrintBool(Fingerprint(a) == Fingerprint(b))
     fmt.PrintNl()
     // A str compares and hashes the bytes it names, not the pointer, so a
     // value built at run time matches a literal with the same text.
@@ -53,7 +79,15 @@ func main() {
         None => fmt.PrintI64(- 1)
     }
     fmt.PrintNl()
+    var k: Map<Pair, i64> = Map { Pair { x: 1, y: 2}: 9}
+    match k.Get(a) {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.PrintI64(- 1)
+    }
+    fmt.PrintNl()
     // A primitive reaches its Eq directly as well.
     fmt.PrintBool(7.Eq(7))
+    fmt.PrintNl()
+    fmt.PrintI64(Identity(5))
     fmt.PrintNl()
 }

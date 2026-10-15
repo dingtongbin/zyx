@@ -224,6 +224,9 @@ const (
 	// CodeEmptyCLayout reports a C value type with no members, which has no
 	// C layout to match.
 	CodeEmptyCLayout Code = "E4038"
+	// CodeKeyType reports a map or set key type that implements no equality
+	// and hash, which the container reaches through.
+	CodeKeyType Code = "E4039"
 )
 
 // Memory and region diagnostics occupy the E5001-E5099 range.

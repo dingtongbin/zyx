@@ -392,11 +392,13 @@ func (g *generator) function(module string, n *zyxc.Node) {
 	g.fn = nil
 }
 
-// funcBodyExpr returns the single expression body of a `=>` function.
+// funcBodyExpr returns the single expression body of a `=>` function. Every
+// other child of a declaration is a part of its signature: its type
+// parameters, its receiver, its parameters, and its result.
 func funcBodyExpr(n *zyxc.Node) *zyxc.Node {
 	for _, child := range n.Children {
 		switch child.Kind {
-		case "param", "result":
+		case "type-param", "receiver", "param", "result":
 			continue
 		case "block":
 			return nil
