@@ -416,11 +416,9 @@ var deferredRunning = map[string]string{
 	// A construct that produces machine code and that no program of the
 	// corpus uses yet.
 	"addr":          unexercised,
-	"array-repeat":  unexercised,
 	"extern-struct": unexercised,
 	"extern-union":  unexercised,
 	"method-value":  unexercised,
-	"var":           unexercised,
 }
 
 // inImported is the reason a kind is deferred from this measurement: its only
