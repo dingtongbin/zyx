@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"zyx/internal/layout"
+	"zyx/internal/types"
 )
 
 // A Target is one resolved target: the triple the .zyxc layer records, and
@@ -165,4 +166,72 @@ func (t Target) Layout() layout.Target {
 		return l
 	}
 	return layout.Target{PtrSize: 8, PtrAlign: 8}
+}
+
+// LLVMTriple returns the spelling LLVM uses for the target. The platform
+// matrix spells architectures as Go does, and LLVM spells them the way its
+// own targets are named. This is the one place a new platform is added: the
+// layout above, this triple, and the C ABI shape all follow from it.
+func (t Target) LLVMTriple() string {
+	arch := t.Arch
+	switch arch {
+	case "amd64":
+		arch = "x86_64"
+	case "arm64":
+		arch = "aarch64"
+	case "i386":
+		arch = "i686"
+	case "arm":
+		arch = "armv7"
+	}
+	switch t.OS {
+	case "windows":
+		return arch + "-pc-windows-msvc"
+	case "darwin":
+		return arch + "-apple-darwin"
+	case "ios":
+		return arch + "-apple-ios"
+	case "android":
+		return arch + "-unknown-linux-android"
+	case "wasm":
+		return arch + "-unknown-wasi"
+	default:
+		return arch + "-unknown-linux-gnu"
+	}
+}
+
+// PtrInt returns the LLVM integer that holds a pointer-sized value.
+func (t Target) PtrInt() string {
+	if t.Layout().PtrSize == 4 {
+		return "i32"
+	}
+	return "i64"
+}
+
+// ABIKind classifies how a value of a type crosses the C boundary.
+type ABIKind uint8
+
+const (
+	// ABIScalar passes the value itself.
+	ABIScalar ABIKind = iota
+	// ABIFatPointer passes an address and a length.
+	ABIFatPointer
+	// ABIAggregate passes the address of an object.
+	ABIAggregate
+)
+
+// ABIKind returns how a value of a type crosses the C boundary. The target
+// table owns the classification, because it is part of the platform's ABI;
+// the backend spells it in LLVM types.
+func (t Target) ABIKind(ty *types.Type) ABIKind {
+	switch ty.Kind {
+	case types.KindStr, types.KindSlice:
+		return ABIFatPointer
+	case types.KindInterface:
+		return ABIFatPointer
+	case types.KindStruct, types.KindExternStruct, types.KindUnion,
+		types.KindEnum, types.KindArray:
+		return ABIAggregate
+	}
+	return ABIScalar
 }

@@ -23,7 +23,6 @@ func (m *instantiator) instantiate(req request) error {
 	rename(instance, req.id)
 	m.substitute(instance, req.decl, req.args, req.module, req.id)
 	m.bind(instance, req.module)
-	m.settleLayout(instance, req.module)
 	m.rewrite(instance, req.module)
 	m.appendDecl(req.module, instance)
 	m.count++

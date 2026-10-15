@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"zyx/internal/toolchain"
 	"zyx/internal/types"
 	"zyx/internal/zyxc"
 )
@@ -256,13 +257,15 @@ func (g *generator) signature(module string, n *zyxc.Node) ([]paramInfo, *types.
 	return params, result, retLL
 }
 
-// abiArgs returns the LLVM types the C ABI uses for one argument.
+// abiArgs returns the LLVM types the C ABI uses for one argument. The
+// target table classifies how the value crosses the boundary; the spelling
+// of that classification in LLVM types is the backend's.
 func (g *generator) abiArgs(t *types.Type) []string {
-	switch t.Kind {
-	case types.KindStr, types.KindSlice:
+	switch g.target.ABIKind(t) {
+	case toolchain.ABIFatPointer:
 		return []string{"ptr", g.ptrInt()}
-	case types.KindInterface:
-		return []string{"ptr", "ptr"}
+	case toolchain.ABIAggregate:
+		return []string{"ptr"}
 	}
 	return []string{g.llPass(t)}
 }

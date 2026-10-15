@@ -265,13 +265,9 @@ func (g *generator) llPass(t *types.Type) string {
 	return g.llType(t)
 }
 
-// ptrInt returns the integer type that holds a pointer-sized value.
-func (g *generator) ptrInt() string {
-	if g.target.Layout().PtrSize == 4 {
-		return "i32"
-	}
-	return "i64"
-}
+// ptrInt returns the integer type that holds a pointer-sized value, which
+// the target table owns.
+func (g *generator) ptrInt() string { return g.target.PtrInt() }
 
 // byAddress reports whether a value of the type is passed and stored as the
 // address of its object rather than as the object itself. A reference

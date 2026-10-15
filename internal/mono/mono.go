@@ -7,11 +7,8 @@ package mono
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
-	"zyx/internal/layout"
-	"zyx/internal/toolchain"
 	"zyx/internal/types"
 	"zyx/internal/zyxc"
 )
@@ -546,114 +543,4 @@ func symIDOf(n *zyxc.Node) string {
 		return n.Payload[1]
 	}
 	return ""
-}
-
-// A layout provider over the trees the monomorphizer holds, so an instance's
-// layout is settled here rather than left for the backend to recompute.
-
-// Fields returns the fields of a named aggregate in the order its tree
-// writes them.
-func (m *instantiator) Fields(t *types.Type) ([]layout.Field, bool) {
-	node := m.decls[t.ID]
-	if node == nil {
-		return nil, false
-	}
-	switch node.Kind {
-	case "struct", "extern-struct", "extern-union":
-	default:
-		return nil, false
-	}
-	var out []layout.Field
-	for _, child := range node.Children {
-		if child.Kind != "field-decl" || len(child.Payload) < 2 {
-			continue
-		}
-		ft, err := zyxc.ParseType(m.modules[t.ID], child.Payload[1], m)
-		if err != nil {
-			return nil, false
-		}
-		out = append(out, layout.Field{Name: child.Payload[0], Type: ft})
-	}
-	return out, true
-}
-
-// Variants returns the variants of an enum in the order its tree writes
-// them.
-func (m *instantiator) Variants(t *types.Type) ([]layout.Variant, bool) {
-	node := m.decls[t.ID]
-	if node == nil || node.Kind != "enum" {
-		return nil, false
-	}
-	var out []layout.Variant
-	for _, child := range node.Children {
-		if child.Kind != "variant" {
-			continue
-		}
-		v := layout.Variant{Name: child.Payload[0]}
-		if payload := child.First("type"); payload != nil && len(payload.Payload) > 0 {
-			parsed, err := zyxc.ParseType(m.modules[t.ID], payload.Payload[0], m)
-			if err != nil || parsed.Kind != types.KindTuple {
-				return nil, false
-			}
-			v.Payload = parsed.Elems
-		}
-		out = append(out, v)
-	}
-	return out, true
-}
-
-// layoutTarget returns the layout properties of the target the build is for.
-func (m *instantiator) layoutTarget() layout.Target {
-	t, err := toolchain.ParseTarget(m.p.Target)
-	if err != nil {
-		return layout.Target{PtrSize: 8, PtrAlign: 8}
-	}
-	return t.Layout()
-}
-
-// settleLayout writes the settled layout of an instance, which the front end
-// could not settle because the generic's fields mention type parameters. The
-// fields come out in the final order, each carrying its offset.
-func (m *instantiator) settleLayout(instance *zyxc.Node, module string) {
-	switch instance.Kind {
-	case "struct", "extern-struct", "extern-union":
-	default:
-		return
-	}
-	if len(instance.Payload) < 2 {
-		return
-	}
-	kind, err := m.KindOf(instance.Payload[1])
-	if err != nil {
-		return
-	}
-	self := types.Named(kind, module, "", memberOf(symIDOf(instance)), 0)
-	target := m.layoutTarget()
-	size, err := layout.Size(self, m, target)
-	if err != nil {
-		return
-	}
-	align, err := layout.Align(self, m, target)
-	if err != nil {
-		return
-	}
-	placed, err := layout.Fields(self, m, target)
-	if err != nil {
-		return
-	}
-	var kept []*zyxc.Node
-	for _, child := range instance.Children {
-		if child.Kind == "field-decl" || child.Kind == "layout" {
-			continue
-		}
-		kept = append(kept, child)
-	}
-	fields := []*zyxc.Node{
-		zyxc.New("layout", strconv.FormatUint(size, 10), strconv.FormatUint(align, 10)),
-	}
-	for _, f := range placed {
-		fields = append(fields, zyxc.New("field-decl", f.Name, zyxc.TypeText(f.Type, module),
-			strconv.FormatUint(f.Offset, 10)))
-	}
-	instance.Children = append(kept, fields...)
 }
