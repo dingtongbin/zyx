@@ -718,9 +718,15 @@ func abiCompatible(t *types.Type) bool {
 		return false
 	}
 	switch t.Kind {
-	case types.KindBool, types.KindChar, types.KindRaw, types.KindFunc,
+	case types.KindBool, types.KindChar, types.KindRaw,
 		types.KindExternStruct, types.KindUnion:
 		return true
+	case types.KindFunc:
+		// A function value carries the function and the receiver a method
+		// value was taken from, so it is not a C function pointer. A C
+		// callback field is written from the header's own type once the
+		// header symbol table lands.
+		return false
 	case types.KindArray:
 		return abiCompatible(t.Elem)
 	}

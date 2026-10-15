@@ -351,6 +351,13 @@ func (b *builder) expr(e ast.Expr) {
 		b.expr(v.X)
 		if b.isChannelCall(v) {
 			b.info.Add(v, "chan:"+channelVerb(v.Name.Name), "")
+			break
+		}
+		// A method taken as a value carries its receiver, so the receiver is
+		// shared with the value rather than released at its last use. A
+		// field read takes nothing, so it leaves the object alone.
+		if b.cpkg.MethodValues[v] {
+			b.escapesTo(v.X, escapeStore)
 		}
 	case *ast.TupleIndexExpr:
 		b.expr(v.X)
@@ -393,6 +400,15 @@ func (b *builder) call(v *ast.CallExpr) {
 	}
 	for _, a := range v.Args {
 		b.expr(a)
+	}
+	if sel, ok := v.Fn.(*ast.SelectorExpr); ok {
+		// A called selector reaches a method, so the receiver is walked and
+		// the method is not taken as a value.
+		b.expr(sel.X)
+		if b.isChannelCall(sel) {
+			b.info.Add(sel, "chan:"+channelVerb(sel.Name.Name), "")
+		}
+		return
 	}
 	b.expr(v.Fn)
 }

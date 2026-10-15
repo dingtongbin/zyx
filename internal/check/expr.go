@@ -470,6 +470,10 @@ func (c *checker) selectorType(v *ast.SelectorExpr) *types.Type {
 				"a built-in method cannot be used as a value")
 			return nil
 		}
+		// A method taken as a value carries the receiver it was taken from.
+		// The syntax cannot tell such a selector from a field read, so the
+		// check records it for the passes that need to know.
+		c.out.MethodValues[v] = true
 		c.out.Nodes[v.Name] = sig
 		return sig
 	}

@@ -134,6 +134,14 @@ func TestIdentical(t *testing.T) {
 	if Identical(FuncOf(nil, Int64), FuncOf(Int64, Int64)) {
 		t.Error("a result must tell two functions apart")
 	}
+	// A method taken as a value carries its receiver, which makes it a type
+	// of its own: it is not a function pointer and does not cross to C.
+	if !Identical(FuncOf(nil, Int64), FuncOf(nil, Int64)) {
+		t.Error("two function types of one shape must match")
+	}
+	if Identical(FuncOf(Bool), FuncOf(nil)) {
+		t.Error("a result must tell two function types apart")
+	}
 	if Identical(Int32, nil) {
 		t.Error("Identical with nil must be false")
 	}

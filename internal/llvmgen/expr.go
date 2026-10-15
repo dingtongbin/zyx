@@ -27,6 +27,10 @@ type value struct {
 	typ    *types.Type
 	lvalue bool
 	inline bool
+	// sym names the code a function value carries, when the compiler knows
+	// it. A runtime callback has no room for a receiver, so it can only be
+	// reached through a symbol known while the program is compiled.
+	sym string
 }
 
 // load returns the value of an lvalue.
@@ -215,6 +219,8 @@ func (g *generator) exprValue(module string, n *zyxc.Node, want *types.Type) *va
 		return g.cCall(module, n)
 	case "func-ref":
 		return g.funcRef(n)
+	case "method-value":
+		return g.methodValue(module, n)
 	case "lambda":
 		return g.lambda(module, n)
 	case "addr":
@@ -544,6 +550,38 @@ func (g *generator) foldedNegation(module string, lit *zyxc.Node) *value {
 	}
 	v.Neg(v)
 	return &value{text: v.String(), ll: g.llType(typ), typ: typ}
+}
+
+// methodValue lowers a method taken as a value. The value carries the
+// method's address and the receiver it was taken from, so a call through it
+// supplies that receiver as the method's own first parameter. A value receiver
+// is copied, and a reference receiver is shared.
+func (g *generator) methodValue(module string, n *zyxc.Node) *value {
+	if len(n.Payload) < 2 {
+		g.fail(fmt.Errorf("llvmgen: a method value needs a symbol"))
+		return nil
+	}
+	typ := g.typeOfNode(n.First("type"), module)
+	if typ == nil {
+		g.fail(fmt.Errorf("llvmgen: the type of a method value is not settled"))
+		return nil
+	}
+	recv := g.load(g.expr(module, g.wrapped(n, "recv"), nil))
+	if recv == nil {
+		return nil
+	}
+	addr := g.addrText(recv)
+	if !byAddress(recv.typ) {
+		slot := g.alloca(recv.typ)
+		g.storeInto(slot, recv.typ, recv, true)
+		addr = slot
+	}
+	ll := g.llType(typ)
+	first := g.newReg()
+	g.emit("  %s = insertvalue %s undef, ptr @%s, 0", first, ll, llvmName(n.Payload[1]))
+	out := g.newReg()
+	g.emit("  %s = insertvalue %s %s, ptr %s, 1", out, ll, first, addr)
+	return &value{text: out, ll: ll, typ: typ}
 }
 
 // addShown appends a value of a declared type, which writes itself into the
@@ -1340,7 +1378,10 @@ func (g *generator) addressOf(module string, n *zyxc.Node) *value {
 	return &value{text: g.addrText(v), ll: "ptr", typ: types.Raw}
 }
 
-// funcRef lowers a reference to a function.
+// funcRef lowers a reference to a function. A function value carries the
+// function and a receiver, so a plain function is paired with a thunk that
+// drops the receiver: a call through a function value then has one shape
+// whichever function it reaches.
 func (g *generator) funcRef(n *zyxc.Node) *value {
 	if len(n.Payload) == 0 {
 		g.fail(fmt.Errorf("llvmgen: a function reference needs a symbol"))
@@ -1352,6 +1393,63 @@ func (g *generator) funcRef(n *zyxc.Node) *value {
 		g.fail(fmt.Errorf("llvmgen: no declaration for %s", sym))
 		return nil
 	}
-	typ := g.funcType(decl)
-	return &value{text: "@" + llvmName(sym), ll: "ptr", typ: typ}
+	if len(decl.Payload) >= 2 {
+		qual := decl.Payload[1]
+		if qual == "extern" || qual == "c" {
+			// A C function follows the C ABI, which has no room for the
+			// receiver a function value carries.
+			g.fail(fmt.Errorf("llvmgen: %s is a C function, which is not a function value yet", sym))
+			return nil
+		}
+	}
+	return g.functionValue(sym, g.funcType(decl))
+}
+
+// functionValue builds the value of a function: the thunk that drops the
+// receiver a value carries, and no receiver.
+func (g *generator) functionValue(sym string, typ *types.Type) *value {
+	ll := g.llType(typ)
+	code := g.dropReceiver(sym, typ)
+	first := g.newReg()
+	g.emit("  %s = insertvalue %s undef, ptr %s, 0", first, ll, code)
+	out := g.newReg()
+	g.emit("  %s = insertvalue %s %s, ptr null, 1", out, ll, first)
+	return &value{text: out, ll: ll, typ: typ, sym: code}
+}
+
+// dropReceiver returns the name of the thunk that ignores the receiver a
+// function value carries and calls the function itself. One thunk serves
+// every value of one function.
+func (g *generator) dropReceiver(sym string, typ *types.Type) string {
+	if name, ok := g.m.receivers[sym]; ok {
+		return "@" + name
+	}
+	name := fmt.Sprintf("zyx.drop.%d", len(g.m.receivers))
+	g.m.receivers[sym] = name
+
+	saved := g.fn
+	g.fn = &funcState{symbol: name, vars: map[string]*varSlot{}}
+	g.fn.entry = g.newLabel("drop")
+
+	var params, args []string
+	for i, pt := range typ.Elems {
+		ll := g.llPass(pt)
+		params = append(params, fmt.Sprintf("%s %%p%d_0", ll, i+1))
+		args = append(args, fmt.Sprintf("%s %%p%d_0", ll, i+1))
+	}
+	ret := "void"
+	if typ.Result != nil {
+		ret = g.llPass(typ.Result)
+	}
+	if typ.Result == nil {
+		g.terminator("  call void @%s(%s)", llvmName(sym), strings.Join(args, ", "))
+		g.terminator("  ret void")
+	} else {
+		reg := g.newReg()
+		g.emit("  %s = call %s @%s(%s)", reg, ret, llvmName(sym), strings.Join(args, ", "))
+		g.terminator("  ret %s %s", ret, reg)
+	}
+	g.emitThunk(name, ret, strings.Join(append([]string{"ptr %p0_0"}, params...), ", "))
+	g.fn = saved
+	return "@" + name
 }

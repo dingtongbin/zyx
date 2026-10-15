@@ -57,7 +57,14 @@ func (g *generator) indirectCall(module string, n *zyxc.Node, callee *zyxc.Node)
 		g.fail(fmt.Errorf("llvmgen: the call takes %d arguments, %d given", len(sig.Elems), len(args)))
 		return nil
 	}
-	var parts []string
+	// A function value carries the function and a receiver, so the call
+	// reaches the function with that receiver as its own first parameter.
+	code := g.newReg()
+	g.emit("  %s = extractvalue %s %s, 0", code, fn.ll, fn.text)
+	recv := g.newReg()
+	g.emit("  %s = extractvalue %s %s, 1", recv, fn.ll, fn.text)
+	calleeText := code
+	parts := []string{"ptr " + recv}
 	for i, pt := range sig.Elems {
 		v := g.conform(g.load(g.expr(module, args[i], pt)), pt)
 		if v == nil {
@@ -66,12 +73,12 @@ func (g *generator) indirectCall(module string, n *zyxc.Node, callee *zyxc.Node)
 		parts = append(parts, g.llPass(pt)+" "+v.text)
 	}
 	if sig.Result == nil {
-		g.emit("  call void %s(%s)", fn.text, strings.Join(parts, ", "))
+		g.emit("  call void %s(%s)", calleeText, strings.Join(parts, ", "))
 		return &value{ll: "void"}
 	}
 	retLL := g.llPass(sig.Result)
 	reg := g.newReg()
-	g.emit("  %s = call %s %s(%s)", reg, retLL, fn.text, strings.Join(parts, ", "))
+	g.emit("  %s = call %s %s(%s)", reg, retLL, calleeText, strings.Join(parts, ", "))
 	return &value{text: reg, ll: retLL, typ: sig.Result}
 }
 

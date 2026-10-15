@@ -53,7 +53,9 @@ func TestScalarSizes(t *testing.T) {
 		{types.Duration, 8},
 		{types.Usize, 8},
 		{types.Raw, 8},
-		{types.FuncOf(types.Bool, types.Int64), 8},
+		// A function value carries the function and the receiver a method
+		// value was taken from, so it is a pair rather than a pointer.
+		{types.FuncOf(types.Bool, types.Int64), 16},
 		{types.Str, 16},
 		{types.SliceOf(types.Uint8), 16},
 		{types.Eq, 16},

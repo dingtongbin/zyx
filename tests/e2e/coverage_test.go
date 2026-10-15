@@ -418,7 +418,6 @@ var deferredRunning = map[string]string{
 	"addr":          unexercised,
 	"extern-struct": unexercised,
 	"extern-union":  unexercised,
-	"method-value":  unexercised,
 }
 
 // inImported is the reason a kind is deferred from this measurement: its only

@@ -579,6 +579,13 @@ func (g *generator) bqueueCall(module string, n *zyxc.Node, recv *value, name st
 // an element that fits in a register is read out of the heap first and an
 // object is passed as the address it already is.
 func (g *generator) lessThunk(elem *types.Type, less *value) string {
+	// The runtime compares two elements with no receiver, so the thunk
+	// reaches a function the compiler named rather than a value it would
+	// have to carry into the runtime.
+	if less.sym == "" {
+		g.fail(fmt.Errorf("llvmgen: a runtime comparison needs a named function, not a method value"))
+		return ""
+	}
 	g.thunks++
 	name := fmt.Sprintf("zyx.less.%d", g.thunks)
 	saved := g.fn
@@ -595,7 +602,9 @@ func (g *generator) lessThunk(elem *types.Type, less *value) string {
 		parts = append(parts, g.llPass(elem)+" "+text)
 	}
 	reg := g.newReg()
-	g.emit("  %s = call i8 %s(%s)", reg, less.text, strings.Join(parts, ", "))
+	// The thunk that drops the receiver is called with a null receiver: the
+	// runtime comparison has none.
+	g.emit("  %s = call i8 %s(ptr null, %s)", reg, less.sym, strings.Join(parts, ", "))
 	wide := g.newReg()
 	g.emit("  %s = zext i8 %s to i32", wide, reg)
 	g.terminator("  ret i32 %s", wide)

@@ -1,0 +1,53 @@
+package main
+
+import "std/fmt"
+
+struct Counter {
+    n: i64
+    func Next() -> i64 {
+        return self.n + 1
+    }
+    func Add(k: i64) -> i64 => self.n + k
+    func Describe() {
+        fmt.PrintI64(self.n)
+        fmt.PrintNl()
+    }
+}
+// Double reads a counter without holding one, so it takes it as an argument.
+
+func Double(subject: Counter) -> i64 => subject.n * 2
+// Apply takes the unbound form of a function of one counter.
+
+func Apply(f: func(Counter) -> i64, subject: Counter) -> i64 {
+    return f(subject)
+}
+
+func main() {
+    var held = Counter { n: 41 }
+    // A method value binds its receiver, so it takes no argument.
+    var next = held.Next
+    fmt.PrintI64(next())
+    fmt.PrintNl()
+    // A method value taken from another receiver keeps that receiver, so the
+    // two are independent.
+    var other = Counter { n: 100 }
+    var later = other.Next
+    fmt.PrintI64(later())
+    fmt.PrintNl()
+    fmt.PrintI64(next())
+    fmt.PrintNl()
+    // A method with an expression body works the same way.
+    var add = held.Add
+    fmt.PrintI64(add(9))
+    fmt.PrintNl()
+    // A method with no result is a method value like any other.
+    var describe = held.Describe
+    describe()
+    // A function value is a pointer, and the two kinds of value are separate
+    // types.
+    var doubled = func Double
+    fmt.PrintI64(doubled(held))
+    fmt.PrintNl()
+    fmt.PrintI64(Apply(func Double, held))
+    fmt.PrintNl()
+}

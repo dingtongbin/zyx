@@ -38,6 +38,9 @@ type module struct {
 	ifaceTables map[string]string
 	// ifaceDefs holds the method tables in creation order.
 	ifaceDefs []string
+	// receivers maps a function symbol onto the thunk that drops the
+	// receiver a function value carries.
+	receivers map[string]string
 	next      int
 }
 
@@ -50,6 +53,7 @@ func newModule(target string) *module {
 		ifaceTables: map[string]string{},
 		declared:    map[string]bool{},
 		defined:     map[string]bool{},
+		receivers:   map[string]string{},
 	}
 }
 
@@ -237,8 +241,12 @@ func (g *generator) llType(t *types.Type) string {
 		return "double"
 	case types.KindChar:
 		return "i32"
-	case types.KindRaw, types.KindFunc:
+	case types.KindRaw:
 		return "ptr"
+	case types.KindFunc:
+		// A function value carries the function and, when it is a method
+		// taken as a value, the receiver it was taken from.
+		return "{ ptr, ptr }"
 	case types.KindStr, types.KindSlice:
 		return "{ ptr, " + g.ptrInt() + " }"
 	case types.KindInterface:

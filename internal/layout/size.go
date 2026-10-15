@@ -42,8 +42,12 @@ func sizeOf(t *types.Type, p Provider, target Target, seen map[string]bool) (uin
 		return n, nil
 	}
 	switch t.Kind {
-	case types.KindUsize, types.KindRaw, types.KindFunc:
+	case types.KindUsize, types.KindRaw:
 		return target.PtrSize, nil
+	case types.KindFunc:
+		// A function value carries the function and, when it is a method
+		// taken as a value, the receiver.
+		return 2 * target.PtrSize, nil
 	case types.KindStr, types.KindSlice:
 		// A fat pointer: {ptr, len}.
 		return 2 * target.PtrSize, nil

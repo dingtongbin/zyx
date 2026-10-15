@@ -38,5 +38,7 @@ func (g *generator) lambda(module string, n *zyxc.Node) *value {
 	saved := g.fn
 	g.function(module, fn)
 	g.fn = saved
-	return &value{text: "@" + llvmName(sym), ll: "ptr", typ: typ}
+	// A lambda is only ever a value, so it is paired with a thunk that drops
+	// the receiver a function value carries.
+	return g.functionValue(sym, typ)
 }

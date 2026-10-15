@@ -175,6 +175,10 @@ type Package struct {
 	// the matched enum rather than binding a name. The syntax cannot tell
 	// the two apart, so the check settles it.
 	PatternVariants map[ast.Node]bool
+	// MethodValues marks the selectors that name a method taken as a value.
+	// The syntax cannot tell such a selector from a field read, so the check
+	// settles it for the passes that need to know.
+	MethodValues map[ast.Node]bool
 	// Consts maps each evaluated constant to its value.
 	Consts map[string]*Value
 	// Interface is the surface downstream packages consume.
@@ -307,6 +311,7 @@ func newChecker(pkg *resolve.Package, info *resolve.Info, imports Imports, targe
 		Declared:        map[string]*Decl{},
 		Nodes:           map[ast.Node]*types.Type{},
 		PatternVariants: map[ast.Node]bool{},
+		MethodValues:    map[ast.Node]bool{},
 		Consts:          map[string]*Value{},
 		imports:         imports,
 	}
