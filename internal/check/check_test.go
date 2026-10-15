@@ -765,6 +765,43 @@ struct Point {
 	}
 }
 
+// An init builds a value rather than reading one, so it has no receiver
+// value, while Self still names the type it builds. The block body is the
+// case that reads the result type while checking a return statement.
+func TestInitSelfInABlockBody(t *testing.T) {
+	src := `package server
+
+struct Point {
+	x: i32
+	func init(x: i32) -> Self {
+		return Point { x: x}
+	}
+}
+`
+	out, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	if got := out.Declared["server.Point"].Methods["init"].String(); got != "func(i32) -> Point" {
+		t.Errorf("init = %q, want func(i32) -> Point", got)
+	}
+}
+
+func TestInitHasNoReceiverValue(t *testing.T) {
+	src := `package server
+
+struct Point {
+	x: i32
+	func init(x: i32) -> Self {
+		return Point { x: self.x}
+	}
+}
+`
+	pkg := &resolve.Package{Path: "server", Files: []*ast.File{parse(t, src)}}
+	_, diags := resolve.Resolve(pkg, nil)
+	if len(diags) == 0 {
+		t.Error("reading self inside an init must be reported")
+	}
+}
+
 func TestTopLevelVarType(t *testing.T) {
 	src := `package server
 

@@ -262,6 +262,10 @@ type checker struct {
 	// implementer, which the declaration cannot know, so it stays a
 	// parameter of the interface.
 	self *types.Type
+	// receiver is the type the self value has, or nil where there is no
+	// receiver to read. An init builds a value rather than reading one, so
+	// it has none, while Self still names the type it builds.
+	receiver *types.Type
 	// declOrder holds the checked type declarations in source order, so
 	// later passes produce diagnostics in a stable order.
 	declOrder []*Decl

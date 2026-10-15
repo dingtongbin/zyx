@@ -57,14 +57,20 @@ func (c *checker) checkTypeBodies(name *ast.Ident, params []*ast.TypeParam, memb
 // checkFuncBody checks the body of one function or method. self is the
 // receiver type of a method, or nil.
 func (c *checker) checkFuncBody(f *ast.FuncDecl, self *types.Type) {
+	// An init constructs a value rather than reading one, so it has no
+	// receiver value. Self still names the type it builds, which is the
+	// result type its declaration writes.
+	receiver := self
 	if f.Name != nil && f.Name.Name == "init" {
-		// init constructs a value rather than reading one.
-		self = nil
+		receiver = nil
 	}
-	prevSelf, prevResult, prevComptime := c.self, c.result, c.inComptime
-	c.self, c.result, c.inComptime = self, c.buildType(f.Result), f.Quals.Comptime
+	prevSelf, prevReceiver := c.self, c.receiver
+	prevResult, prevComptime := c.result, c.inComptime
+	c.self, c.receiver = self, receiver
+	c.result, c.inComptime = c.buildType(f.Result), f.Quals.Comptime
 	defer func() {
-		c.self, c.result, c.inComptime = prevSelf, prevResult, prevComptime
+		c.self, c.receiver = prevSelf, prevReceiver
+		c.result, c.inComptime = prevResult, prevComptime
 	}()
 
 	for _, p := range f.Params {

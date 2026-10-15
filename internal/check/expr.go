@@ -77,7 +77,7 @@ func (c *checker) exprType(e ast.Expr, want *types.Type) *types.Type {
 // function takes a `T: type` parameter.
 func (c *checker) identType(id *ast.Ident, want *types.Type) *types.Type {
 	if id.Name == "self" {
-		return c.self
+		return c.receiver
 	}
 	sym := c.symOf(id)
 	if sym == nil {
@@ -722,8 +722,10 @@ func (c *checker) funcRefType(v *ast.FuncRefExpr) *types.Type {
 
 // lambdaType checks a lambda, which captures nothing.
 func (c *checker) lambdaType(v *ast.LambdaExpr) *types.Type {
-	prevSelf, prevResult, prevComptime := c.self, c.result, c.inComptime
-	c.self, c.result, c.inComptime = nil, c.buildType(v.Result), false
+	prevSelf, prevReceiver := c.self, c.receiver
+	prevResult, prevComptime := c.result, c.inComptime
+	c.self, c.receiver = nil, nil
+	c.result, c.inComptime = c.buildType(v.Result), false
 	params := make([]*types.Type, 0, len(v.Params))
 	for _, p := range v.Params {
 		t := c.buildType(p.Type)
@@ -741,7 +743,8 @@ func (c *checker) lambdaType(v *ast.LambdaExpr) *types.Type {
 	} else if v.BodyExpr != nil {
 		c.checkResult(v.BodyExpr, c.checkExpr(v.BodyExpr, c.result))
 	}
-	c.self, c.result, c.inComptime = prevSelf, prevResult, prevComptime
+	c.self, c.receiver = prevSelf, prevReceiver
+	c.result, c.inComptime = prevResult, prevComptime
 	return types.FuncOf(c.buildType(v.Result), params...)
 }
 
