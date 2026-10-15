@@ -4,8 +4,6 @@
 
 package zyxc
 
-import "strings"
-
 // typeSlots gives, for a node kind, the payload positions that hold type
 // text.
 var typeSlots = map[string][]int{
@@ -116,9 +114,4 @@ func EachDecl(n *Node, f func(*Node)) {
 	for _, child := range n.Children {
 		EachDecl(child, f)
 	}
-}
-
-// isTypeParam reports whether a `param` node declares a generic parameter.
-func isTypeParam(n *Node) bool {
-	return len(n.Payload) >= 2 && strings.Contains(n.Payload[1], "$")
 }
