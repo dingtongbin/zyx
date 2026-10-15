@@ -4,6 +4,23 @@
 
 #include "zyxrt.h"
 
+/* A slab is a run of equal-sized objects. Its size class is implied by the
+   list it is on, so no object carries a header. */
+typedef struct zyxrt_slab {
+  struct zyxrt_slab *next;
+  size_t used;  /* the objects handed out of this slab */
+  size_t count; /* the objects the slab holds */
+} zyxrt_slab;
+
+/* The size-class pool. A region takes slabs from it and returns them when
+   it is released. */
+size_t zyxrt_pool_class(size_t size);
+size_t zyxrt_pool_class_size(size_t class);
+size_t zyxrt_pool_classes(void);
+zyxrt_slab *zyxrt_pool_take(size_t class);
+void zyxrt_pool_release(size_t class, zyxrt_slab *slab);
+void zyxrt_pool_warm(void);
+
 /* A deferred call: the function to run and the arguments it was given. */
 typedef struct zyxrt_defer {
   void (*call)(void *);

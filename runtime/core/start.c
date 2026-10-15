@@ -6,6 +6,7 @@
 
 int zyxrt_run_main(zyxrt_main_fn fn, void *arg) {
   zyxrt_platform_init();
+  zyxrt_pool_warm();
   zyxrt_sched_init();
   zyxrt_coro *root = zyxrt_coro_spawn((zyxrt_fn)fn, arg);
   root->root = 1;
