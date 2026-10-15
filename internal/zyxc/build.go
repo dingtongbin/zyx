@@ -314,6 +314,44 @@ func (b *builder) typeParams(params []*ast.TypeParam) []*Node {
 	return out
 }
 
+// hasDefer reports whether a statement holds a deferred call.
+func (b *builder) hasDefer(s ast.Stmt) bool {
+	switch v := s.(type) {
+	case nil:
+		return false
+	case *ast.BlockStmt:
+		for _, stmt := range v.Stmts {
+			if b.hasDefer(stmt) {
+				return true
+			}
+		}
+	case *ast.DeferStmt:
+		return true
+	case *ast.IfStmt:
+		return b.hasDefer(v.Then) || b.hasDefer(v.Else)
+	case *ast.ForStmt:
+		return b.hasDefer(v.Body)
+	case *ast.RegionStmt:
+		// A nested region runs its own defers.
+		return false
+	case *ast.ComptimeBlockStmt:
+		return b.hasDefer(v.Body)
+	case *ast.MatchStmt:
+		for _, arm := range v.Arms {
+			if b.hasDefer(arm.Body) {
+				return true
+			}
+		}
+	case *ast.SelectStmt:
+		for _, arm := range v.Arms {
+			if b.hasDefer(arm.Body) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // selfType returns the declared type of a type body, which is what a method
 // of that body receives. Writing it on the method removes the only place
 // where the backend would have had to read it back out of the symbol id.
@@ -360,6 +398,9 @@ func (b *builder) funcNode(f *ast.FuncDecl, selfType string) *Node {
 		n.Child(b.at(New("result", b.typeText(b.cpkg.Nodes[f.Result])), f.Result.Span()))
 	}
 	if f.Body != nil {
+		if b.hasDefer(f.Body) {
+			n.Mark("defers", "")
+		}
 		n.Child(b.block(f.Body))
 	} else if f.BodyExpr != nil {
 		n.Child(b.expr(f.BodyExpr))
@@ -603,7 +644,11 @@ func (b *builder) stmt(s ast.Stmt) *Node {
 				name = m.Arg
 			}
 		}
-		n := New("region", name).Child(b.wrap("body", b.block(v.Body)))
+		n := New("region", name)
+		if b.hasDefer(v.Body) {
+			n.Mark("defers", "")
+		}
+		n.Child(b.wrap("body", b.block(v.Body)))
 		return b.mark(b.at(n, v.Sp), v)
 	case *ast.ComptimeBlockStmt:
 		n := New("block").Child(b.block(v.Body))

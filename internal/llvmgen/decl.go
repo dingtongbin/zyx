@@ -342,7 +342,7 @@ func (g *generator) function(module string, n *zyxc.Node) {
 	// A function body is a region of its own, so the deferred calls it
 	// records run before it returns, whichever path it leaves by.
 	deferSlot := ""
-	if hasDefer(body) {
+	if hasMark(n, "defers") {
 		deferSlot = g.openRegion()
 	}
 	g.stmt(module, body)

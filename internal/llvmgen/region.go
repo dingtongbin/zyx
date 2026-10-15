@@ -11,22 +11,6 @@ import (
 	"zyx/internal/zyxc"
 )
 
-// hasDefer reports whether a subtree holds a deferred call.
-func hasDefer(n *zyxc.Node) bool {
-	if n == nil {
-		return false
-	}
-	if n.Kind == "defer" {
-		return true
-	}
-	for _, child := range n.Children {
-		if hasDefer(child) {
-			return true
-		}
-	}
-	return false
-}
-
 // openRegion records the defer mark of a region and returns the local that
 // holds it.
 func (g *generator) openRegion() string {
@@ -50,7 +34,7 @@ func (g *generator) closeRegion(slot string) {
 // and the deferred calls it holds run when it leaves.
 func (g *generator) regionStmt(module string, n *zyxc.Node) {
 	body := g.wrapped(n, "body")
-	if !hasDefer(body) {
+	if !hasMark(n, "defers") {
 		g.stmt(module, body)
 		return
 	}
