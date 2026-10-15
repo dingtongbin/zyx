@@ -277,10 +277,8 @@ func (b *builder) decl(decl ast.Decl) *Node {
 		return b.structNode(d)
 	case *ast.UnionDecl:
 		n := New("extern-union", d.Name.Name)
-		if t := b.staticType(d.Name); t != nil {
-			for _, f := range b.fieldNodes(t, nil) {
-				n.Child(f)
-			}
+		for _, f := range d.Fields {
+			n.Child(b.fieldDecl(f))
 		}
 		return b.at(n, d.Sp)
 	case *ast.EnumDecl:
@@ -518,10 +516,15 @@ func (b *builder) declaredFields(decl *ast.StructDecl) []*Node {
 		if !ok {
 			continue
 		}
-		n := New("field-decl", f.Name.Name, b.typeText(b.cpkg.Nodes[f.Type]))
-		out = append(out, b.at(n, f.Sp))
+		out = append(out, b.fieldDecl(f))
 	}
 	return out
+}
+
+// fieldDecl renders one field declaration.
+func (b *builder) fieldDecl(f *ast.FieldDecl) *Node {
+	n := New("field-decl", f.Name.Name, b.typeText(b.cpkg.Nodes[f.Type]))
+	return b.at(n, f.Sp)
 }
 
 // variantNode renders an enum variant.

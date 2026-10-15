@@ -1097,6 +1097,16 @@ func (c *checker) checkStructLiteral(v *ast.AggregateLitExpr, typ *types.Type, d
 				"field %q is %s, want %s", fields[i].Name, values[i], want)
 		}
 	}
+	if typ.Kind == types.KindUnion {
+		// The members of a union start at the same offset, so a literal sets
+		// exactly one of them.
+		if len(seen) != 1 {
+			c.errorHelp(diag.CodeMissingField, v.Sp,
+				"set exactly one member of the union",
+				"a union literal sets one member, %d given", len(seen))
+		}
+		return typ
+	}
 	for _, f := range d.Fields {
 		if !seen[f.Name] {
 			c.errorHelp(diag.CodeMissingField, v.Sp,

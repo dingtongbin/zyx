@@ -1,0 +1,36 @@
+package main
+
+import "std/fmt"
+import c "zyxrt.h"
+// A C layout: the fields keep the order and the alignment C gives them, and
+// no field is rearranged.
+
+extern struct Pair {
+    left: i32
+    right: i32
+}
+
+extern union Bits {
+    whole: u64
+    half: u32
+}
+
+func main() {
+    var pair = Pair { left: 3, right: 4 }
+    fmt.PrintI64(i64(pair.left) + i64(pair.right))
+    fmt.PrintNl()
+    pair.right = 9
+    fmt.PrintI64(i64(pair.right))
+    fmt.PrintNl()
+    // Every member of a union starts at the same offset, so the narrow one
+    // reads the low bytes of the wide one.
+    var bits = Bits { whole: 4294967301 }
+    fmt.PrintU64(u64(bits.half))
+    fmt.PrintNl()
+    // The address of a value is an argument of a C call, and the same value
+    // hashes the same way twice.
+    var one: u8 = 7
+    var two: u8 = 7
+    fmt.PrintBool(c.zyxrt_hash_bytes(& one, 1) == c.zyxrt_hash_bytes(& two, 1))
+    fmt.PrintNl()
+}

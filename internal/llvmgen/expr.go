@@ -1046,8 +1046,14 @@ func (g *generator) field(module string, n *zyxc.Node) *value {
 		if f.Name != name {
 			continue
 		}
+		// The members of a union share their offset, so every one of them is
+		// reached where the union begins.
+		at := i
+		if typ.Kind == types.KindUnion {
+			at = 0
+		}
 		reg := g.newReg()
-		g.emit("  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d", reg, g.llType(typ), base, i)
+		g.emit("  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d", reg, g.llType(typ), base, at)
 		return &value{text: reg, ll: g.llPass(f.Type), typ: f.Type, lvalue: true, inline: true}
 	}
 	g.fail(fmt.Errorf("llvmgen: %s has no field %s", typ, name))
@@ -1199,6 +1205,11 @@ func (g *generator) structLit(module string, n *zyxc.Node) *value {
 		if index < 0 {
 			g.fail(fmt.Errorf("llvmgen: %s has no field %s", typ, name))
 			return nil
+		}
+		// The members of a union share their offset, so every one of them is
+		// written where the union begins.
+		if typ.Kind == types.KindUnion {
+			index = 0
 		}
 		reg := g.newReg()
 		g.emit("  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d", reg, g.llType(typ), base, index)
