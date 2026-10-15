@@ -127,7 +127,7 @@ func cutMarks(line string) (string, []Mark, error) {
 		if part == "" {
 			return "", nil, errf("the marks section holds an empty entry")
 		}
-		name, argText, _ := strings.Cut(part, ":")
+		name, argText := cutMarkHead(part)
 		arg, err := oneToken(argText)
 		if err != nil {
 			return "", nil, err
@@ -164,6 +164,24 @@ func splitMarkParts(section string) ([]string, error) {
 		return nil, errf("a quoted mark argument is not closed")
 	}
 	return append(out, strings.TrimSpace(b.String())), nil
+}
+
+// cutMarkHead splits one mark into its name and the text of its argument. The
+// name runs to the first space outside quotes, and a mark without an argument
+// has none.
+func cutMarkHead(part string) (name, arg string) {
+	inQuote := false
+	for i := 0; i < len(part); i++ {
+		switch c := part[i]; {
+		case c == '\\' && inQuote && i+1 < len(part):
+			i++
+		case c == '"':
+			inQuote = !inQuote
+		case c == ' ' && !inQuote:
+			return part[:i], strings.TrimSpace(part[i+1:])
+		}
+	}
+	return part, ""
 }
 
 // oneToken reads a mark argument, which is one token.

@@ -32,11 +32,15 @@ type Mark struct {
 }
 
 // String renders the mark the way the format writes it.
+// String renders the mark: its name, and its argument when it has one. The
+// argument is one token, quoted when it holds a space. Name and argument are
+// separated by a space rather than a colon, because the mark vocabulary
+// itself uses colons, as in `coro:region` and `chan:send`.
 func (m Mark) String() string {
 	if m.Arg == "" {
 		return m.Name
 	}
-	return m.Name + ":" + quoteToken(m.Arg)
+	return m.Name + " " + quoteToken(m.Arg)
 }
 
 // New returns a node of a kind with a payload.

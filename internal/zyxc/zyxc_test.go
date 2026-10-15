@@ -116,7 +116,7 @@ func Work(xs: Array<i64>) -> i64 {
 	if !strings.Contains(text, "iter-guard") {
 		t.Errorf("missing the iteration guard in\n%s", text)
 	}
-	if !strings.Contains(text, "home:r0") {
+	if !strings.Contains(text, "home r0") {
 		t.Errorf("missing the home region in\n%s", text)
 	}
 }
@@ -129,8 +129,10 @@ func TestMarkArgumentsSurviveARoundTrip(t *testing.T) {
 	file := &File{Target: "amd64-unknown-linux-gnu", Module: "example.com/app"}
 	file.Decls = []*Node{
 		New("func", "f", "plain", "example.com/app.f").
-			Mark("mono-rule", "instance example.com/app.twice func(i64, bool) -> i64").
+			Mark("mono-rule", "eval meta.size_of(T)").
 			Mark("home", "r0").
+			Mark("coro:region", "c0").
+			Mark("coro:spawn", "").
 			Child(New("block")),
 	}
 	data := Format(file)
@@ -141,15 +143,20 @@ func TestMarkArgumentsSurviveARoundTrip(t *testing.T) {
 	if len(back.Decls) != 1 {
 		t.Fatalf("declarations = %d, want 1", len(back.Decls))
 	}
+	want := []Mark{
+		{Name: "coro:region", Arg: "c0"},
+		{Name: "coro:spawn"},
+		{Name: "home", Arg: "r0"},
+		{Name: "mono-rule", Arg: "eval meta.size_of(T)"},
+	}
 	marks := back.Decls[0].Marks
-	if len(marks) != 2 {
-		t.Fatalf("marks = %d, want 2:\n%s", len(marks), data)
+	if len(marks) != len(want) {
+		t.Fatalf("marks = %d, want %d:\n%s", len(marks), len(want), data)
 	}
-	if marks[0].Name != "home" || marks[0].Arg != "r0" {
-		t.Errorf("home mark = %+v, want the bare region name", marks[0])
-	}
-	if want := "instance example.com/app.twice func(i64, bool) -> i64"; marks[1].Arg != want {
-		t.Errorf("mono-rule argument = %q, want %q", marks[1].Arg, want)
+	for i, m := range want {
+		if marks[i] != m {
+			t.Errorf("mark %d = %+v, want %+v", i, marks[i], m)
+		}
 	}
 }
 
