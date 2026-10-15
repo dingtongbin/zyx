@@ -77,7 +77,7 @@ func (c *checker) checkValueCall(v *ast.CallExpr, want *types.Type) *types.Type 
 		if id, ok := v.Fn.(*ast.Ident); ok {
 			min = c.requiredArgs(id)
 		}
-		return c.checkArgs(sig, v.Args, v.Fn.Span(), min, false, want)
+		return c.checkArgs(sig, v.Args, v.Fn, v.Fn.Span(), min, false, want)
 	})
 }
 
@@ -137,7 +137,7 @@ func (c *checker) checkSelectorCall(sel *ast.SelectorExpr, v *ast.CallExpr, want
 	}
 	c.out.Nodes[sel.Name] = sig
 	return c.withAddrOK(sel, func() *types.Type {
-		return c.checkArgs(sig, v.Args, sel.Name.Sp, c.requiredArgs(sel.Name), false, want)
+		return c.checkArgs(sig, v.Args, sel.Name, sel.Name.Sp, c.requiredArgs(sel.Name), false, want)
 	})
 }
 
@@ -183,7 +183,7 @@ func (c *checker) checkQualifiedCall(sel *ast.SelectorExpr, v *ast.CallExpr, pkg
 		return nil
 	}
 	c.out.Nodes[sel.Name] = sig
-	return c.checkArgs(sig, v.Args, sel.Name.Sp, c.requiredArgs(sel.Name), false, nil)
+	return c.checkArgs(sig, v.Args, sel.Name, sel.Name.Sp, c.requiredArgs(sel.Name), false, nil)
 }
 
 // checkVariantCall checks `Enum.Variant(args)`. The enum's type arguments
@@ -286,8 +286,10 @@ func orderedArgs(t *types.Type, d *Decl, bindings map[string]*types.Type) []*typ
 
 // checkArgs checks a call's arguments against a signature and returns the
 // result type. min is the number of parameters without a default value, and
-// variadic marks a C function whose parameter list ends with `...`.
-func (c *checker) checkArgs(sig *types.Type, args []ast.Expr, sp source.Span, min int, variadic bool, want *types.Type) *types.Type {
+// variadic marks a C function whose parameter list ends with `...`. fn is the
+// callee expression, which is annotated with the signature this call
+// instantiates so that no later stage has to work the instantiation out.
+func (c *checker) checkArgs(sig *types.Type, args []ast.Expr, fn ast.Expr, sp source.Span, min int, variadic bool, want *types.Type) *types.Type {
 	if sig == nil || sig.Kind != types.KindFunc {
 		return nil
 	}
@@ -306,6 +308,9 @@ func (c *checker) checkArgs(sig *types.Type, args []ast.Expr, sp source.Span, mi
 	if types.ContainsTypeParam(sig) {
 		sig = c.bindParams(sig, args, argTypes, want)
 		params = sig.Elems
+		if fn != nil {
+			c.out.Nodes[fn] = sig
+		}
 	}
 	switch {
 	case variadic && len(args) < len(params):

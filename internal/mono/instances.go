@@ -64,7 +64,7 @@ func clone(n *zyxc.Node) *zyxc.Node {
 func dropTypeParams(n *zyxc.Node) {
 	var kept []*zyxc.Node
 	for _, child := range n.Children {
-		if child.Kind == "param" && isTypeParam(child) {
+		if child.Kind == "type-param" {
 			continue
 		}
 		kept = append(kept, child)

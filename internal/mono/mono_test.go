@@ -48,7 +48,7 @@ func testProgram() *Program {
 						Child(zyxc.New("type", "i64")).
 						Child(zyxc.New("call").
 							Child(zyxc.New("callee").Child(
-								zyxc.New("name", "twice", "example.com/app.twice").Child(zyxc.New("type", "func(T) -> T")),
+								zyxc.New("name", "twice", "example.com/app.twice").Child(zyxc.New("type", "func(i64) -> i64")),
 							)).
 							Child(zyxc.New("arg").Child(zyxc.New("lit", "2").Child(zyxc.New("type", "i64")))).
 							Child(zyxc.New("type", "i64"))),
@@ -130,6 +130,11 @@ func TestInstantiateBuildsOneInstancePerUse(t *testing.T) {
 		"Box<i64>",
 		"example.com/app.twice)",
 		"func twice#",
+		// An instance is a concrete declaration, so it declares no type
+		// parameter and every type text in it is settled.
+		"type-param",
+		"type T\n",
+		"Pair<T>",
 	} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("the program still holds %q:\n%s", unwanted, out)
@@ -166,6 +171,51 @@ func TestInstanceNamesCarryTheirSignature(t *testing.T) {
 	}
 	if again := instanceName("Box", []*types.Type{types.Int64}, p.Target); again != first {
 		t.Errorf("the same signature must give the same name: %q and %q", first, again)
+	}
+}
+
+// TestInstantiateDoesNotInferFromArguments checks that the type arguments of
+// a use come from the callee's own annotation. A callee that carries the
+// generic signature supplies no instantiation, and the arguments of the call
+// must not stand in for it: reading them here would put a second, weaker copy
+// of the front end's rule in this stage.
+func TestInstantiateDoesNotInferFromArguments(t *testing.T) {
+	file := &zyxc.File{Target: "amd64-unknown-linux-gnu", Module: "example.com/app"}
+	file.Decls = []*zyxc.Node{
+		zyxc.New("func", "twice", "plain", "example.com/app.twice").
+			Child(
+				zyxc.New("type-param", "T", "example.com/app.twice$T"),
+				zyxc.New("param", "v", "T"),
+				zyxc.New("result", "T"),
+				zyxc.New("block"),
+			),
+		zyxc.New("func", "main", "plain", "example.com/app.main").Mark("entry", "").
+			Child(zyxc.New("block").Child(
+				zyxc.New("expr-stmt").Child(
+					zyxc.New("call").
+						Child(zyxc.New("callee").Child(
+							zyxc.New("name", "twice", "example.com/app.twice").Child(zyxc.New("type", "func(T) -> T")),
+						)).
+						Child(zyxc.New("arg").Child(zyxc.New("lit", "2").Child(zyxc.New("type", "i64")))).
+						Child(zyxc.New("type", "i64")),
+				),
+			)),
+	}
+	p := &Program{
+		Target: "amd64-unknown-linux-gnu",
+		Entry:  "example.com/app",
+		Order:  []string{"example.com/app"},
+		Files:  map[string]*zyxc.File{"example.com/app": file},
+	}
+	count, err := Instantiate(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Errorf("instances = %d, want none: a generic callee supplies no type arguments", count)
+	}
+	if strings.Contains(text(p), "twice$$") {
+		t.Error("a callee with the generic signature produced an instance")
 	}
 }
 

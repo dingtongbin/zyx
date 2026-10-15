@@ -121,6 +121,38 @@ func Work(xs: Array<i64>) -> i64 {
 	}
 }
 
+// TestMarkArgumentsSurviveARoundTrip checks that a mark can carry an argument
+// with a space and a comma in it, which is what a type text is. The format
+// quotes such an argument, and the reader must keep it one argument rather
+// than split it on its comma.
+func TestMarkArgumentsSurviveARoundTrip(t *testing.T) {
+	file := &File{Target: "amd64-unknown-linux-gnu", Module: "example.com/app"}
+	file.Decls = []*Node{
+		New("func", "f", "plain", "example.com/app.f").
+			Mark("mono-rule", "instance example.com/app.twice func(i64, bool) -> i64").
+			Mark("home", "r0").
+			Child(New("block")),
+	}
+	data := Format(file)
+	back, err := Parse(data)
+	if err != nil {
+		t.Fatalf("parse: %v\n%s", err, data)
+	}
+	if len(back.Decls) != 1 {
+		t.Fatalf("declarations = %d, want 1", len(back.Decls))
+	}
+	marks := back.Decls[0].Marks
+	if len(marks) != 2 {
+		t.Fatalf("marks = %d, want 2:\n%s", len(marks), data)
+	}
+	if marks[0].Name != "home" || marks[0].Arg != "r0" {
+		t.Errorf("home mark = %+v, want the bare region name", marks[0])
+	}
+	if want := "instance example.com/app.twice func(i64, bool) -> i64"; marks[1].Arg != want {
+		t.Errorf("mono-rule argument = %q, want %q", marks[1].Arg, want)
+	}
+}
+
 func TestCanonicalForm(t *testing.T) {
 	f := buildSource(t, `package server
 

@@ -105,6 +105,25 @@ func TestCorpusCoversTheIntermediateForm(t *testing.T) {
 	}
 }
 
+// TestGenericCallsCarryTheirInstantiatedSignature checks that a call to a
+// generic function annotates its callee with the signature the call
+// instantiates. The monomorphizer settles the type arguments by matching that
+// signature against the declaration's own, so an annotation left generic
+// would send it looking for the arguments somewhere else.
+func TestGenericCallsCarryTheirInstantiatedSignature(t *testing.T) {
+	dir := copyTree(t, filepath.Join("testdata", "generics"))
+	stdout, stderr, code := run(dir, "emit-zyxc", ".")
+	if code != 0 {
+		t.Fatalf("emit-zyxc failed with %d:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, `type "func(i64, i64, bool) -> i64"`) {
+		t.Errorf("the call to pick carries no instantiated signature:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "func(T, T, bool) -> T") {
+		t.Errorf("the call to pick still carries the generic signature:\n%s", stdout)
+	}
+}
+
 // TestDeferredKindsAreStillUnreached checks the record of what the front end
 // still owes a corpus for. When a construct joins the corpus, its entry must
 // move to coveredKinds, and this test says so.

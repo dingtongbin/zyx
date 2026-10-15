@@ -842,7 +842,7 @@ func (c *checker) newStruct(v *ast.NewExpr, typ *types.Type) *types.Type {
 		return typ
 	}
 	sig := c.substituteFor(typ, d, init)
-	c.checkArgs(sig, v.Args, v.Sp, 0, false, typ)
+	c.checkArgs(sig, v.Args, nil, v.Sp, 0, false, typ)
 	return typ
 }
 
@@ -866,7 +866,7 @@ func (c *checker) newContainer(v *ast.NewExpr, typ *types.Type) *types.Type {
 			"build a container with new",
 			"%s cannot be built with new", typ)
 	}
-	c.checkArgs(types.FuncOf(typ, params...), v.Args, v.Sp, len(params), false, typ)
+	c.checkArgs(types.FuncOf(typ, params...), v.Args, nil, v.Sp, len(params), false, typ)
 	return typ
 }
 

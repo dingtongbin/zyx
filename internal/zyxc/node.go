@@ -36,7 +36,7 @@ func (m Mark) String() string {
 	if m.Arg == "" {
 		return m.Name
 	}
-	return m.Name + ":" + m.Arg
+	return m.Name + ":" + quoteToken(m.Arg)
 }
 
 // New returns a node of a kind with a payload.

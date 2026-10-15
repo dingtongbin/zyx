@@ -975,6 +975,41 @@ func (b *builder) isPanic(fn ast.Expr) bool {
 	return sym != nil && sym.Kind == resolve.KindBuiltin && sym.Name == "panic"
 }
 
+// instanceMark returns the mark that records the type arguments a call
+// supplies to a generic declaration. Matching the instantiated signature the
+// checker recorded against the declaration's own settles them exactly, which
+// is what the monomorphizer needs and what it would otherwise have to
+// re-derive from the arguments.
+func (b *builder) instanceMark(id *ast.Ident) string {
+	if id == nil {
+		return ""
+	}
+	got := b.staticType(id)
+	if got == nil || got.Kind != types.KindFunc {
+		return ""
+	}
+	declared := b.cpkg.Decls[id.Name]
+	if declared == nil || declared.Kind != types.KindFunc || len(declared.Elems) == 0 {
+		return ""
+	}
+	bindings, ok := types.Bindings(declared, got)
+	if !ok {
+		return ""
+	}
+	mark := "instance " + b.symID(id)
+	for _, param := range declared.Elems {
+		if param.Kind != types.KindTypeParam {
+			continue
+		}
+		bound, ok := bindings[param.ID]
+		if !ok {
+			return ""
+		}
+		mark += " " + b.typeText(bound)
+	}
+	return mark
+}
+
 // calleeTypeNode returns the `callee-type` child of a call, which records
 // the instantiated signature of the callee. A generic call is settled by
 // matching that signature against the declaration's own.

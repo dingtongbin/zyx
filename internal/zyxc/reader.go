@@ -104,7 +104,9 @@ func parseLine(line string) (*Node, error) {
 	return n, nil
 }
 
-// cutMarks splits the trailing `marks {...}` section off a line.
+// cutMarks splits the trailing `marks {...}` section off a line. A mark
+// argument is one token, quoted when it holds a space, so an argument that
+// carries a type text keeps its comma.
 func cutMarks(line string) (string, []Mark, error) {
 	idx := strings.Index(line, " marks {")
 	if idx < 0 {
@@ -116,16 +118,68 @@ func cutMarks(line string) (string, []Mark, error) {
 	}
 	section = strings.TrimSuffix(section, "}")
 	head := line[:idx]
+	parts, err := splitMarkParts(section)
+	if err != nil {
+		return "", nil, err
+	}
 	var marks []Mark
-	for _, part := range strings.Split(section, ",") {
-		part = strings.TrimSpace(part)
+	for _, part := range parts {
 		if part == "" {
 			return "", nil, errf("the marks section holds an empty entry")
 		}
-		name, arg, _ := strings.Cut(part, ":")
+		name, argText, _ := strings.Cut(part, ":")
+		arg, err := oneToken(argText)
+		if err != nil {
+			return "", nil, err
+		}
 		marks = append(marks, Mark{Name: name, Arg: arg})
 	}
 	return head, marks, nil
+}
+
+// splitMarkParts splits a marks section on the commas between marks. A comma
+// inside a quoted argument belongs to the argument.
+func splitMarkParts(section string) ([]string, error) {
+	var out []string
+	var b strings.Builder
+	inQuote := false
+	for i := 0; i < len(section); i++ {
+		c := section[i]
+		switch {
+		case c == '\\' && inQuote && i+1 < len(section):
+			b.WriteByte(c)
+			i++
+			b.WriteByte(section[i])
+		case c == '"':
+			inQuote = !inQuote
+			b.WriteByte(c)
+		case c == ',' && !inQuote:
+			out = append(out, strings.TrimSpace(b.String()))
+			b.Reset()
+		default:
+			b.WriteByte(c)
+		}
+	}
+	if inQuote {
+		return nil, errf("a quoted mark argument is not closed")
+	}
+	return append(out, strings.TrimSpace(b.String())), nil
+}
+
+// oneToken reads a mark argument, which is one token.
+func oneToken(text string) (string, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", nil
+	}
+	tokens, err := splitTokens(text)
+	if err != nil {
+		return "", err
+	}
+	if len(tokens) != 1 {
+		return "", errf("a mark argument is one token")
+	}
+	return tokens[0], nil
 }
 
 // cutPos splits the trailing `pos <position>` section off a line.

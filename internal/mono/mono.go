@@ -197,9 +197,6 @@ func typeParamsOf(n *zyxc.Node) []*zyxc.Node {
 	return out
 }
 
-// isTypeParam reports whether a node declares a generic parameter.
-func isTypeParam(n *zyxc.Node) bool { return n.Kind == "type-param" }
-
 // paramScope returns the type parameters of a declaration as the scope a
 // type text of that declaration is read in.
 func paramScope(n *zyxc.Node) map[string]*types.Type {
@@ -227,33 +224,21 @@ func (m *instantiator) rewriteRefs(n *zyxc.Node, module string) {
 	if n == nil {
 		return
 	}
-	// A call settles the type arguments of its callee from its own
-	// arguments, so the callee is rewritten with the call in hand. The
-	// callee is visited again below, where the second visit finds nothing
-	// left to do.
-	if callee := n.First("callee"); callee != nil {
-		inner := callee
-		if len(callee.Children) == 1 {
-			inner = callee.Children[0]
-		}
-		m.rewriteOne(module, n, inner)
-	}
 	if slot, ok := zyxc.SymbolSlot(n.Kind); ok && slot < len(n.Payload) {
-		m.rewriteOne(module, n, n)
+		m.rewriteOne(module, n)
 	}
 	for _, child := range n.Children {
 		m.rewriteRefs(child, module)
 	}
 }
 
-// rewriteOne rewrites the reference a node holds, reading the type
-// arguments from call when the node is that call's callee.
-func (m *instantiator) rewriteOne(module string, call, n *zyxc.Node) {
+// rewriteOne rewrites the reference a node holds.
+func (m *instantiator) rewriteOne(module string, n *zyxc.Node) {
 	slot, ok := zyxc.SymbolSlot(n.Kind)
 	if !ok || slot >= len(n.Payload) {
 		return
 	}
-	if id := m.reference(module, call, n, n.Payload[slot]); id != "" {
+	if id := m.reference(module, n, n.Payload[slot]); id != "" {
 		n.Payload[slot] = id
 	}
 }
@@ -344,15 +329,14 @@ func (m *instantiator) ownerOf(id string) string {
 }
 
 // reference returns the symbol id a reference resolves to, or the empty
-// string when the reference needs no rewrite. call is the call the node is
-// the callee of, or the node itself.
-func (m *instantiator) reference(module string, call, n *zyxc.Node, id string) string {
+// string when the reference needs no rewrite.
+func (m *instantiator) reference(module string, n *zyxc.Node, id string) string {
 	decl := m.decls[id]
 	if decl == nil {
 		return ""
 	}
 	if generic(decl) {
-		args, ok := m.typeArguments(module, call, n, decl)
+		args, ok := m.typeArguments(module, n, decl)
 		if !ok {
 			return ""
 		}
@@ -401,69 +385,24 @@ func (m *instantiator) parseAnnotated(module string, n *zyxc.Node) *types.Type {
 }
 
 // typeArguments returns the type arguments one use of a generic declaration
-// supplies. The callee of a call to a generic function carries the generic
-// signature rather than the instantiated one, so the arguments follow from
-// the annotated types of the arguments as well.
-func (m *instantiator) typeArguments(module string, call, n *zyxc.Node, decl *zyxc.Node) ([]*types.Type, bool) {
-	if actual := m.calleeType(module, n); actual != nil {
-		if declared, ok := m.declaredType(decl); ok {
-			if bindings, ok := types.Bindings(declared, actual); ok {
-				if args, ok := m.arguments(decl, bindings); ok {
-					return args, true
-				}
-			}
-		}
+// supplies. The front end annotates the callee with the signature the call
+// instantiates, so matching that signature against the declaration's own
+// settles the arguments. Nothing here reads the arguments of the call, so an
+// instantiation never depends on how the call happens to be written.
+func (m *instantiator) typeArguments(module string, n, decl *zyxc.Node) ([]*types.Type, bool) {
+	actual := m.calleeType(module, n)
+	if actual == nil {
+		return nil, false
 	}
-	return m.argumentsFromArgs(module, call, decl)
-}
-
-// argumentsFromArgs binds the type parameters of a declaration against the
-// annotated types of a call's arguments.
-func (m *instantiator) argumentsFromArgs(module string, call *zyxc.Node, decl *zyxc.Node) ([]*types.Type, bool) {
-	declModule := m.modules[symIDOf(decl)]
-	scope := paramScope(decl)
-	bindings := map[string]*types.Type{}
-	var params, args []*zyxc.Node
-	for _, child := range decl.Children {
-		if child.Kind == "param" && !isTypeParam(child) {
-			params = append(params, child)
-		}
+	declared, ok := m.declaredType(decl)
+	if !ok {
+		return nil, false
 	}
-	for _, child := range call.Children {
-		if child.Kind == "arg" {
-			args = append(args, child)
-		}
-	}
-	for i, param := range params {
-		if i >= len(args) {
-			break
-		}
-		want, err := zyxc.ParseTypeWith(declModule, payloadAt(param, 1), m, scope)
-		if err != nil {
-			return nil, false
-		}
-		actual := m.argumentType(module, args[i])
-		if actual == nil {
-			continue
-		}
-		partial, ok := types.Bindings(want, actual)
-		if !ok {
-			return nil, false
-		}
-		for id, bound := range partial {
-			bindings[id] = bound
-		}
+	bindings, ok := types.Bindings(declared, actual)
+	if !ok {
+		return nil, false
 	}
 	return m.arguments(decl, bindings)
-}
-
-// argumentType returns the annotated type of a call argument.
-func (m *instantiator) argumentType(module string, arg *zyxc.Node) *types.Type {
-	inner := arg
-	if len(arg.Children) == 1 {
-		inner = arg.Children[0]
-	}
-	return m.parseAnnotated(module, inner)
 }
 
 // arguments returns the type arguments of a declaration from a binding of
@@ -512,7 +451,7 @@ func (m *instantiator) declaredType(decl *zyxc.Node) (*types.Type, bool) {
 	scope := paramScope(decl)
 	var params []*types.Type
 	for _, child := range decl.Children {
-		if child.Kind != "param" || isTypeParam(child) {
+		if child.Kind != "param" {
 			continue
 		}
 		t, err := zyxc.ParseTypeWith(module, payloadAt(child, 1), m, scope)
