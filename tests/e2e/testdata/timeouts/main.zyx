@@ -19,7 +19,7 @@ func waitOrRead(ch: chan<i64>) -> i64 {
 }
 
 func main() {
-    var ch = new chan<i64> (1)
+    var ch = new chan<i64>(1)
     fmt.PrintI64(waitOrRead(ch))
     fmt.PrintNl()
     ch.Send(9)

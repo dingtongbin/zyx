@@ -12,7 +12,7 @@ func use(bag: Bag) -> i64 {
 
 func main() {
     region {
-        var bag = Bag { total: 41}
+        var bag = Bag { total: 41 }
         spawn use(bag)
     }
     fmt.PrintI64(42)

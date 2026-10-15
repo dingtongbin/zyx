@@ -3,7 +3,7 @@ package main
 import "std/fmt"
 
 func main() {
-    var m: Map<str, i64> = Map { "a": 1, "b": 2}
+    var m: Map<str, i64> = Map { "a": 1, "b": 2 }
     fmt.PrintI64(i64(m.Len()))
     fmt.PrintNl()
     m.Insert("c", 3)

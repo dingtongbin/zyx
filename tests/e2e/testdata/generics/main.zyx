@@ -5,24 +5,30 @@ import "std/fmt"
 struct Pair<T> {
     first: T
     second: T
-    func First() -> T { return self.first}
-    func Second() -> T { return self.second}
+    func First() -> T {
+        return self.first
+    }
+    func Second() -> T {
+        return self.second
+    }
     func Swap() -> Pair<T> {
-        return Pair { first: self.second, second: self.first}
+        return Pair { first: self.second, second: self.first }
     }
 }
 
-func pick < T: Eq > (a: T, b: T, chooseFirst: bool) -> T { if chooseFirst {
-    return a
+func pick < T: Eq > (a: T, b: T, chooseFirst: bool) -> T {
+    if chooseFirst {
+        return a
+    }
+    return b
 }
-return b}
 
 func wrap < T: Eq > (v: T) -> Pair<T> {
-    return Pair { first: v, second: v}
+    return Pair { first: v, second: v }
 }
 
 func main() {
-    var nums: Pair<i64> = Pair { first: 3, second: 4}
+    var nums: Pair<i64> = Pair { first: 3, second: 4 }
     fmt.PrintI64(nums.First())
     fmt.PrintNl()
     fmt.PrintI64(nums.Second())
@@ -32,12 +38,12 @@ func main() {
     fmt.PrintNl()
     fmt.PrintI64(swapped.Second())
     fmt.PrintNl()
-    var nested: Pair<Pair<i64 >> = Pair { first: nums, second: swapped}
+    var nested: Pair<Pair<i64 >> = Pair { first: nums, second: swapped }
     fmt.PrintI64(nested.First().First())
     fmt.PrintNl()
     fmt.PrintI64(nested.Second().Second())
     fmt.PrintNl()
-    var words: Pair<str> = Pair { first: "hello", second: "world"}
+    var words: Pair<str> = Pair { first: "hello", second: "world" }
     fmt.Println(words.First())
     fmt.Println(words.Second())
     fmt.PrintI64(pick(7, 2, true))

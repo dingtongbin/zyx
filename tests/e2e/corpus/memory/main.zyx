@@ -11,7 +11,7 @@ struct Shelf {
 }
 
 func shelved() -> i64 {
-    var shelf = Shelf { items: new Array<i64>(2)}
+    var shelf = Shelf { items: new Array<i64>(2) }
     var spare = new Array<i64>(4)
     shelf.items = spare
     return 1
@@ -28,7 +28,7 @@ func local() -> usize {
 }
 
 func stored() -> i64 {
-    var h = Holder { slot: "a"}
+    var h = Holder { slot: "a" }
     var s = "b"
     h.slot = s
     return 1
@@ -44,7 +44,7 @@ func use(bag: Bag) {
 
 func moved() -> i64 {
     region {
-        var bag = Bag { total: 1}
+        var bag = Bag { total: 1 }
         spawn use(bag)
     }
     return 0

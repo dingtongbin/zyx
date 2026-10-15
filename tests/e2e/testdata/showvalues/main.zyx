@@ -28,7 +28,7 @@ func Render<T: Show>(w: Buf, v: T) {
 }
 
 func main() {
-    var p = Point { x: 1, y: 2}
+    var p = Point { x: 1, y: 2 }
     fmt.PrintValue(p)
     fmt.PrintNl()
     fmt.PrintlnValue(42)

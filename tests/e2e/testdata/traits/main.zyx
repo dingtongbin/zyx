@@ -50,9 +50,9 @@ func main() {
     fmt.PrintNl()
     // A declared type supplies its own Eq and Hash, written with an
     // expression body.
-    var a = Pair { x: 1, y: 2}
-    var b = Pair { x: 1, y: 2}
-    var far = Pair { x: 3, y: 4}
+    var a = Pair { x: 1, y: 2 }
+    var b = Pair { x: 1, y: 2 }
+    var far = Pair { x: 3, y: 4 }
     fmt.PrintBool(Same(a, b))
     fmt.PrintNl()
     fmt.PrintBool(Same(a, far))
@@ -73,13 +73,13 @@ func main() {
     fmt.PrintNl()
     // The key a container uses and the method follow one rule, so the key a
     // container stored is the key a lookup finds.
-    var m: Map<str, i64> = Map { "abc": 1, "other": 2}
+    var m: Map<str, i64> = Map { "abc": 1, "other": 2 }
     match m.Get(built) {
         Some(v) => fmt.PrintI64(v)
         None => fmt.PrintI64(- 1)
     }
     fmt.PrintNl()
-    var k: Map<Pair, i64> = Map { Pair { x: 1, y: 2}: 9}
+    var k: Map<Pair, i64> = Map { Pair { x: 1, y: 2 }: 9 }
     match k.Get(a) {
         Some(v) => fmt.PrintI64(v)
         None => fmt.PrintI64(- 1)

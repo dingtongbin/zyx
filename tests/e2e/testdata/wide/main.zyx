@@ -19,7 +19,7 @@ func main() {
     fmt.Println(f"{small}")
     fmt.PrintlnValue(top)
     // A 128-bit value is a key like any other.
-    var m: Map<i128, i64> = Map { high: 1, small: 2}
+    var m: Map<i128, i64> = Map { high: 1, small: 2 }
     fmt.PrintI64(i64(m.Len()))
     fmt.PrintNl()
     match m.Get(small) {

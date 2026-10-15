@@ -3,7 +3,7 @@ package main
 import "std/fmt"
 
 func main() {
-    var s: Set<i64> = Set { 1, 2, 3}
+    var s: Set<i64> = Set { 1, 2, 3 }
     fmt.PrintI64(i64(s.Len()))
     fmt.PrintNl()
     s.Add(2)

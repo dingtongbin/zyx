@@ -17,9 +17,9 @@ func lessInt(a: i64, b: i64) -> bool {
 
 func main() {
     var q = new PriorityQueue<Task>(func lessTask)
-    q.Push(Task { prio: 3, id: 1})
-    q.Push(Task { prio: 1, id: 2})
-    q.Push(Task { prio: 2, id: 3})
+    q.Push(Task { prio: 3, id: 1 })
+    q.Push(Task { prio: 1, id: 2 })
+    q.Push(Task { prio: 2, id: 3 })
     fmt.PrintI64(i64(q.Len()))
     fmt.PrintNl()
     var i = 0

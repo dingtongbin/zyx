@@ -24,7 +24,7 @@ func main() {
     var ok = true
     var ch = 'A'
     fmt.Println(f"{n}|{x}|{ok}|{ch}|{name}")
-    var p = Point { x: 1, y: 2}
+    var p = Point { x: 1, y: 2 }
     fmt.Println(f"p = {p}")
     fmt.Println(f"")
 }

@@ -61,7 +61,7 @@ func TestFormatIndentsBlocks(t *testing.T) {
 // below is already canonical, which makes formatting it a no-op.
 func TestFormatKeepsABodyAfterAUserResultType(t *testing.T) {
 	src := "package main\n\nstruct Tally {\n    total: i64\n    func init(n: i64) -> Tally {\n" +
-		"        return Tally { total: n}\n    }\n}\n"
+		"        return Tally { total: n }\n    }\n}\n"
 	if got := format(src); got != src {
 		t.Errorf("format =\n%q\nwant\n%q", got, src)
 	}

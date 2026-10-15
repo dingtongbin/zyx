@@ -7,9 +7,9 @@ struct Box {
 }
 
 func pick() -> i64 {
-    var kept = Box { v: 7}
+    var kept = Box { v: 7 }
     region {
-        var inner = Box { v: 1}
+        var inner = Box { v: 1 }
         kept.v += inner.v
     }
     return kept.v

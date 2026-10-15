@@ -19,16 +19,16 @@ struct Point {
 
 func main() {
     var m: Map<Point, i64> = Map {}
-    m.Insert(Point { x: 1, y: 2}, 10)
-    m.Insert(Point { x: 3, y: 4}, 20)
+    m.Insert(Point { x: 1, y: 2 }, 10)
+    m.Insert(Point { x: 3, y: 4 }, 20)
     fmt.PrintI64(i64(m.Len()))
     fmt.PrintNl()
-    match m.Get(Point { x: 1, y: 2}) {
+    match m.Get(Point { x: 1, y: 2 }) {
         Some(v) => fmt.PrintI64(v)
         None => fmt.PrintI64(- 1)
     }
     fmt.PrintNl()
-    match m.Get(Point { x: 9, y: 9}) {
+    match m.Get(Point { x: 9, y: 9 }) {
         Some(v) => fmt.PrintI64(v)
         None => fmt.PrintI64(- 1)
     }

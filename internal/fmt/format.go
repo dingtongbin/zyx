@@ -159,7 +159,11 @@ func (p *printer) token(toks []token.Token, i int) {
 		}
 		p.newline()
 	case token.Semicolon:
-		p.newline()
+		// A semicolon between statements ends a line; one inside brackets
+		// separates the parts of a type or a literal, which stay together.
+		if p.separates() {
+			p.newline()
+		}
 	case token.Lt:
 		if p.angles > 0 || opensAType(p.prevKind(), p.prevText) {
 			p.angles++
@@ -255,6 +259,10 @@ func (p *printer) needsSpace(toks []token.Token, i int, text string) bool {
 		return false
 	}
 	kind := toks[i].Kind
+	if kind == token.RBrace && !p.inBlock() && p.prevKind() != token.LBrace {
+		// A literal with members closes with a space before its brace.
+		return true
+	}
 	if noSpaceBefore(kind) {
 		return false
 	}
@@ -283,6 +291,13 @@ func (p *printer) needsSpace(toks []token.Token, i int, text string) bool {
 		}
 	case token.Lt:
 		if opensAType(p.prevKind(), p.prevText) {
+			return false
+		}
+	case token.LBrack:
+		// An index attaches to the expression it indexes; a type or a
+		// literal written after anything else keeps its space.
+		switch p.prev.Kind {
+		case token.Ident, token.RParen, token.RBrack, token.SelfUpper:
 			return false
 		}
 	case token.Minus:

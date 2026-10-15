@@ -29,14 +29,14 @@ func greet(s: Speaker) -> str {
 }
 
 func main() {
-    var d = Dog { name: "rex"}
+    var d = Dog { name: "rex" }
     var speaker: Speaker = d
     fmt.Println(greet(speaker))
     fmt.Println(speaker.Speak())
     fmt.PrintBool(speaker is Dog)
     fmt.PrintBool(speaker is Cat)
     fmt.PrintNl()
-    var cat: Speaker = Cat { name: "tom"}
+    var cat: Speaker = Cat { name: "tom" }
     fmt.Println(cat.Speak())
     fmt.PrintBool(cat is Dog)
     fmt.PrintBool(cat is Cat)

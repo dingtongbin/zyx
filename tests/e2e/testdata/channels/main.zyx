@@ -28,7 +28,7 @@ func put(ch: chan<i64>, v: i64) -> i64 {
 }
 
 func main() {
-    var ch = new chan<i64> (1)
+    var ch = new chan<i64>(1)
     ch.Send(7)
     var v, ok = ch.Recv()
     fmt.PrintI64(v)

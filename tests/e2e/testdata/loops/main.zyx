@@ -2,8 +2,7 @@ package main
 
 import "std/fmt"
 
-func sumFixed(xs: [i64;
-4]) -> i64 {
+func sumFixed(xs: [i64; 4]) -> i64 {
     var total = 0
     for x in xs {
         total += x
@@ -32,11 +31,10 @@ func apply(f: func(i64) -> i64, v: i64) -> i64 {
 }
 
 func main() {
-    var xs: [i64;
-    4] = [1, 2, 3, 4]
+    var xs: [i64; 4] = [1, 2, 3, 4]
     fmt.PrintI64(sumFixed(xs))
     fmt.PrintNl()
-    fmt.PrintI64(sumSlice(xs [0 .. 4]))
+    fmt.PrintI64(sumSlice(xs[0 .. 4]))
     fmt.PrintNl()
     fmt.PrintI64(sumRange(5))
     fmt.PrintNl()

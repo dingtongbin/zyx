@@ -68,16 +68,15 @@ func guarded(a: i64, b: i64) -> Result<i64, str> {
 }
 
 func arrays() -> i64 {
-    var xs: [i64;
-    4] = [1, 2, 3, 4]
-    var head = xs [0 .. 2]
-    var total = head [0] + xs [3]
+    var xs: [i64; 4] = [1, 2, 3, 4]
+    var head = xs[0 .. 2]
+    var total = head[0] + xs[3]
     return total
 }
 
 func repeats() -> i64 {
     var zeroes = [0] * 4
-    return zeroes [0]
+    return zeroes[0]
 }
 
 func tuples() -> i64 {
@@ -88,8 +87,8 @@ func tuples() -> i64 {
 }
 
 func containers() -> i64 {
-    var m: Map<str, i64> = Map { "a": 1}
-    var s: Set<i64> = Set { 1}
+    var m: Map<str, i64> = Map { "a": 1 }
+    var s: Set<i64> = Set { 1 }
     var arr = new Array<i64>(2)
     var total = 0
     for k, v in m {
@@ -122,7 +121,7 @@ func calls() -> i64 {
 
 func shapes() -> i64 {
     var s = Shape.Circle(3)
-    var d = Dog { name: "rex"}
+    var d = Dog { name: "rex" }
     var speaker: Speaker = d
     var total = s.Sides()
     if speaker is Dog {
@@ -182,7 +181,7 @@ func sendTo(ch: chan<i64>, v: i64) -> i64 {
 }
 
 func main() {
-    var h = Handle { fd: 0}
+    var h = Handle { fd: 0 }
     if h.fd != 0 {
         fmt.PrintNl()
     }
