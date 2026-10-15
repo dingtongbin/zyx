@@ -172,7 +172,7 @@ func (g *generator) receiverType(n *zyxc.Node) *types.Type {
 	default:
 		return nil
 	}
-	t, err := g.tab.resolve(owner, "", node.Payload[0], nil)
+	t, err := g.tab.named(owner, "", node.Payload[0])
 	if err != nil {
 		return nil
 	}
@@ -217,13 +217,6 @@ func (g *generator) signature(module string, n *zyxc.Node) ([]paramInfo, *types.
 		retLL = g.llPass(result)
 	}
 	return params, result, retLL
-}
-
-// isTypeParam reports whether a `param` node declares a generic parameter
-// rather than a function parameter. A type parameter carries a symbol id,
-// which holds the `$` that separates it from its declaration.
-func isTypeParam(n *zyxc.Node) bool {
-	return len(n.Payload) >= 2 && strings.Contains(n.Payload[1], "$")
 }
 
 // abiArgs returns the LLVM types the C ABI uses for one argument.
