@@ -1764,6 +1764,26 @@ struct Buffer {
 	}
 }
 
+// TestAnnotatedConstIsAValue checks that a constant written with a type names
+// a value of that type. Only the unannotated form used to record a type, so
+// every use of an annotated constant read as nothing and a call that took one
+// reported its argument as missing.
+func TestAnnotatedConstIsAValue(t *testing.T) {
+	src := `package server
+
+const n: i64 = 5
+
+func takes(v: i64) -> i64 => v
+
+func f() -> i64 => takes(n)
+`
+	out, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	if got := out.Consts["n"]; got == nil || got.Int != 5 {
+		t.Errorf("n = %v, want 5", got)
+	}
+}
+
 func TestMetaLayoutQueries(t *testing.T) {
 	src := `package server
 

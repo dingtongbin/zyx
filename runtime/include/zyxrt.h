@@ -106,14 +106,24 @@ void zyxrt_region_release(void *region, void *object, size_t size);
    the bytes rather than the two pointers. */
 int8_t zyxrt_str_eq(const char *a, size_t an, const char *b, size_t bn);
 
-/* The text of one value, in the same form the printing helpers write. Each
-   writer appends to a buffer, so a value costs one pass and never becomes a
-   string of its own. */
+/* The text of one value, in the single form the language writes it. Each
+   function renders into a buffer the caller owns and reports the byte count.
+   Every sink for a value's text goes through these, so printing and writing
+   into a buffer can never disagree. */
+size_t zyxrt_fmt_i64(char *out, size_t cap, int64_t v);
+size_t zyxrt_fmt_u64(char *out, size_t cap, uint64_t v);
+size_t zyxrt_fmt_f64(char *out, size_t cap, double v);
+size_t zyxrt_fmt_bool(char *out, size_t cap, int8_t v);
+size_t zyxrt_fmt_char(char *out, size_t cap, uint32_t c);
+
+/* The text of one value is appended to a buffer, so a value costs one pass
+   and never becomes a string of its own. */
 void zyxrt_buf_write_i64(void *handle, int64_t v);
 void zyxrt_buf_write_u64(void *handle, uint64_t v);
 void zyxrt_buf_write_f64(void *handle, double v);
 void zyxrt_buf_write_bool(void *handle, int8_t v);
 void zyxrt_buf_write_char(void *handle, uint32_t c);
+void zyxrt_buf_write_dur(void *handle, uint64_t ns);
 
 /* Process entry. The generated main calls this with the address of the zyx
    main function, and the runtime runs it on the root region. */

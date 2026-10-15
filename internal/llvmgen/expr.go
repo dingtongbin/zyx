@@ -368,6 +368,10 @@ func (g *generator) bufWriter(typ *types.Type) (string, string, bool) {
 		return "zyxrt_buf_write_bool", "i8", true
 	case typ.Kind == types.KindChar:
 		return "zyxrt_buf_write_char", "i32", true
+	case typ.Kind == types.KindDuration:
+		// A duration is a count of nanoseconds and nothing else, so its text
+		// is that count.
+		return "zyxrt_buf_write_dur", g.ptrInt(), true
 	case typ.IsSigned():
 		return "zyxrt_buf_write_i64", g.ptrInt(), true
 	case typ.IsInteger():

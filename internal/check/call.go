@@ -587,6 +587,12 @@ func builtinMethod(recv *types.Type, name string) *types.Type {
 			return types.FuncOf(types.Uint32)
 		}
 	}
+	if name == "Show" && showable(recv) {
+		// The language gives a value its Show from the fixed table the
+		// backend owns, so the method is callable wherever an interface
+		// value or a constrained parameter would call it.
+		return types.FuncOf(nil, types.Buf)
+	}
 	return nil
 }
 
@@ -744,12 +750,15 @@ func (c *checker) implements(t, iface *types.Type) bool {
 }
 
 // builtinImplements reports whether the language itself gives a type an
-// interface: the primitive types and str implement Eq, Hash, and Show, and
-// the concurrency handles are SyncSafe.
+// interface: the primitive types and str implement Eq and Hash, the types
+// whose text the backend writes from its fixed table implement Show, and the
+// concurrency handles are SyncSafe.
 func builtinImplements(t, iface *types.Type) bool {
 	switch iface.Name {
-	case "Eq", "Hash", "Show":
+	case "Eq", "Hash":
 		return t.IsBasic() || t.Kind == types.KindStr || t.Kind == types.KindDuration
+	case "Show":
+		return showable(t)
 	case "SyncSafe":
 		switch t.Kind {
 		case types.KindChan, types.KindStr:
@@ -758,6 +767,18 @@ func builtinImplements(t, iface *types.Type) bool {
 		return t.ID == types.JoinHandle.ID || t.ID == types.PanicError.ID
 	}
 	return false
+}
+
+// showable reports whether the language writes the text of the type from the
+// backend's fixed table rather than from a declaration. It is exactly the set
+// of types whose Show the backend lowers, so the check and the backend never
+// disagree about whether a value can be written.
+func showable(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	return t.IsNumeric() || t.Kind == types.KindBool || t.Kind == types.KindChar ||
+		t.Kind == types.KindStr || t.Kind == types.KindDuration
 }
 
 // hasReferenceMember reports whether a type holds a reference that a deep

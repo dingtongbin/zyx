@@ -443,6 +443,10 @@ func (c *checker) checkConstInit(v *ast.ConstDecl) {
 			"assign a value of the declared type",
 			"assigning %s to %s", got, t)
 	}
+	// An annotated constant names a value of that type, so a use of the name
+	// as a value finds it. Without this, only an unannotated constant has a
+	// type and every use of an annotated one reads as nothing.
+	c.bindName(v.Name, t)
 }
 
 // checkVarInit checks the initializer of a top-level variable, which lives

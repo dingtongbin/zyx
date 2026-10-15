@@ -194,6 +194,7 @@ func (t *Toolchain) Sources(target Target) []string {
 		filepath.Join(t.Runtime, "core", "start.c"),
 		filepath.Join(t.Runtime, "core", "panic.c"),
 		filepath.Join(t.Runtime, "core", "abi.c"),
+		filepath.Join(t.Runtime, "core", "format.c"),
 		filepath.Join(t.Runtime, "core", "defer.c"),
 		filepath.Join(t.Runtime, "core", "str.c"),
 		filepath.Join(t.Runtime, "mem", "region.c"),
