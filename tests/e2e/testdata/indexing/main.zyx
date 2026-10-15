@@ -42,4 +42,20 @@ func main() {
     fmt.PrintNl()
     fmt.PrintU64(u64(accent [1]))
     fmt.PrintNl()
+    // An element of a fixed-size array is written in place.
+    var slots: [i64;
+    3] = [1, 2, 3]
+    slots [1] = 99
+    fmt.PrintI64(slots [1])
+    fmt.PrintNl()
+    slots [2] += 7
+    fmt.PrintI64(slots [2])
+    fmt.PrintNl()
+    // A growable array is read through the runtime.
+    var count = 3
+    var grown = [5] * count
+    fmt.PrintI64(i64(grown.Len()))
+    fmt.PrintNl()
+    fmt.PrintI64(grown [2])
+    fmt.PrintNl()
 }

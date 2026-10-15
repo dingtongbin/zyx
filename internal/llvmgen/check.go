@@ -24,8 +24,7 @@ import (
 func (g *generator) guard(cond, message string) {
 	failed := g.newLabel("check.fail")
 	passed := g.newLabel("check.ok")
-	g.emit("  br i1 %s, label %%%s, label %%%s", cond, failed, passed)
-	g.fn.terminated = true
+	g.branch("  br i1 %s, label %%%s, label %%%s", cond, failed, passed)
 	g.label(failed)
 	g.panicMessage(message)
 	g.label(passed)

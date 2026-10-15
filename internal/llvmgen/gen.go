@@ -122,6 +122,14 @@ func (g *generator) newLabel(prefix string) string {
 	return fmt.Sprintf("%s%d", prefix, g.labels)
 }
 
+// branch writes a line that ends a basic block inside an expression. A
+// release the statement is still holding belongs to the statement, so it is
+// not flushed here the way a statement-level terminator flushes it.
+func (g *generator) branch(format string, args ...any) {
+	g.emit(format, args...)
+	g.fn.terminated = true
+}
+
 // label starts a basic block.
 func (g *generator) label(name string) {
 	g.emit("%s:", name)

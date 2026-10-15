@@ -154,10 +154,40 @@ func (c *checker) checkCond(e ast.Expr) {
 	}
 }
 
+// checkAssignTarget reports a target that has no storage to write. The
+// language's containers are appended to and read, a slice is a read-only view,
+// and a str is immutable, so only a name, a field, or an element of a
+// fixed-size array can be assigned through.
+func (c *checker) checkAssignTarget(target ast.Expr) {
+	index, ok := target.(*ast.IndexExpr)
+	if !ok {
+		return
+	}
+	base := c.out.Nodes[index.X]
+	if base == nil {
+		return
+	}
+	switch base.Kind {
+	case types.KindContainer:
+		c.errorHelp(diag.CodeTypeMismatch, target.Span(),
+			"assign to a name, a field, or an element of a fixed-size array",
+			"a %s is appended to and read, so its elements are not assigned", base)
+	case types.KindSlice:
+		c.errorHelp(diag.CodeTypeMismatch, target.Span(),
+			"assign to a name, a field, or an element of a fixed-size array",
+			"a view is read-only, so its elements are not assigned")
+	case types.KindStr:
+		c.errorHelp(diag.CodeTypeMismatch, target.Span(),
+			"assign to a name, a field, or an element of a fixed-size array",
+			"a str is immutable")
+	}
+}
+
 // checkAssign checks an assignment, simple or compound.
 func (c *checker) checkAssign(v *ast.AssignStmt) {
 	if v.Op != token.Assign {
 		lt := c.checkExpr(v.Target, nil)
+		c.checkAssignTarget(v.Target)
 		rt := c.checkExpr(v.Value, lt)
 		lt, rt = c.adaptLiterals(v.Target, v.Value, lt, rt)
 		if lt != nil && rt != nil && lt.Kind != types.Invalid &&
@@ -169,6 +199,7 @@ func (c *checker) checkAssign(v *ast.AssignStmt) {
 		return
 	}
 	dst := c.checkExpr(v.Target, nil)
+	c.checkAssignTarget(v.Target)
 	if dst == nil || dst.Kind == types.Invalid {
 		return
 	}
@@ -471,6 +502,9 @@ func (c *checker) checkVarInit(v *ast.VarDecl) {
 				"assign a value of the declared type",
 				"assigning %s to %s", got, t)
 		}
+		// An annotated variable names a value of that type, so a use of the
+		// name as a value finds it.
+		c.bindName(v.Names[0], t)
 	case len(v.Names) == 1:
 		if val != nil && val.Type != nil {
 			c.bindName(v.Names[0], val.Type)

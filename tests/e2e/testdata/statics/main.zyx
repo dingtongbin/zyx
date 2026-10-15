@@ -1,0 +1,28 @@
+package main
+
+import "std/fmt"
+// A top-level variable lives in static storage and holds a value of its
+// declared type. Its initializer is a compile-time expression.
+
+var counter: i64 = 5
+
+var label: str = "ready"
+
+var untyped = 7
+
+const limit: i64 = 10
+
+func main() {
+    fmt.PrintI64(counter)
+    fmt.PrintNl()
+    counter = counter + 1
+    fmt.PrintI64(counter)
+    fmt.PrintNl()
+    fmt.Println(label)
+    fmt.PrintI64(untyped)
+    fmt.PrintNl()
+    fmt.PrintI64(limit)
+    fmt.PrintNl()
+    fmt.PrintBool(counter < limit)
+    fmt.PrintNl()
+}

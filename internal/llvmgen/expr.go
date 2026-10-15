@@ -1053,6 +1053,22 @@ func (g *generator) index(module string, n *zyxc.Node) *value {
 		reg := g.newReg()
 		g.emit("  %s = getelementptr inbounds i8, ptr %s, i64 %s", reg, ptrReg, idx.text)
 		return &value{text: reg, ll: "i8", typ: types.Uint8, lvalue: true, inline: true}
+	case types.KindContainer:
+		if recv.typ.Name != "Array" {
+			break
+		}
+		// A growable array lives in the runtime, so its element is read
+		// through the runtime after the same check.
+		elem := arg(recv.typ, 0)
+		g.declareRuntime("zyxrt_array_len", g.ptrInt(), "ptr")
+		length := g.newReg()
+		g.emit("  %s = call %s @zyxrt_array_len(ptr %s)", length, g.ptrInt(), recv.text)
+		g.guardIndex(idx.text, length)
+		slot := g.objectAlloca(elem)
+		g.declareRuntime("zyxrt_array_get_unchecked", "void", "ptr", g.ptrInt(), "ptr")
+		g.emit("  call void @zyxrt_array_get_unchecked(ptr %s, %s %s, ptr %s)",
+			recv.text, idx.ll, idx.text, slot)
+		return g.load(&value{text: slot, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true})
 	}
 	g.fail(fmt.Errorf("llvmgen: indexing %s is not lowered", recv.typ))
 	return nil
@@ -1189,10 +1205,101 @@ func (g *generator) arrayLit(module string, n *zyxc.Node) *value {
 	return &value{text: base, ll: "ptr", typ: typ}
 }
 
-// arrayRepeat lowers the `[value] * count` form.
+// arrayRepeat lowers the `[value] * count` form. A fixed-size array is one
+// block that lies in a region, so it is allocated and filled in place; a
+// growable array is a container, so the value is pushed once per repetition.
 func (g *generator) arrayRepeat(module string, n *zyxc.Node) *value {
-	g.fail(fmt.Errorf("llvmgen: a repeated array is not lowered"))
-	return nil
+	typ := g.typeOfNode(n.First("type"), module)
+	if typ == nil {
+		g.fail(fmt.Errorf("llvmgen: a repeated array needs a type"))
+		return nil
+	}
+	elem := typ.Elem
+	if typ.Kind != types.KindArray {
+		elem = arg(typ, 0)
+	}
+	if elem == nil {
+		g.fail(fmt.Errorf("llvmgen: a repeated array needs an element type"))
+		return nil
+	}
+	repeated := g.load(g.expr(module, g.wrapped(n, "elem"), elem))
+	if repeated == nil {
+		return nil
+	}
+	if typ.Kind == types.KindArray {
+		base := g.allocate(typ)
+		g.repeatStores(base, typ, elem, repeated)
+		return &value{text: base, ll: "ptr", typ: typ}
+	}
+	// A growable array is a container: the runtime makes one with room for
+	// every repetition, and the value is pushed into it.
+	request := &zyxc.Node{Kind: "new"}
+	request.Child(zyxc.New("type", typ.String()))
+	request.Child(zyxc.New("arg").Child(g.wrapped(n, "count")))
+	handle := g.newContainer(module, request, typ)
+	if handle == nil {
+		return nil
+	}
+	g.repeatPushes(module, n, handle, elem, repeated)
+	return handle
+}
+
+// repeatStores fills a fixed-size array with one value.
+func (g *generator) repeatStores(base string, typ, elem *types.Type, repeated *value) {
+	if typ.Len == 0 {
+		return
+	}
+	index := g.alloca(types.Usize)
+	g.emit("  store %s 0, ptr %s", g.ptrInt(), index)
+	condition := g.newLabel("repeat.cond")
+	body := g.newLabel("repeat.body")
+	done := g.newLabel("repeat.end")
+	g.branch("  br label %%%s", condition)
+	g.label(condition)
+	at := g.newReg()
+	g.emit("  %s = load %s, ptr %s", at, g.ptrInt(), index)
+	more := g.newReg()
+	g.emit("  %s = icmp ult %s %s, %d", more, g.ptrInt(), at, typ.Len)
+	g.branch("  br i1 %s, label %%%s, label %%%s", more, body, done)
+	g.label(body)
+	slot := g.newReg()
+	g.emit("  %s = getelementptr inbounds %s, ptr %s, i64 0, i64 %s", slot, g.llType(typ), base, at)
+	g.storeInto(slot, elem, repeated, true)
+	next := g.newReg()
+	g.emit("  %s = add %s %s, 1", next, g.ptrInt(), at)
+	g.emit("  store %s %s, ptr %s", g.ptrInt(), next, index)
+	g.branch("  br label %%%s", condition)
+	g.label(done)
+}
+
+// repeatPushes pushes one value into a growable array once per repetition.
+func (g *generator) repeatPushes(module string, n *zyxc.Node, handle *value, elem *types.Type, repeated *value) {
+	count := g.load(g.expr(module, g.wrapped(n, "count"), types.Usize))
+	if count == nil {
+		return
+	}
+	index := g.alloca(types.Usize)
+	g.emit("  store %s 0, ptr %s", g.ptrInt(), index)
+	condition := g.newLabel("repeat.cond")
+	body := g.newLabel("repeat.body")
+	done := g.newLabel("repeat.end")
+	g.branch("  br label %%%s", condition)
+	g.label(condition)
+	at := g.newReg()
+	g.emit("  %s = load %s, ptr %s", at, g.ptrInt(), index)
+	more := g.newReg()
+	g.emit("  %s = icmp ult %s %s, %s", more, g.ptrInt(), at, count.text)
+	g.branch("  br i1 %s, label %%%s, label %%%s", more, body, done)
+	g.label(body)
+	slot := g.objectAlloca(elem)
+	g.storeInto(slot, elem, repeated, true)
+	g.declareRuntime("zyxrt_array_push", "void", "ptr", "ptr")
+	g.emit("  call void @zyxrt_array_push(ptr %s, ptr %s)", handle.text, slot)
+	next := g.newReg()
+	g.emit("  %s = add %s %s, 1", next, g.ptrInt(), at)
+	g.emit("  store %s %s, ptr %s", g.ptrInt(), next, index)
+	g.branch("  br label %%%s", condition)
+	g.label(done)
 }
 
 // tupleLit lowers a tuple construction.

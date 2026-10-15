@@ -1,0 +1,34 @@
+package main
+
+import "std/fmt"
+
+func main() {
+    // A repeated value with a declared length fills a fixed-size array.
+    var zeros: [i64;
+    4] = [0] * 4
+    fmt.PrintI64(zeros [0])
+    fmt.PrintNl()
+    fmt.PrintI64(zeros [3])
+    fmt.PrintNl()
+    zeros [2] = 8
+    fmt.PrintI64(zeros [2])
+    fmt.PrintNl()
+    // A large repeat fills in place, so the code stays one loop.
+    var page: [u8;
+    4096] = [7] * 4096
+    fmt.PrintU64(u64(page [0]))
+    fmt.PrintNl()
+    fmt.PrintU64(u64(page [4095]))
+    fmt.PrintNl()
+    // A repeat whose count is known only at run time builds a growable array.
+    var count = 3
+    var grown = [9] * count
+    fmt.PrintI64(i64(grown.Len()))
+    fmt.PrintNl()
+    fmt.PrintI64(grown [2])
+    fmt.PrintNl()
+    // An element of a reference type is a value like any other.
+    var names: [str;
+    2] = ["x"] * 2
+    fmt.Println(names [1])
+}
