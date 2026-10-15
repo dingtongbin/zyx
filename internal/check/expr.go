@@ -879,6 +879,18 @@ func (c *checker) newContainer(v *ast.NewExpr, typ *types.Type) *types.Type {
 		params = nil
 	case "PriorityQueue":
 		params = []*types.Type{less}
+	case "Buf":
+		// The capacity is optional, so the argument is checked against it
+		// rather than required.
+		if len(v.Args) > 1 {
+			c.errorHelp(diag.CodeArgCount, v.Sp,
+				"pass the initial capacity, or nothing",
+				"a buffer takes at most one argument, got %d", len(v.Args))
+		}
+		for _, a := range v.Args {
+			c.checkExpr(a, types.Usize)
+		}
+		return typ
 	case "BlockingQueue":
 		params = []*types.Type{types.Usize, less}
 	default:

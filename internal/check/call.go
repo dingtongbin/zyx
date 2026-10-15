@@ -492,6 +492,20 @@ var containerMethods = map[string]map[string]func(*types.Type) *types.Type{
 			return types.FuncOf(types.Option.Instantiate(arg(recv, 0)))
 		},
 	},
+	"Buf": {
+		"Len":       func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Cap":       func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Clear":     func(*types.Type) *types.Type { return types.FuncOf(void) },
+		"Reset":     func(*types.Type) *types.Type { return types.FuncOf(void) },
+		"Reserve":   func(*types.Type) *types.Type { return types.FuncOf(void, types.Usize) },
+		"Consume":   func(*types.Type) *types.Type { return types.FuncOf(void, types.Usize) },
+		"WriteByte": func(*types.Type) *types.Type { return types.FuncOf(void, types.Uint8) },
+		"Write":     func(*types.Type) *types.Type { return types.FuncOf(void, types.SliceOf(types.Uint8)) },
+		"WriteStr":  func(*types.Type) *types.Type { return types.FuncOf(void, types.Str) },
+		"Bytes":     func(*types.Type) *types.Type { return types.FuncOf(types.SliceOf(types.Uint8)) },
+		"Str":       func(*types.Type) *types.Type { return types.FuncOf(types.Str) },
+		"Take":      func(*types.Type) *types.Type { return types.FuncOf(types.Array.Instantiate(types.Uint8)) },
+	},
 	"BlockingQueue": {
 		"Len": func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
 		"Push": func(recv *types.Type) *types.Type {

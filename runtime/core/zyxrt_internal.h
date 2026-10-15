@@ -109,6 +109,8 @@ void zyxrt_sched_sleep(uint64_t ns);
 /* The buffer of an array, which the runtime writes into when it fills an
    array in one step. */
 unsigned char *zyxrt_array_data(void *handle);
+/* zyxrt_array_append adds n elements in one step. */
+void zyxrt_array_append(void *handle, const void *data, size_t n);
 
 /* A region records the coroutines started in it, so it can wait for them
    before it releases its memory. */

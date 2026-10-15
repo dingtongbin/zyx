@@ -56,6 +56,21 @@ int zyxrt_bqueue_try_push(void *handle, const void *value);
 void zyxrt_bqueue_pop(void *handle, void *out);
 int zyxrt_bqueue_try_pop(void *handle, void *out);
 
+/* Buf is a mutable byte buffer. Bytes reports the live bytes in place, which
+   is the view a caller reads; Consume drops bytes from the front in constant
+   time, and Take hands them to an array. */
+void *zyxrt_buf_new(size_t cap);
+size_t zyxrt_buf_len(void *handle);
+size_t zyxrt_buf_cap(void *handle);
+void zyxrt_buf_clear(void *handle);
+void zyxrt_buf_reserve(void *handle, size_t n);
+void zyxrt_buf_write(void *handle, const unsigned char *p, size_t n);
+void zyxrt_buf_write_byte(void *handle, unsigned char value);
+void zyxrt_buf_consume(void *handle, size_t n);
+void zyxrt_buf_bytes(void *handle, const unsigned char **out, size_t *len);
+void zyxrt_buf_str(void *handle, const char **out, size_t *len);
+void *zyxrt_buf_take(void *handle);
+
 /* A set holds each element once. */
 void *zyxrt_set_new(size_t elem_size, void *hash, void *eq);
 size_t zyxrt_set_len(void *handle);

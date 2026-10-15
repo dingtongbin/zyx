@@ -26,6 +26,8 @@ func (g *generator) containerCall(module string, n *zyxc.Node, recv *value, name
 		return g.queueCall(module, n, recv, name)
 	case "BlockingQueue":
 		return g.bqueueCall(module, n, recv, name)
+	case "Buf":
+		return g.bufCall(module, n, recv, name)
 	}
 	g.fail(fmt.Errorf("llvmgen: %s.%s is not lowered", recv.typ.Name, name))
 	return nil
@@ -52,6 +54,20 @@ func (g *generator) newContainer(module string, n *zyxc.Node, typ *types.Type) *
 		reg := g.newReg()
 		g.emit("  %s = call ptr @zyxrt_map_new(%s %d, %s %d, ptr %s, ptr %s)",
 			reg, g.ptrInt(), keySize, g.ptrInt(), valSize, hash, eq)
+		return &value{text: reg, ll: "ptr", typ: typ}
+	}
+	if typ.Name == "Buf" {
+		capacity := "0"
+		if a := g.sole(n.First("arg")); a != nil {
+			v := g.load(g.expr(module, a, types.Usize))
+			if v == nil {
+				return nil
+			}
+			capacity = v.text
+		}
+		g.declareRuntime("zyxrt_buf_new", "ptr", g.ptrInt())
+		reg := g.newReg()
+		g.emit("  %s = call ptr @zyxrt_buf_new(%s %s)", reg, g.ptrInt(), capacity)
 		return &value{text: reg, ll: "ptr", typ: typ}
 	}
 	if typ.Name == "BlockingQueue" {
@@ -383,6 +399,85 @@ func (g *generator) queueCall(module string, n *zyxc.Node, recv *value, name str
 		return g.optionValue(module, n, slot, elem, flag)
 	}
 	g.fail(fmt.Errorf("llvmgen: PriorityQueue.%s is not lowered", name))
+	return nil
+}
+
+// bufCall lowers one operation on a Buf. Bytes answers with the storage in
+// place, so the caller reads the buffer rather than a copy of it; Str copies,
+// because the text outlives the buffer it was read from.
+func (g *generator) bufCall(module string, n *zyxc.Node, recv *value, name string) *value {
+	switch name {
+	case "Len", "Cap":
+		fn := "zyxrt_buf_len"
+		if name == "Cap" {
+			fn = "zyxrt_buf_cap"
+		}
+		g.declareRuntime(fn, g.ptrInt(), "ptr")
+		reg := g.newReg()
+		g.emit("  %s = call %s @%s(ptr %s)", reg, g.ptrInt(), fn, recv.text)
+		return &value{text: reg, ll: g.ptrInt(), typ: types.Usize}
+	case "Clear", "Reset":
+		g.declareRuntime("zyxrt_buf_clear", "void", "ptr")
+		g.emit("  call void @zyxrt_buf_clear(ptr %s)", recv.text)
+		return &value{ll: "void"}
+	case "Reserve", "Consume":
+		count := g.load(g.expr(module, g.sole(n.First("arg")), types.Usize))
+		if count == nil {
+			return nil
+		}
+		fn := "zyxrt_buf_reserve"
+		if name == "Consume" {
+			fn = "zyxrt_buf_consume"
+		}
+		g.declareRuntime(fn, "void", "ptr", g.ptrInt())
+		g.emit("  call void @%s(ptr %s, %s %s)", fn, recv.text, count.ll, count.text)
+		return &value{ll: "void"}
+	case "WriteByte":
+		b := g.load(g.expr(module, g.sole(n.First("arg")), types.Uint8))
+		if b == nil {
+			return nil
+		}
+		g.declareRuntime("zyxrt_buf_write_byte", "void", "ptr", "i8")
+		g.emit("  call void @zyxrt_buf_write_byte(ptr %s, i8 %s)", recv.text, b.text)
+		return &value{ll: "void"}
+	case "Write", "WriteStr":
+		v := g.load(g.expr(module, g.sole(n.First("arg")), nil))
+		if v == nil {
+			return nil
+		}
+		ptr, size := g.splitFat(v)
+		g.declareRuntime("zyxrt_buf_write", "void", "ptr", "ptr", g.ptrInt())
+		g.emit("  call void @zyxrt_buf_write(ptr %s, ptr %s, %s %s)",
+			recv.text, ptr, g.ptrInt(), size)
+		return &value{ll: "void"}
+	case "Bytes", "Str":
+		fn := "zyxrt_buf_bytes"
+		typ := types.SliceOf(types.Uint8)
+		if name == "Str" {
+			fn = "zyxrt_buf_str"
+			typ = types.Str
+		}
+		ptrSlot := g.alloca(types.Raw)
+		sizeSlot := g.alloca(types.Usize)
+		g.declareRuntime(fn, "void", "ptr", "ptr", "ptr")
+		g.emit("  call void @%s(ptr %s, ptr %s, ptr %s)", fn, recv.text, ptrSlot, sizeSlot)
+		ptr := g.newReg()
+		g.emit("  %s = load ptr, ptr %s", ptr, ptrSlot)
+		size := g.newReg()
+		g.emit("  %s = load %s, ptr %s", size, g.ptrInt(), sizeSlot)
+		ll := g.llType(typ)
+		first := g.newReg()
+		g.emit("  %s = insertvalue %s undef, ptr %s, 0", first, ll, ptr)
+		out := g.newReg()
+		g.emit("  %s = insertvalue %s %s, %s %s, 1", out, ll, first, g.ptrInt(), size)
+		return &value{text: out, ll: ll, typ: typ}
+	case "Take":
+		g.declareRuntime("zyxrt_buf_take", "ptr", "ptr")
+		reg := g.newReg()
+		g.emit("  %s = call ptr @zyxrt_buf_take(ptr %s)", reg, recv.text)
+		return &value{text: reg, ll: "ptr", typ: types.Array.Instantiate(types.Uint8)}
+	}
+	g.fail(fmt.Errorf("llvmgen: Buf.%s is not lowered", name))
 	return nil
 }
 

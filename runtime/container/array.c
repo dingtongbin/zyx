@@ -48,6 +48,18 @@ static void grow(zyxrt_array *a) {
   a->cap = cap;
 }
 
+/* zyxrt_array_append adds n elements in one step, which the runtime uses when
+   it already has the bytes. */
+void zyxrt_array_append(void *handle, const void *data, size_t n) {
+  zyxrt_array *a = (zyxrt_array *)handle;
+  if (a == NULL || n == 0) return;
+  while (a->len + n > a->cap) {
+    grow(a);
+  }
+  memcpy(a->data + a->len * a->elem, data, n * a->elem);
+  a->len += n;
+}
+
 void zyxrt_array_push(void *handle, const void *value) {
   zyxrt_array *a = (zyxrt_array *)handle;
   if (a == NULL) return;

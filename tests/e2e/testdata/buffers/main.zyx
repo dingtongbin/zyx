@@ -1,0 +1,21 @@
+package main
+
+import "std/fmt"
+
+func main() {
+    var b = new Buf(4)
+    b.WriteStr("hello")
+    b.WriteByte(33)
+    fmt.PrintI64(i64(b.Len()))
+    fmt.PrintNl()
+    fmt.Println(b.Str())
+    b.Consume(1)
+    fmt.PrintI64(i64(b.Len()))
+    fmt.PrintNl()
+    fmt.Println(b.Str())
+    var taken = b.Take()
+    fmt.PrintI64(i64(taken.Len()))
+    fmt.PrintNl()
+    fmt.PrintI64(i64(b.Len()))
+    fmt.PrintNl()
+}
