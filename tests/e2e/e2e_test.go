@@ -167,7 +167,11 @@ func TestPrograms(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("run failed with %d:\n%s", code, stderr)
 			}
-			if stderr != "" {
+			if want, err := os.ReadFile(filepath.Join(dir, "stderr.txt")); err == nil {
+				if stderr != string(want) {
+					t.Errorf("standard error =\n%s\nwant\n%s", stderr, want)
+				}
+			} else if stderr != "" {
 				t.Errorf("the compiler wrote to stderr:\n%s", stderr)
 			}
 			if got := stdout; got != string(want) {

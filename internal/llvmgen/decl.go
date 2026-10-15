@@ -360,12 +360,21 @@ func (g *generator) function(module string, n *zyxc.Node) {
 		g.fn.vars[fmt.Sprintf("%s#%d", sym, i+1)] = &varSlot{alloca: slot, typ: p.typ}
 	}
 
+	// A function body is a region of its own, so the deferred calls it
+	// records run before it returns, whichever path it leaves by.
+	deferSlot := ""
+	if hasDefer(body) {
+		deferSlot = g.openRegion()
+	}
 	g.stmt(module, body)
 
 	if !g.fn.terminated {
 		g.terminator("  br label %%%s", g.fn.ret)
 	}
 	g.label(g.fn.ret)
+	if deferSlot != "" {
+		g.closeRegion(deferSlot)
+	}
 	if result == nil {
 		g.emit("  ret void")
 	} else {

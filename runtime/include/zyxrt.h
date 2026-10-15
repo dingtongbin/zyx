@@ -44,6 +44,12 @@ void *zyxrt_coro_panic(void *handle);
 /* zyxrt_panic_message returns the text of an exception. */
 const char *zyxrt_panic_message(const void *panic, size_t *len);
 
+/* Deferred calls. A region records a mark on entry and runs the calls
+   above it when it leaves, in reverse order. */
+void *zyxrt_defer_mark(void);
+void zyxrt_defer_push(void (*call)(void *), void *args);
+void zyxrt_defer_run(void *mark);
+
 /* Channels. A channel carries values of one size, up to a fixed capacity. */
 void *zyxrt_chan_new(size_t elem, size_t cap);
 void zyxrt_chan_send(void *ch, const void *value);

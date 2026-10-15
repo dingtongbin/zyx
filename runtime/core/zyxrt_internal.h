@@ -4,6 +4,13 @@
 
 #include "zyxrt.h"
 
+/* A deferred call: the function to run and the arguments it was given. */
+typedef struct zyxrt_defer {
+  void (*call)(void *);
+  void *args;
+  struct zyxrt_defer *next;
+} zyxrt_defer;
+
 /* A coroutine. It runs on its own stack; the stack switch itself comes from
    the platform layer, which uses fibers on Windows and the ucontext
    primitives elsewhere. */
@@ -13,6 +20,8 @@ typedef struct zyxrt_coro {
   void *arg;
   void *region;
   void *result;
+  /* defers holds the calls the coroutine has pending, newest first. */
+  struct zyxrt_defer *defers;
   /* panic holds the exception the coroutine raised, or NULL. */
   void *panic;
   /* root marks the coroutine that runs the language main function. */

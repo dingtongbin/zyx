@@ -67,6 +67,8 @@ static _Unwind_Reason_Code panic_stop(int version, _Unwind_Action actions,
   fwrite(p->message, 1, p->length, stderr);
   fputc('\n', stderr);
   fflush(stderr);
+  /* A panic leaves every enclosing region, so every pending call runs. */
+  zyxrt_defer_run(NULL);
   zyxrt_coro *self = zyxrt_sched_current();
   if (self != NULL && !self->root) {
     self->panic = p;

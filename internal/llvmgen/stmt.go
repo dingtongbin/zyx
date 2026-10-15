@@ -40,6 +40,8 @@ func (g *generator) stmt(module string, n *zyxc.Node) {
 		g.returnStmt(module, n)
 	case "region":
 		g.regionStmt(module, n)
+	case "defer":
+		g.deferStmt(module, n)
 	default:
 		g.fail(fmt.Errorf("llvmgen: statement %s is not lowered", n.Kind))
 	}
