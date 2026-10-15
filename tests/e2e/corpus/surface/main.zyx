@@ -90,7 +90,7 @@ func tuples() -> i64 {
 func containers() -> i64 {
     var m: Map<str, i64> = Map { "a": 1}
     var s: Set<i64> = Set { 1}
-    var arr = new Array<i64> (2)
+    var arr = new Array<i64>(2)
     var total = 0
     for k, v in m {
         total += v

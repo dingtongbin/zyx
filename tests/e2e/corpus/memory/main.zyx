@@ -11,8 +11,8 @@ struct Shelf {
 }
 
 func shelved() -> i64 {
-    var shelf = Shelf { items: new Array<i64> (2)}
-    var spare = new Array<i64> (4)
+    var shelf = Shelf { items: new Array<i64>(2)}
+    var spare = new Array<i64>(4)
     shelf.items = spare
     return 1
 }
@@ -22,7 +22,7 @@ struct Bag {
 }
 
 func local() -> usize {
-    var xs = new Array<i64> (4)
+    var xs = new Array<i64>(4)
     xs.Push(1)
     return xs.Len()
 }
@@ -65,7 +65,7 @@ func blocked(ch: chan<i64>) -> i64 {
 }
 
 func main() {
-    var ch = new chan<i64> (1)
+    var ch = new chan<i64>(1)
     var total = i64(local()) + stored() + moved() + blocked(ch) + shelved()
     fastCall()
 }

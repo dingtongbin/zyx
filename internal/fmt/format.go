@@ -36,6 +36,9 @@ type printer struct {
 	// angles counts the open type-argument brackets, inside which `<`, `>`,
 	// and `,` attach to their neighbours.
 	angles int
+	// closedArgs marks a `>` that closed a type argument list, which the
+	// call parenthesis attaches to. A `>` that compares does not.
+	closedArgs bool
 	// brackets counts the open parentheses and square brackets, inside
 	// which a line break is not a statement separator.
 	brackets int
@@ -164,9 +167,14 @@ func (p *printer) token(toks []token.Token, i int) {
 	case token.Gt:
 		if p.angles > 0 {
 			p.angles--
+			p.closedArgs = p.angles == 0
 		}
 	}
 
+	if t.Kind != token.Gt {
+		// The mark lasts for the token that follows the closing bracket.
+		p.closedArgs = false
+	}
 	p.prev = &toks[i]
 	p.prevText = text
 	p.line = line
@@ -263,10 +271,15 @@ func (p *printer) needsSpace(toks []token.Token, i int, text string) bool {
 	}
 	switch kind {
 	case token.LParen:
-		// A call or a function type attaches to its name.
+		// A call or a function type attaches to its name, and a call on a
+		// type argument list attaches to the list it closes.
 		switch p.prev.Kind {
 		case token.Ident, token.RParen, token.RBrack, token.Func, token.SelfUpper:
 			return false
+		case token.Gt:
+			if p.closedArgs {
+				return false
+			}
 		}
 	case token.Lt:
 		if opensAType(p.prevKind(), p.prevText) {

@@ -67,6 +67,17 @@ func TestFormatKeepsABodyAfterAUserResultType(t *testing.T) {
 	}
 }
 
+// A call on a type argument list attaches to the list it closes, while a
+// comparison keeps the space before its right operand. The source is already
+// canonical, which makes formatting it a no-op.
+func TestFormatAttachesACallToATypeArgumentList(t *testing.T) {
+	src := "package main\n\nfunc f(n: i64) -> i64 {\n    return n\n}\n\nfunc main() {\n" +
+		"    var xs = new Array<i64>(4)\n    var b = 1 > (2)\n    var d = f(1)\n}\n"
+	if got := format(src); got != src {
+		t.Errorf("format =\n%q\nwant\n%q", got, src)
+	}
+}
+
 func TestFormatKeepsAnEmptyBodyOnOneLine(t *testing.T) {
 	src := "package main\nfunc main() {\n}\nfunc other() {\n}\n"
 	got := format(src)
