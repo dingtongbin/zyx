@@ -22,6 +22,8 @@ func (g *generator) newExpr(module string, n *zyxc.Node) *value {
 	switch typ.Kind {
 	case types.KindChan:
 		return g.newChan(module, n, typ)
+	case types.KindContainer:
+		return g.newContainer(module, n, typ)
 	case types.KindStruct:
 		return g.newStruct(module, n, typ)
 	}

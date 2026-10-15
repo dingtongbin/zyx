@@ -16,6 +16,17 @@ void *zyxrt_region_current(void);
 /* zyxrt_region_alloc_current creates an object in the region of the running
    coroutine. */
 void *zyxrt_region_alloc_current(size_t size, size_t align);
+/* Containers. A container is an opaque handle whose buffer belongs to the
+   region that created it. An element is stored as the bytes of its type, so
+   every operation takes the address of the value it moves. */
+void *zyxrt_array_new(size_t elem, size_t cap);
+size_t zyxrt_array_len(void *handle);
+void zyxrt_array_push(void *handle, const void *value);
+int zyxrt_array_pop(void *handle, void *out);
+int zyxrt_array_get(void *handle, size_t index, void *out);
+void zyxrt_array_get_unchecked(void *handle, size_t index, void *out);
+void zyxrt_array_remove(void *handle, size_t index);
+
 /* An explicit region block makes its own region the one new objects belong
    to, and waits for the coroutines started in it before it releases them. */
 void zyxrt_region_enter(void *region);

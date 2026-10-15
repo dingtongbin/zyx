@@ -111,6 +111,11 @@ func (g *generator) methodCall(module string, n *zyxc.Node) *value {
 		// declaration in any tree.
 		return g.chanCall(module, n, g.load(recv), n.Payload[0])
 	}
+	if recv.typ.Kind == types.KindContainer {
+		// A container is an opaque runtime handle: its operations have no
+		// declaration in any tree.
+		return g.containerCall(module, n, g.load(recv), n.Payload[0])
+	}
 	if recv.typ.Kind == types.KindInterface {
 		// An interface method is reached through the method table the value
 		// carries.
