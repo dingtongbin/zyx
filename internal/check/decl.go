@@ -71,11 +71,8 @@ func buildBuiltinDecls() map[string]*Decl {
 			Variants: predeclaredVariants("Value"),
 		},
 		"PanicError": {
-			Type: types.PanicError,
-			Fields: []*Field{
-				{Name: "Msg", Type: types.Str},
-				{Name: "Location", Type: types.Str},
-			},
+			Type:   types.PanicError,
+			Fields: predeclaredFields("PanicError"),
 		},
 		"Eq": {
 			Type:    types.Eq,
@@ -94,6 +91,17 @@ func buildBuiltinDecls() map[string]*Decl {
 			Methods: map[string]*types.Type{},
 		},
 	}
+}
+
+// predeclaredFields returns the fields of a predeclared struct in the
+// checker's own form.
+func predeclaredFields(name string) []*Field {
+	list, _ := types.PredeclaredFields(name)
+	out := make([]*Field, 0, len(list))
+	for _, f := range list {
+		out = append(out, &Field{Name: f.Name, Type: f.Type})
+	}
+	return out
 }
 
 // predeclaredParams returns the type parameters of a predeclared enum, which

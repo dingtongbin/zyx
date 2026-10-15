@@ -1,0 +1,34 @@
+package main
+
+import "std/fmt"
+
+func work(n: i64) -> i64 {
+    var total = 0
+    for i in 0 .. n {
+        total += i
+    }
+    return total
+}
+
+func boom() -> i64 {
+    panic("boom")
+}
+
+func main() {
+    region {
+        var h = spawn work(5)
+        match h.Join() {
+            Ok(v) => fmt.PrintI64(v)
+            Err(e) => fmt.PrintI64(- 1)
+        }
+    }
+    fmt.PrintNl()
+    region {
+        var h = spawn boom()
+        match h.Join() {
+            Ok(v) => fmt.PrintI64(v)
+            Err(e) => fmt.PrintI64(- 2)
+        }
+    }
+    fmt.PrintNl()
+}

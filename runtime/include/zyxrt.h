@@ -41,8 +41,17 @@ void zyxrt_print_nl(void);
 /* Coroutines. A coroutine runs on its own stack and its own region. */
 typedef void (*zyxrt_fn)(void *arg);
 void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg);
-void *zyxrt_coro_join(void *handle);
-int zyxrt_coro_try_join(void *handle, void **result);
+/* zyxrt_coro_join waits for a coroutine, reports how it ended, and releases
+   it. It returns the value the coroutine recorded and writes the exception it
+   raised to *panic, or NULL when it completed. The exception is read before
+   the coroutine is released, so a caller never reaches freed memory. */
+void *zyxrt_coro_join(void *handle, void **panic);
+int zyxrt_coro_try_join(void *handle, void **result, void **panic);
+/* zyxrt_coro_set_result records the value the running coroutine produced,
+   which the handle's Join returns. A value that fits in a register crosses
+   the boundary as itself; an object needs a copy, which the boundary marks
+   settle. */
+void zyxrt_coro_set_result(void *result);
 /* zyxrt_coro_panic returns the exception a coroutine raised, or NULL. */
 void *zyxrt_coro_panic(void *handle);
 /* zyxrt_panic_message returns the text of an exception. */

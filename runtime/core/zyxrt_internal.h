@@ -48,6 +48,9 @@ typedef struct zyxrt_coro {
   size_t stack_size;
   /* wait_next links a coroutine into a wait list. */
   struct zyxrt_coro *wait_next;
+  /* waiters holds the coroutines blocked on this one, newest first. They are
+     woken when it finishes, which is what a join waits for. */
+  struct zyxrt_coro *waiters;
 } zyxrt_coro;
 
 /* The platform context layer. A context runs entry on a stack of the given

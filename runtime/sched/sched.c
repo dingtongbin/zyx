@@ -53,6 +53,7 @@ void zyxrt_sched_enter(void) {
   c->region = NULL;
   c->done = 1;
   current = NULL;
+  zyxrt_sched_wake(&c->waiters);
   zyxrt_ctx_switch(c->ctx, sched_ctx);
 }
 
@@ -80,6 +81,7 @@ void zyxrt_sched_abandon(zyxrt_coro *c) {
   }
   c->done = 1;
   current = NULL;
+  zyxrt_sched_wake(&c->waiters);
   zyxrt_ctx_switch(c->ctx, sched_ctx);
 }
 
@@ -111,23 +113,39 @@ static void free_coro(zyxrt_coro *c) {
   free(c);
 }
 
-void *zyxrt_coro_join(void *handle) {
+void *zyxrt_coro_join(void *handle, void **panic) {
   zyxrt_coro *c = (zyxrt_coro *)handle;
+  if (panic) *panic = NULL;
   if (!c) return NULL;
   while (!c->done) {
-    zyxrt_sched_suspend(c);
+    /* The joiner blocks on the coroutine and is woken when it finishes.
+       Suspending without joining the wait list would leave nobody to run
+       the joiner again. */
+    zyxrt_coro *self = current;
+    if (!self) break;
+    self->wait_next = c->waiters;
+    c->waiters = self;
+    zyxrt_sched_suspend(self);
   }
+  /* The exception is read before the coroutine is released. */
   void *result = c->result;
+  if (panic) *panic = c->panic;
   free_coro(c);
   return result;
 }
 
-int zyxrt_coro_try_join(void *handle, void **result) {
+int zyxrt_coro_try_join(void *handle, void **result, void **panic) {
   zyxrt_coro *c = (zyxrt_coro *)handle;
+  if (panic) *panic = NULL;
   if (!c || !c->done) return 0;
   if (result) *result = c->result;
+  if (panic) *panic = c->panic;
   free_coro(c);
   return 1;
+}
+
+void zyxrt_coro_set_result(void *result) {
+  if (current) current->result = result;
 }
 
 void zyxrt_sched_wake(zyxrt_coro **list) {

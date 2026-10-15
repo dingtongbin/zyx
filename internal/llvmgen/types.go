@@ -149,7 +149,9 @@ func (t *typeTable) KindOf(id string) (types.Kind, error) {
 func (t *typeTable) Fields(ty *types.Type) ([]layout.Field, bool) {
 	node := t.decls[ty.ID]
 	if node == nil {
-		return nil, false
+		// A predeclared struct has no declaration in any tree: its fields
+		// are part of the language, so they come from the fixed table.
+		return predeclaredFields(ty)
 	}
 	switch node.Kind {
 	case "struct", "extern-struct", "extern-union":
@@ -195,6 +197,19 @@ func (t *typeTable) Variants(ty *types.Type) ([]layout.Variant, bool) {
 			v.Payload = payload.Elems
 		}
 		out = append(out, v)
+	}
+	return out, true
+}
+
+// predeclaredFields returns the fields of a predeclared struct.
+func predeclaredFields(ty *types.Type) ([]layout.Field, bool) {
+	fields, ok := types.PredeclaredFields(ty.Name)
+	if !ok {
+		return nil, false
+	}
+	out := make([]layout.Field, 0, len(fields))
+	for _, f := range fields {
+		out = append(out, layout.Field{Name: f.Name, Type: f.Type})
 	}
 	return out, true
 }

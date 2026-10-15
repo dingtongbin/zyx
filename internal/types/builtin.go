@@ -105,6 +105,29 @@ var predeclaredVariants = map[string][]Variant{
 	},
 }
 
+// A Field is one member of a predeclared struct, which the language declares
+// rather than the program.
+type Field struct {
+	Name string
+	Type *Type
+}
+
+// predeclaredFields lists the fields of a predeclared struct, in declaration
+// order.
+var predeclaredFields = map[string][]Field{
+	"PanicError": {
+		{Name: "Msg", Type: Str},
+		{Name: "Location", Type: Str},
+	},
+}
+
+// PredeclaredFields returns the fields of a predeclared struct, in
+// declaration order.
+func PredeclaredFields(name string) ([]Field, bool) {
+	fields, ok := predeclaredFields[name]
+	return fields, ok
+}
+
 // PredeclaredParams returns the type parameters of a predeclared enum, in
 // declaration order.
 func PredeclaredParams(name string) ([]*Type, bool) {
