@@ -19,6 +19,7 @@ var typeSlots = map[string][]int{
 	"impl":        {0},
 	"callee-type": {0},
 	"field-decl":  {1},
+	"receiver":    {0},
 }
 
 // symbolSlots gives, for a node kind, the payload position that holds the

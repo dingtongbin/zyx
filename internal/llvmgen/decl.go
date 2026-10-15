@@ -200,41 +200,20 @@ func (g *generator) paramType(n *zyxc.Node, module string) *types.Type {
 	return t
 }
 
-// receiverType returns the type of a method's receiver. A member's symbol
-// id carries the symbol id of the type that declares it, so the declaring
-// type is reachable from the member alone.
+// receiverType returns the receiver a method was written with, which the
+// front end recorded. Reading it back out of the symbol id would be a second
+// derivation of a fact the tree already holds.
 func (g *generator) receiverType(n *zyxc.Node) *types.Type {
-	if len(n.Payload) < 3 {
+	r := n.First("receiver")
+	if r == nil || len(r.Payload) == 0 {
 		return nil
 	}
-	sym := n.Payload[2]
-	owner := moduleOf(sym)
-	if owner == "" || owner == sym {
-		return nil
-	}
-	node := g.tab.decl(owner)
-	if node == nil || len(node.Payload) < 1 {
-		return nil
-	}
-	switch node.Kind {
-	case "struct", "extern-struct", "enum":
-	default:
-		return nil
-	}
-	t, err := g.tab.named(owner, "", memberOfID(owner))
+	t, err := g.tab.parse(g.tab.module(symIDOf(n)), r.Payload[0])
 	if err != nil {
+		g.fail(err)
 		return nil
 	}
 	return t
-}
-
-// memberOfID returns the last segment of a symbol id, which is the name the
-// declaration is written by inside its package.
-func memberOfID(id string) string {
-	if i := strings.LastIndex(id, "."); i >= 0 {
-		return id[i+1:]
-	}
-	return id
 }
 
 // signature returns the parameters and the result of a function, and the
