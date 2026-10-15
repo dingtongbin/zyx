@@ -75,6 +75,13 @@ func (g *generator) payloadUnion(variants []layout.Variant, shape layout.EnumSha
 	return "{" + g.llType(payload) + "}"
 }
 
+// payloadValue returns one element of a variant payload, read out of the
+// object.
+func (g *generator) payloadValue(base string, typ *types.Type, elem *types.Type, index int) *value {
+	addr := g.payloadElement(base, typ, []*types.Type{elem}, index)
+	return g.load(&value{text: addr, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true})
+}
+
 // variantOf returns the position and payload of one variant of an enum.
 func (g *generator) variantOf(t *types.Type, name string) (int, []*types.Type, bool) {
 	variants, ok := g.tab.Variants(t)
@@ -103,36 +110,50 @@ func (g *generator) variantLit(module string, n *zyxc.Node) *value {
 		return nil
 	}
 	name := n.Payload[1]
-	index, payload, ok := g.variantOf(typ, name)
+	_, payload, ok := g.variantOf(typ, name)
 	if !ok {
 		g.fail(fmt.Errorf("llvmgen: %s has no variant %s", typ, name))
 		return nil
 	}
-	base := g.allocate(typ)
-	g.emit("  store %s %d, ptr %s", g.tagType(g.tagSize(typ)), index, base)
-	if len(payload) == 0 {
-		return &value{text: base, ll: "ptr", typ: typ}
-	}
-	union := g.newReg()
-	g.emit("  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 1", union, g.llType(typ), base)
-	tuple := types.TupleOf(payload...)
 	args := g.argNodes(n)
+	values := make([]*value, 0, len(payload))
 	for i, pt := range payload {
 		if i >= len(args) {
 			g.fail(fmt.Errorf("llvmgen: %s.%s takes %d values, got %d", typ, name, len(payload), len(args)))
 			return nil
 		}
-		elem := g.newReg()
-		g.emit("  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d", elem, g.llType(tuple), union, i)
 		v := g.expr(module, args[i], pt)
 		if v == nil {
 			return nil
 		}
-		// A payload element is stored like a struct field: an object of a
-		// reference type lies inline in the union.
-		g.storeInto(elem, pt, v, true)
+		values = append(values, v)
+	}
+	base := g.buildVariant(typ, name, values)
+	if base == "" {
+		return nil
 	}
 	return &value{text: base, ll: "ptr", typ: typ}
+}
+
+// buildVariant creates an enum object for one variant and returns its address.
+// The tag is written first and the payload elements follow it, each stored the
+// way a struct field is: an object of a reference type lies inline.
+func (g *generator) buildVariant(typ *types.Type, name string, args []*value) string {
+	index, payload, ok := g.variantOf(typ, name)
+	if !ok {
+		g.fail(fmt.Errorf("llvmgen: %s has no variant %s", typ, name))
+		return ""
+	}
+	base := g.allocate(typ)
+	g.emit("  store %s %d, ptr %s", g.tagType(g.tagSize(typ)), index, base)
+	for i, pt := range payload {
+		if i >= len(args) {
+			g.fail(fmt.Errorf("llvmgen: %s.%s takes %d values, got %d", typ, name, len(payload), len(args)))
+			return ""
+		}
+		g.storeInto(g.payloadElement(base, typ, payload, i), pt, args[i], true)
+	}
+	return base
 }
 
 // tagSize returns the size of an enum's tag in bytes.

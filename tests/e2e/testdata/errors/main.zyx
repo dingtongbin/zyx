@@ -1,0 +1,28 @@
+package main
+
+import "std/fmt"
+
+func half(n: i64) -> Result<i64, str> {
+    if n % 2 == 0 {
+        return Result.Ok(n / 2)
+    }
+    return Result.Err("odd")
+}
+
+func chain(n: i64) -> Result<i64, str> {
+    var h = try half(n)
+    return Result.Ok(h + 1)
+}
+
+func main() {
+    match chain(4) {
+        Ok(v) => fmt.PrintI64(v)
+        Err(e) => fmt.PrintI64(- 1)
+    }
+    fmt.PrintNl()
+    match chain(3) {
+        Ok(v) => fmt.PrintI64(v)
+        Err(e) => fmt.PrintI64(- 2)
+    }
+    fmt.PrintNl()
+}

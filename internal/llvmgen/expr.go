@@ -168,6 +168,8 @@ func (g *generator) expr(module string, n *zyxc.Node, want *types.Type) *value {
 		return g.spawn(module, n)
 	case "join":
 		return g.join(module, n)
+	case "try":
+		return g.tryCall(module, n)
 	case "meta":
 		return g.metaCall(module, n)
 	case "dur":
