@@ -676,25 +676,10 @@ func (c *checker) rawInterfaceMethods(iface *types.Type) map[string]*types.Type 
 }
 
 // declOf returns the checked declaration of a named type, whether it is
-// declared here, imported, or pre-imported.
+// declared here, imported, or pre-imported. It is the same lookup the
+// package exposes, so the two cannot drift apart.
 func (c *checker) declOf(t *types.Type) *Decl {
-	if t == nil || !t.IsNamed() {
-		return nil
-	}
-	if d, ok := c.out.Declared[t.ID]; ok {
-		return d
-	}
-	if t.Pkg == "" {
-		return builtinDecls[t.ID]
-	}
-	if c.imports == nil {
-		return nil
-	}
-	itf, ok := c.imports.Lookup(t.Pkg)
-	if !ok || itf == nil {
-		return nil
-	}
-	return itf.Declared[t.ID]
+	return c.out.Decl(t)
 }
 
 // checkABIField reports a field type that cannot appear in C layout.

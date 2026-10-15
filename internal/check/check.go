@@ -194,7 +194,10 @@ func (p *Package) Decl(t *types.Type) *Decl {
 	if d, ok := p.Declared[t.ID]; ok {
 		return d
 	}
-	if p.imports == nil || t.Pkg == "" {
+	if t.Pkg == "" {
+		return builtinDecls[t.ID]
+	}
+	if p.imports == nil {
 		return nil
 	}
 	itf, ok := p.imports.Lookup(t.Pkg)
