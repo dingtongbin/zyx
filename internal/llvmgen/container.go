@@ -24,6 +24,8 @@ func (g *generator) containerCall(module string, n *zyxc.Node, recv *value, name
 		return g.setCall(module, n, recv, name)
 	case "PriorityQueue":
 		return g.queueCall(module, n, recv, name)
+	case "BlockingQueue":
+		return g.bqueueCall(module, n, recv, name)
 	}
 	g.fail(fmt.Errorf("llvmgen: %s.%s is not lowered", recv.typ.Name, name))
 	return nil
@@ -50,6 +52,32 @@ func (g *generator) newContainer(module string, n *zyxc.Node, typ *types.Type) *
 		reg := g.newReg()
 		g.emit("  %s = call ptr @zyxrt_map_new(%s %d, %s %d, ptr %s, ptr %s)",
 			reg, g.ptrInt(), keySize, g.ptrInt(), valSize, hash, eq)
+		return &value{text: reg, ll: "ptr", typ: typ}
+	}
+	if typ.Name == "BlockingQueue" {
+		elem := arg(typ, 0)
+		size, ok := g.arraySize(elem)
+		if !ok {
+			return nil
+		}
+		args := g.argNodes(n)
+		if len(args) < 2 {
+			g.fail(fmt.Errorf("llvmgen: a blocking queue needs a capacity and a comparison"))
+			return nil
+		}
+		capacity := g.load(g.expr(module, args[0], types.Usize))
+		if capacity == nil {
+			return nil
+		}
+		less := g.load(g.expr(module, args[1], nil))
+		if less == nil {
+			return nil
+		}
+		thunk := g.lessThunk(elem, less)
+		g.declareRuntime("zyxrt_bqueue_new", "ptr", g.ptrInt(), g.ptrInt(), "ptr")
+		reg := g.newReg()
+		g.emit("  %s = call ptr @zyxrt_bqueue_new(%s %d, %s %s, ptr %s)",
+			reg, g.ptrInt(), size, g.ptrInt(), capacity.text, thunk)
 		return &value{text: reg, ll: "ptr", typ: typ}
 	}
 	if typ.Name == "PriorityQueue" {
@@ -355,6 +383,49 @@ func (g *generator) queueCall(module string, n *zyxc.Node, recv *value, name str
 		return g.optionValue(module, n, slot, elem, flag)
 	}
 	g.fail(fmt.Errorf("llvmgen: PriorityQueue.%s is not lowered", name))
+	return nil
+}
+
+// bqueueCall lowers one operation on a BlockingQueue. A push that finds the
+// queue full and a pop that finds it empty both wait, which the runtime does
+// by suspending the running coroutine.
+func (g *generator) bqueueCall(module string, n *zyxc.Node, recv *value, name string) *value {
+	elem := arg(recv.typ, 0)
+	switch name {
+	case "Len":
+		g.declareRuntime("zyxrt_bqueue_len", g.ptrInt(), "ptr")
+		reg := g.newReg()
+		g.emit("  %s = call %s @zyxrt_bqueue_len(ptr %s)", reg, g.ptrInt(), recv.text)
+		return &value{text: reg, ll: g.ptrInt(), typ: types.Usize}
+	case "Push", "TryPush":
+		slot, ok := g.elementSlot(module, n, elem)
+		if !ok {
+			return nil
+		}
+		fn := "zyxrt_bqueue_push"
+		if name == "TryPush" {
+			fn = "zyxrt_bqueue_try_push"
+		}
+		g.declareRuntime(fn, "i32", "ptr", "ptr")
+		reg := g.newReg()
+		g.emit("  %s = call i32 @%s(ptr %s, ptr %s)", reg, fn, recv.text, slot)
+		if name == "Push" {
+			return &value{ll: "void"}
+		}
+		return g.boolFrom(reg)
+	case "Pop":
+		slot := g.objectAlloca(elem)
+		g.declareRuntime("zyxrt_bqueue_pop", "void", "ptr", "ptr")
+		g.emit("  call void @zyxrt_bqueue_pop(ptr %s, ptr %s)", recv.text, slot)
+		return g.load(&value{text: slot, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true})
+	case "TryPop":
+		slot := g.objectAlloca(elem)
+		g.declareRuntime("zyxrt_bqueue_try_pop", "i32", "ptr", "ptr")
+		flag := g.newReg()
+		g.emit("  %s = call i32 @zyxrt_bqueue_try_pop(ptr %s, ptr %s)", flag, recv.text, slot)
+		return g.optionValue(module, n, slot, elem, flag)
+	}
+	g.fail(fmt.Errorf("llvmgen: BlockingQueue.%s is not lowered", name))
 	return nil
 }
 

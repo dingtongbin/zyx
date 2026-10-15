@@ -1,0 +1,44 @@
+package main
+
+import "std/fmt"
+
+func lessInt(a: i64, b: i64) -> bool {
+    return a < b
+}
+
+func produce(q: BlockingQueue<i64>) {
+    q.Push(3)
+    q.Push(1)
+    q.Push(2)
+}
+
+func main() {
+    // A queue with room for every element never blocks, so the order it
+    // answers with is the order the comparison settles.
+    var roomy = new BlockingQueue<i64>(3, func lessInt)
+    roomy.Push(3)
+    roomy.Push(1)
+    roomy.Push(2)
+    var i = 0
+    for i < 3 {
+        fmt.PrintI64(roomy.Pop())
+        i += 1
+    }
+    fmt.PrintNl()
+    // A queue with room for two makes the producer wait for the consumer.
+    // Which element the consumer takes depends on what the producer has put
+    // in by then, so what this checks is that every element arrives and that
+    // the wait ends.
+    var q = new BlockingQueue<i64>(2, func lessInt)
+    region {
+        spawn produce(q)
+        var total = 0
+        var j = 0
+        for j < 3 {
+            total += q.Pop()
+            j += 1
+        }
+        fmt.PrintI64(total)
+    }
+    fmt.PrintNl()
+}

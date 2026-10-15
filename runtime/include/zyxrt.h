@@ -46,6 +46,16 @@ size_t zyxrt_queue_len(void *handle);
 void zyxrt_queue_push(void *handle, const void *value);
 int zyxrt_queue_pop(void *handle, void *out);
 
+/* A blocking queue is bounded and ordered by a comparison the caller
+   supplies. A push waits while it is full and a pop waits while it is
+   empty, so coroutines hand work to one another through it. */
+void *zyxrt_bqueue_new(size_t elem, size_t cap, void *less);
+size_t zyxrt_bqueue_len(void *handle);
+void zyxrt_bqueue_push(void *handle, const void *value);
+int zyxrt_bqueue_try_push(void *handle, const void *value);
+void zyxrt_bqueue_pop(void *handle, void *out);
+int zyxrt_bqueue_try_pop(void *handle, void *out);
+
 /* A set holds each element once. */
 void *zyxrt_set_new(size_t elem_size, void *hash, void *eq);
 size_t zyxrt_set_len(void *handle);
