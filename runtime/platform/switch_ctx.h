@@ -17,6 +17,7 @@
 /* The switch takes two contexts, each a pointer to the slot that holds a
    coroutine's stack pointer. */
 void zyxrt_ctx_switch(void *from, void *to);
+void zyxrt_ctx_enter(void);
 extern const size_t zyxrt_ctx_saved_words;
 extern const size_t zyxrt_ctx_saved_bytes;
 
@@ -29,7 +30,7 @@ static void *new_slot(void) {
 
 void *zyxrt_ctx_thread(void) { return new_slot(); }
 
-void *zyxrt_ctx_new(void *stack, size_t size, void (*entry)(void)) {
+void *zyxrt_ctx_new(void *stack, size_t size) {
   /* The first frame is laid out exactly as the switch restores it: the
      vector state, then the callee-saved registers, then the address the
      switch returns to. The stack pointer is aligned so that the entry runs
@@ -38,12 +39,12 @@ void *zyxrt_ctx_new(void *stack, size_t size, void (*entry)(void)) {
   uintptr_t top = (uintptr_t)stack + size;
   /* The switch restores the registers with the stack pointer it recorded,
      so the first frame must sit where a saved one would. */
-  uintptr_t sp = ((top - total) & ~(uintptr_t)15) - 8;
+  uintptr_t sp = (top - total) & ~(uintptr_t)15;
   void **words = (void **)(sp + zyxrt_ctx_saved_bytes);
   for (size_t i = 0; i < zyxrt_ctx_saved_words; i++) {
     words[i] = NULL;
   }
-  words[zyxrt_ctx_saved_words] = (void *)entry;
+  words[zyxrt_ctx_saved_words] = (void *)zyxrt_ctx_enter;
   void **slot = (void **)new_slot();
   *slot = (void *)sp;
   return slot;

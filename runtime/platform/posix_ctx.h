@@ -21,14 +21,14 @@ void *zyxrt_ctx_thread(void) { return NULL; }
 
 void zyxrt_platform_init(void) {}
 
-void *zyxrt_ctx_new(void *stack, size_t size, void (*entry)(void)) {
+void *zyxrt_ctx_new(void *stack, size_t size) {
   zyxrt_posix_ctx *c = (zyxrt_posix_ctx *)calloc(1, sizeof(zyxrt_posix_ctx));
   if (!c) zyxrt_panic("out of memory", 13);
   getcontext(&c->self);
   c->self.uc_stack.ss_sp = stack;
   c->self.uc_stack.ss_size = size;
   c->self.uc_link = NULL;
-  makecontext(&c->self, entry, 0);
+  makecontext(&c->self, zyxrt_sched_enter, 0);
   return c;
 }
 

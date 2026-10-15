@@ -29,7 +29,9 @@ typedef struct zyxrt_coro {
    with a hand-written switch the context is one word; elsewhere it is
    whatever the platform's own facility needs. */
 void *zyxrt_ctx_thread(void);
-void *zyxrt_ctx_new(void *stack, size_t size, void (*entry)(void));
+void *zyxrt_ctx_new(void *stack, size_t size);
+/* zyxrt_sched_enter is where a coroutine begins. */
+void zyxrt_sched_enter(void);
 void zyxrt_ctx_switch(void *from, void *to);
 void zyxrt_ctx_free(void *ctx);
 

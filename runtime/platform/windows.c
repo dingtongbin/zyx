@@ -17,9 +17,9 @@
 
 void *zyxrt_ctx_thread(void) { return ConvertThreadToFiber(NULL); }
 
-void *zyxrt_ctx_new(void *stack, size_t size, void (*entry)(void)) {
+void *zyxrt_ctx_new(void *stack, size_t size) {
   (void)stack;
-  return CreateFiber(size, (LPFIBER_START_ROUTINE)entry, NULL);
+  return CreateFiber(size, (LPFIBER_START_ROUTINE)zyxrt_sched_enter, NULL);
 }
 
 void zyxrt_ctx_switch(void *from, void *to) {

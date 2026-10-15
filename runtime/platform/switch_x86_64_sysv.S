@@ -36,6 +36,20 @@ zyxrt_ctx_switch:
 	ret
 	.size	zyxrt_ctx_switch, .-zyxrt_ctx_switch
 
+/* zyxrt_ctx_enter is where a coroutine's first frame returns to. A frame
+   resumed by the switch lands with the alignment of a caller rather than of
+   a function, so the trampoline sets the alignment a function expects and
+   calls the coroutine entry. Every coroutine then starts exactly the way a
+   resumed one continues, and the layout of the first frame carries no
+   special case. */
+	.globl	zyxrt_ctx_enter
+	.type	zyxrt_ctx_enter, @function
+zyxrt_ctx_enter:
+	andq	$-16, %rsp
+	call	zyxrt_sched_enter
+	ud2
+	.size	zyxrt_ctx_enter, .-zyxrt_ctx_enter
+
 /* The number of registers the switch saves, which the runtime uses to
    prepare the first stack of a coroutine. */
 	.globl	zyxrt_ctx_saved_words

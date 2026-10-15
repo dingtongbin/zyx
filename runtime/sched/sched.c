@@ -43,9 +43,9 @@ static zyxrt_coro *take_ready(void) {
   return c;
 }
 
-/* coro_entry runs on a coroutine's own stack. It owns a region, runs the
-   body, releases the region, and returns to the scheduler. */
-static void coro_entry(void) {
+/* zyxrt_sched_enter runs on a coroutine's own stack. It owns a region, runs
+   the body, releases the region, and returns to the scheduler. */
+void zyxrt_sched_enter(void) {
   zyxrt_coro *c = current;
   c->region = zyxrt_region_new();
   c->fn(c->arg);
@@ -98,7 +98,7 @@ void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg) {
   c->stack_size = ZYXXRT_STACK_MIN;
   c->stack = malloc(c->stack_size);
   if (!c->stack) zyxrt_panic("out of memory", 13);
-  c->ctx = zyxrt_ctx_new(c->stack, c->stack_size, coro_entry);
+  c->ctx = zyxrt_ctx_new(c->stack, c->stack_size);
   zyxrt_sched_ready(c);
   return c;
 }
