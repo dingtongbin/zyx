@@ -86,7 +86,7 @@ func Use(conn: Conn) {
 	for _, want := range []string{
 		"const MaxConn example.com/app/server.MaxConn",
 		"struct Conn example.com/app/server.Conn",
-		"field-decl host str 0",
+		"field-decl host str",
 		"func Close plain example.com/app/server.Conn.Close",
 		"func Listen plain example.com/app/server.Listen",
 		"struct-lit Conn",
