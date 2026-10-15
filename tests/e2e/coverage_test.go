@@ -360,6 +360,36 @@ func TestGenericCallsCarryTheirInstantiatedSignature(t *testing.T) {
 	}
 }
 
+// TestInterpolationWritesIntoABuffer checks that interpolating a declared type
+// hands the gather buffer to the value's Show rather than asking it for a
+// string and appending that. A Show that answered with a string would still
+// produce the same output, so the test reads the call the backend emits: the
+// argument after the receiver has to be the register the buffer came from.
+func TestInterpolationWritesIntoABuffer(t *testing.T) {
+	if _, err := toolchain.Locate(); err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	dir := copyTree(t, filepath.Join("testdata", "interpolation"))
+	stdout, stderr, code := run(dir, "emit-llvm", ".")
+	if code != 0 {
+		t.Fatalf("emit-llvm failed with %d:\n%s", code, stderr)
+	}
+	if regexp.MustCompile(`call \{ ptr, i64 \} @"[^"]*\.Show"`).MatchString(stdout) {
+		t.Errorf("Show still answers with a string:\n%s", stdout)
+	}
+	buffers := regexp.MustCompile(`(%[\w.]+) = call ptr @zyxrt_buf_new`).FindAllStringSubmatch(stdout, -1)
+	if len(buffers) == 0 {
+		t.Fatalf("no interpolation gathers into a buffer:\n%s", stdout)
+	}
+	for _, buffer := range buffers {
+		call := regexp.MustCompile(`call void @"[^"]*\.Show"\(ptr %[\w.]+, ptr ` + regexp.QuoteMeta(buffer[1]) + `\)`)
+		if call.MatchString(stdout) {
+			return
+		}
+	}
+	t.Errorf("no Show receives the gather buffer:\n%s", stdout)
+}
+
 // TestDeferredKindsAreStillUnreached checks the record of what the front end
 // still owes a corpus for. When a construct joins the corpus, its entry must
 // move to coveredKinds, and this test says so.

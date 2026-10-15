@@ -6,8 +6,12 @@ struct Point {
     x: i64
     y: i64
     impl Show {
-        func Show() -> str {
-            return f"({self.x}, {self.y})"
+        func Show(w: Buf) {
+            w.WriteStr("(")
+            w.WriteStr(f"{self.x}")
+            w.WriteStr(", ")
+            w.WriteStr(f"{self.y}")
+            w.WriteStr(")")
         }
     }
 }

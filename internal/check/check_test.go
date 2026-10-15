@@ -586,7 +586,9 @@ func TestShowImpl(t *testing.T) {
 struct Server {
 	host: str
 	impl Show {
-		func Show() -> str => "server"
+		func Show(w: Buf) {
+			w.WriteStr("server")
+		}
 	}
 }
 `
@@ -1506,7 +1508,9 @@ func f(p: Point) -> str => f"point = {p}"
 struct Point {
 	x: i32
 	impl Show {
-		func Show() -> str => "point"
+		func Show(w: Buf) {
+			w.WriteStr("point")
+		}
 	}
 }
 
@@ -2271,7 +2275,9 @@ struct Server {
 	conns: Array<net.Conn>
 	func IsLocal() -> bool => self.host == "127.0.0.1"
 	impl Show {
-		func Show() -> str => "server"
+		func Show(w: Buf) {
+			w.WriteStr("server")
+		}
 	}
 	const Tag: str = "server/1.0"
 }

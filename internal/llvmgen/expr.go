@@ -371,19 +371,15 @@ func (g *generator) addValue(module string, buf string, v *value) bool {
 }
 
 // addShown appends a value of a declared type, which writes itself into the
-// buffer through its Show. Nothing becomes a string in between, so a value
-// costs one pass over its own text rather than a temporary string.
+// buffer through its Show. The method takes the value as its receiver and the
+// buffer as its argument, so nothing becomes a string in between.
 func (g *generator) addShown(module string, buf string, v *value) bool {
 	sym := g.implMethod(v.typ, types.Show, "Show")
 	if sym == "" {
 		g.fail(fmt.Errorf("llvmgen: %s cannot be interpolated: it has no Show", v.typ))
 		return false
 	}
-	shown := g.newReg()
-	g.emit("  %s = call %s @%s(ptr %s)", shown, g.llType(types.Str), llvmName(sym), g.addrText(v))
-	ptr, size := g.splitFat(&value{text: shown, ll: g.llType(types.Str), typ: types.Str})
-	g.declareRuntime("zyxrt_buf_write", "void", "ptr", "ptr", g.ptrInt())
-	g.emit("  call void @zyxrt_buf_write(ptr %s, ptr %s, %s %s)", buf, ptr, g.ptrInt(), size)
+	g.emit("  call void @%s(ptr %s, ptr %s)", llvmName(sym), g.addrText(v), buf)
 	return true
 }
 

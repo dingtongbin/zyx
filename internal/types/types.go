@@ -235,7 +235,10 @@ func joinTypes(list []*Type) string {
 // by declaration, so two structs with equal fields stay distinct.
 func Identical(a, b *Type) bool {
 	if a == nil || b == nil {
-		return false
+		// Two functions that return nothing have no result type to compare,
+		// so they match. A function that returns something does not match
+		// one that returns nothing.
+		return a == b
 	}
 	if a == b {
 		return true

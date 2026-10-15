@@ -119,8 +119,20 @@ func TestIdentical(t *testing.T) {
 			}
 		})
 	}
-	if Identical(nil, nil) {
-		t.Error("Identical(nil, nil) must be false")
+	// A nil type is the absence of a result, so two functions that return
+	// nothing match, and a function that returns something does not match
+	// one that returns nothing.
+	if !Identical(nil, nil) {
+		t.Error("Identical(nil, nil) must be true: neither has a result")
+	}
+	if Identical(nil, Int64) || Identical(Int64, nil) {
+		t.Error("a function that returns a value must not match one that returns nothing")
+	}
+	if !Identical(FuncOf(nil, Int64), FuncOf(nil, Int64)) {
+		t.Error("two functions with no result must match")
+	}
+	if Identical(FuncOf(nil, Int64), FuncOf(Int64, Int64)) {
+		t.Error("a result must tell two functions apart")
 	}
 	if Identical(Int32, nil) {
 		t.Error("Identical with nil must be false")

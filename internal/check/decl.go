@@ -84,10 +84,9 @@ func buildBuiltinDecls() map[string]*Decl {
 		},
 		"Show": {
 			Type: types.Show,
-			// Show answers with the text of a value. The target form writes
-			// into a Buf instead, which needs the interface comparison to
-			// accept a method with no result first.
-			Methods: map[string]*types.Type{"Show": types.FuncOf(types.Str)},
+			// Show writes the text of a value into the buffer it is given,
+			// so no value becomes a string on the way.
+			Methods: map[string]*types.Type{"Show": types.FuncOf(nil, types.Buf)},
 		},
 		"SyncSafe": {
 			Type:    types.SyncSafe,
