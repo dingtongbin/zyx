@@ -142,7 +142,7 @@ func (g *generator) mapCall(module string, n *zyxc.Node, recv *value, name strin
 		reg := g.newReg()
 		g.emit("  %s = call %s @zyxrt_map_len(ptr %s)", reg, g.ptrInt(), recv.text)
 		return &value{text: reg, ll: g.ptrInt(), typ: types.Usize}
-	case "Set":
+	case "Insert":
 		keySlot, ok := g.elementSlot(module, n, key)
 		if !ok {
 			return nil

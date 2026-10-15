@@ -19,8 +19,8 @@ struct Point {
 
 func main() {
     var m: Map<Point, i64> = Map {}
-    m.Set(Point { x: 1, y: 2}, 10)
-    m.Set(Point { x: 3, y: 4}, 20)
+    m.Insert(Point { x: 1, y: 2}, 10)
+    m.Insert(Point { x: 3, y: 4}, 20)
     fmt.PrintI64(i64(m.Len()))
     fmt.PrintNl()
     match m.Get(Point { x: 1, y: 2}) {

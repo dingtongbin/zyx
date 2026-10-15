@@ -6,7 +6,7 @@ func main() {
     var m: Map<str, i64> = Map { "a": 1, "b": 2}
     fmt.PrintI64(i64(m.Len()))
     fmt.PrintNl()
-    m.Set("c", 3)
+    m.Insert("c", 3)
     fmt.PrintI64(i64(m.Len()))
     fmt.PrintNl()
     match m.Get("b") {
