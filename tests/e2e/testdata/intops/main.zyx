@@ -1,0 +1,44 @@
+package main
+
+import "std/fmt"
+
+func main() {
+    // The wrapping forms are the operators without their checks, so a loop
+    // that cannot afford an overflow check writes one of these.
+    var big: i64 = 9223372036854775807
+    fmt.PrintI64(big.wrap_add(1))
+    fmt.PrintNl()
+    var one: i64 = 1
+    fmt.PrintI64(one.wrap_sub(2))
+    fmt.PrintNl()
+    var half: u64 = 4611686018427387904
+    fmt.PrintU64(half.wrap_mul(2))
+    fmt.PrintNl()
+    // A rotate takes its amount modulo the width.
+    var x: u32 = 1
+    fmt.PrintU64(u64(x.rotl(4)))
+    fmt.PrintNl()
+    fmt.PrintU64(u64(x.rotr(1)))
+    fmt.PrintNl()
+    var all: u32 = 4294967295
+    fmt.PrintU64(u64(all.swap_bytes()))
+    fmt.PrintNl()
+    fmt.PrintU64(u64(all.count_ones()))
+    fmt.PrintNl()
+    // A zero value counts as a full width rather than as an undefined one.
+    var zero: u64 = 0
+    fmt.PrintU64(u64(zero.leading_zeros()))
+    fmt.PrintNl()
+    fmt.PrintU64(u64(zero.trailing_zeros()))
+    fmt.PrintNl()
+    // A narrow value and a 128-bit value answer at their own width.
+    var byte: u8 = 8
+    fmt.PrintU64(u64(byte.count_ones()))
+    fmt.PrintNl()
+    var wide: u128 = 170141183460469231731687303715884105727
+    fmt.PrintU64(u64(wide.count_ones()))
+    fmt.PrintNl()
+    // A one-byte value is already in byte order.
+    fmt.PrintU64(u64(byte.swap_bytes()))
+    fmt.PrintNl()
+}

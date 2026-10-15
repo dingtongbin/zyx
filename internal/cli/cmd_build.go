@@ -93,7 +93,10 @@ func (s *Session) run(args []string) int {
 	if err != nil {
 		return s.usageError(err)
 	}
-	if o.level == "" || o.level == "-O2" {
+	// A run that names no level is a development run, which is not worth
+	// optimizing. A level the caller asked for is honored, so a run can
+	// check what an optimized build does.
+	if !o.levelSet {
 		o.level = "-O0"
 	}
 	m, err := s.findModule(s.Dir)

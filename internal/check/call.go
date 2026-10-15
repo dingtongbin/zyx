@@ -581,8 +581,10 @@ func builtinMethod(recv *types.Type, name string) *types.Type {
 	}
 	if recv.IsInteger() {
 		switch name {
-		case "wrap_add", "wrap_sub", "wrap_mul", "rotl", "rotr", "swap_bytes":
+		case "wrap_add", "wrap_sub", "wrap_mul", "rotl", "rotr":
 			return types.FuncOf(recv, recv)
+		case "swap_bytes":
+			return types.FuncOf(recv)
 		case "count_ones", "leading_zeros", "trailing_zeros":
 			return types.FuncOf(types.Uint32)
 		}

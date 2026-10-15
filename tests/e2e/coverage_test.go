@@ -419,9 +419,7 @@ var deferredRunning = map[string]string{
 	"array-repeat":  unexercised,
 	"extern-struct": unexercised,
 	"extern-union":  unexercised,
-	"index":         unexercised,
 	"method-value":  unexercised,
-	"tindex":        unexercised,
 	"var":           unexercised,
 }
 
@@ -470,6 +468,19 @@ func TestEverySpecKindReachesMachineCode(t *testing.T) {
 	if len(unbuilt) != 0 {
 		t.Errorf("no program that runs reaches these kinds and none is deferred: %s",
 			strings.Join(unbuilt, " "))
+	}
+	// A kind that a running program now reaches belongs in the covered set,
+	// so a stale deferral is a fact the record gets wrong.
+	var reached []string
+	for kind := range deferredRunning {
+		if seen[kind] {
+			reached = append(reached, kind)
+		}
+	}
+	sort.Strings(reached)
+	if len(reached) != 0 {
+		t.Errorf("a program that runs reaches these kinds, so they are no longer deferred: %s",
+			strings.Join(reached, " "))
 	}
 	t.Logf("a running program reaches %d of the %d kinds the format defines; the rest are deferred with a reason",
 		len(specKinds)-len(deferredRunning), len(specKinds))

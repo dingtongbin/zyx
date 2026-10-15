@@ -791,6 +791,9 @@ func (g *generator) arith(op string, a, b *value) *value {
 	}
 	typ := a.typ
 	ll := a.ll
+	// The checks the language defines belong to the operators on integers.
+	// A duration and a floating-point value carry their own arithmetic.
+	checked := typ.IsInteger()
 	var instr string
 	switch {
 	case typ.IsFloat():
@@ -809,7 +812,12 @@ func (g *generator) arith(op string, a, b *value) *value {
 			g.fail(fmt.Errorf("llvmgen: %s is not a floating-point operator", op))
 			return nil
 		}
+	case checked && (op == "+" || op == "-" || op == "*"):
+		return g.checkedArith(op, a, b)
 	case op == "/" || op == "%":
+		if checked {
+			g.guardDivisor(typ, a.text, b.text, ll)
+		}
 		if typ.IsSigned() {
 			instr = "s" + map[string]string{"/": "div", "%": "rem"}[op]
 		} else {
@@ -820,9 +828,15 @@ func (g *generator) arith(op string, a, b *value) *value {
 			"+": "add", "-": "sub", "*": "mul", "&": "and", "|": "or", "^": "xor",
 		}[op]
 		if op == "<<" {
+			if checked {
+				g.guardShift(b.text, ll)
+			}
 			instr = "shl"
 		}
 		if op == ">>" {
+			if checked {
+				g.guardShift(b.text, ll)
+			}
 			if typ.IsSigned() {
 				instr = "ashr"
 			} else {
@@ -854,6 +868,10 @@ func (g *generator) unary(module string, n *zyxc.Node) *value {
 	case "-":
 		if v.typ.IsFloat() {
 			g.emit("  %s = fneg %s %s", reg, v.ll, v.text)
+		} else if v.typ.IsInteger() && v.typ.IsSigned() {
+			// The smallest value has no positive counterpart, so negating it
+			// is checked like any other signed operation.
+			return g.checkedArith("-", &value{text: "0", ll: v.ll, typ: v.typ}, v)
 		} else {
 			g.emit("  %s = sub %s 0, %s", reg, v.ll, v.text)
 		}
@@ -979,6 +997,9 @@ func (g *generator) index(module string, n *zyxc.Node) *value {
 	}
 	switch recv.typ.Kind {
 	case types.KindArray:
+		// An index is checked: the language panics rather than reading past
+		// the sequence, which also makes the in-bounds arithmetic below sound.
+		g.guardIndex(idx.text, strconv.FormatUint(recv.typ.Len, 10))
 		reg := g.newReg()
 		g.emit("  %s = getelementptr inbounds %s, ptr %s, i64 0, i64 %s",
 			reg, g.llType(recv.typ), recv.text, idx.text)
@@ -986,6 +1007,9 @@ func (g *generator) index(module string, n *zyxc.Node) *value {
 	case types.KindSlice:
 		ptrReg := g.newReg()
 		g.emit("  %s = extractvalue %s %s, 0", ptrReg, recv.ll, recv.text)
+		lenReg := g.newReg()
+		g.emit("  %s = extractvalue %s %s, 1", lenReg, recv.ll, recv.text)
+		g.guardIndex(idx.text, lenReg)
 		reg := g.newReg()
 		g.emit("  %s = getelementptr inbounds %s, ptr %s, i64 %s",
 			reg, g.llType(recv.typ.Elem), ptrReg, idx.text)

@@ -133,6 +133,9 @@ func (g *generator) methodCall(module string, n *zyxc.Node) *value {
 	if n.Payload[0] == "Hash" && hashable(recv.typ) {
 		return g.builtinHashCall(module, n, g.load(recv))
 	}
+	if v, ok := g.intBuiltin(module, n, g.load(recv), n.Payload[0]); ok {
+		return v
+	}
 	decl := g.tab.decl(sym)
 	if decl == nil || decl.Kind != "func" {
 		g.fail(fmt.Errorf("llvmgen: the method %s has no declaration (%s)", n.Payload[0], sym))

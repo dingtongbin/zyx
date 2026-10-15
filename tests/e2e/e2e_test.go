@@ -129,6 +129,68 @@ func TestCoroutinePanicIsContained(t *testing.T) {
 	}
 }
 
+// TestInsertedChecksPanic checks the checks the language inserts. Arithmetic
+// that overflows, a divisor of zero, a shift amount that does not fit the
+// width, and an index outside its sequence all panic with a message rather
+// than producing a wrong value. Every case runs at every optimization level,
+// because the language defines a check as part of the construct and no
+// optimizer may remove it.
+func TestInsertedChecksPanic(t *testing.T) {
+	if _, err := toolchain.Locate(); err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"addition overflows", "var big: i64 = 9223372036854775807\n\tfmt.PrintI64(big + 1)", "panic: integer overflow"},
+		{"subtraction overflows", "var low: i64 = -9223372036854775807 - 1\n\tfmt.PrintI64(low - 1)", "panic: integer overflow"},
+		{"multiplication overflows", "var big: i64 = 9223372036854775807\n\tfmt.PrintI64(big * 2)", "panic: integer overflow"},
+		{"unsigned addition overflows", "var big: u64 = 18446744073709551615\n\tfmt.PrintU64(big + 1)", "panic: integer overflow"},
+		{"negation overflows", "var low: i64 = -9223372036854775807 - 1\n\tfmt.PrintI64(-low)", "panic: integer overflow"},
+		{"division by zero", "var one: i64 = 1\n\tvar zero: i64 = 0\n\tfmt.PrintI64(one / zero)", "panic: division by zero"},
+		{"remainder by zero", "var one: i64 = 1\n\tvar zero: i64 = 0\n\tfmt.PrintI64(one % zero)", "panic: division by zero"},
+		{"unsigned division by zero", "var one: u64 = 1\n\tvar zero: u64 = 0\n\tfmt.PrintU64(one / zero)", "panic: division by zero"},
+		{"signed division has no result", "var low: i64 = -9223372036854775807 - 1\n\tvar minus: i64 = -1\n\tfmt.PrintI64(low / minus)", "panic: integer overflow"},
+		{"shift amount does not fit", "var one: i64 = 1\n\tvar wide: i64 = 64\n\tfmt.PrintI64(one << wide)", "panic: shift amount out of range"},
+		{"shift amount does not fit on the right", "var one: u64 = 1\n\tvar wide: u64 = 64\n\tfmt.PrintU64(one >> wide)", "panic: shift amount out of range"},
+		{"index leaves the array", "var xs: [i64; 4] = [1, 2, 3, 4]\n\tfmt.PrintI64(xs[7])", "panic: index out of range"},
+		{"index leaves the view", "var xs: [i64; 4] = [1, 2, 3, 4]\n\tvar view = xs[1..3]\n\tfmt.PrintI64(view[9])", "panic: index out of range"},
+		{"a negative index reads as a large one", "var xs: [i64; 4] = [1, 2, 3, 4]\n\tvar at: i64 = -1\n\tfmt.PrintI64(xs[usize(at)])", "panic: index out of range"},
+	}
+	for _, level := range []string{"-O0", "-O2", "-O3"} {
+		for _, c := range cases {
+			t.Run(level+"/"+c.name, func(t *testing.T) {
+				dir := t.TempDir()
+				writeProgram(t, dir,
+					"package main\n\nimport \"std/fmt\"\n\nfunc main() {\n\t"+c.body+"\n}\n")
+				_, stderr, code := run(dir, "run", level, "./...")
+				if code != 101 {
+					t.Errorf("exit code = %d, want 101\n%s", code, stderr)
+				}
+				if !strings.Contains(stderr, c.want) {
+					t.Errorf("standard error =\n%s\nwant it to hold %q", stderr, c.want)
+				}
+			})
+		}
+	}
+}
+
+// writeProgram writes a one-file program into a directory.
+func writeProgram(t *testing.T, dir, main string) {
+	t.Helper()
+	files := map[string]string{
+		"zyx.mod":  "module example.com/program\n\nzyx 0.1\n",
+		"main.zyx": main,
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // TestProgramExitCode checks that the process exit code is the value the
 // language main returns.
 func TestProgramExitCode(t *testing.T) {

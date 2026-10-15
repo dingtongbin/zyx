@@ -3,10 +3,11 @@ package main
 import "std/fmt"
 
 func main() {
-    // A 128-bit value is written out at its own width, and the smallest
-    // signed value has no magnitude in the signed type.
+    // A 128-bit value is written out at its own width. The smallest signed
+    // value is written as a step from the largest negative one, because its
+    // magnitude has no positive counterpart to negate.
     var high: i128 = 170141183460469231731687303715884105727
-    var low: i128 =- 170141183460469231731687303715884105728
+    var low: i128 =- 170141183460469231731687303715884105727 - 1
     var top: u128 = 340282366920938463463374607431768211455
     var two64: u128 = 18446744073709551616
     var zero: u128 = 0
