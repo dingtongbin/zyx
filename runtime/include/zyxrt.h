@@ -115,10 +115,6 @@ void zyxrt_f64_str(double v, const char **out, size_t *len);
 void zyxrt_bool_str(int8_t v, const char **out, size_t *len);
 void zyxrt_char_str(uint32_t c, const char **out, size_t *len);
 
-/* A builder gathers the pieces of one text in a single pass. */
-void *zyxrt_strbuf_new(void);
-void zyxrt_strbuf_add(void *handle, const char *p, size_t n);
-const char *zyxrt_strbuf_finish(void *handle, size_t *len);
 
 /* Process entry. The generated main calls this with the address of the zyx
    main function, and the runtime runs it on the root region. */

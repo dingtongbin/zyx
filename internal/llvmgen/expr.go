@@ -288,9 +288,9 @@ func (g *generator) parts(n *zyxc.Node) int {
 // the printing helpers do, so an interpolated number and a printed number
 // read the same.
 func (g *generator) fstring(module string, n *zyxc.Node) *value {
-	g.declareRuntime("zyxrt_strbuf_new", "ptr")
+	g.declareRuntime("zyxrt_buf_new", "ptr", g.ptrInt())
 	buf := g.newReg()
-	g.emit("  %s = call ptr @zyxrt_strbuf_new()", buf)
+	g.emit("  %s = call ptr @zyxrt_buf_new(%s 0)", buf, g.ptrInt())
 	for _, child := range n.Children {
 		switch child.Kind {
 		case "part-text":
@@ -306,15 +306,18 @@ func (g *generator) fstring(module string, n *zyxc.Node) *value {
 			}
 		}
 	}
+	// The buffer owns the text, so the answer is a copy of what it holds.
 	length := g.alloca(types.Usize)
-	g.declareRuntime("zyxrt_strbuf_finish", "ptr", "ptr", "ptr")
-	text := g.newReg()
-	g.emit("  %s = call ptr @zyxrt_strbuf_finish(ptr %s, ptr %s)", text, buf, length)
+	g.declareRuntime("zyxrt_buf_str", "void", "ptr", "ptr", "ptr")
+	text := g.alloca(types.Raw)
+	g.emit("  call void @zyxrt_buf_str(ptr %s, ptr %s, ptr %s)", buf, text, length)
+	ptr := g.newReg()
+	g.emit("  %s = load ptr, ptr %s", ptr, text)
 	size := g.newReg()
 	g.emit("  %s = load %s, ptr %s", size, g.ptrInt(), length)
 	ll := g.llType(types.Str)
 	first := g.newReg()
-	g.emit("  %s = insertvalue %s undef, ptr %s, 0", first, ll, text)
+	g.emit("  %s = insertvalue %s undef, ptr %s, 0", first, ll, ptr)
 	out := g.newReg()
 	g.emit("  %s = insertvalue %s %s, %s %s, 1", out, ll, first, g.ptrInt(), size)
 	return &value{text: out, ll: ll, typ: types.Str}
@@ -326,8 +329,8 @@ func (g *generator) addText(buf, text string) {
 		return
 	}
 	global := g.m.stringGlobal(text)
-	g.declareRuntime("zyxrt_strbuf_add", "void", "ptr", "ptr", g.ptrInt())
-	g.emit("  call void @zyxrt_strbuf_add(ptr %s, ptr %s, %s %d)", buf, global, g.ptrInt(), len(text))
+	g.declareRuntime("zyxrt_buf_write", "void", "ptr", "ptr", g.ptrInt())
+	g.emit("  call void @zyxrt_buf_write(ptr %s, ptr %s, %s %d)", buf, global, g.ptrInt(), len(text))
 }
 
 // addValue appends one value to the text being gathered, in the form the
@@ -340,8 +343,8 @@ func (g *generator) addValue(module string, buf string, v *value) bool {
 	}
 	if typ.Kind == types.KindStr {
 		ptr, size := g.splitFat(v)
-		g.declareRuntime("zyxrt_strbuf_add", "void", "ptr", "ptr", g.ptrInt())
-		g.emit("  call void @zyxrt_strbuf_add(ptr %s, ptr %s, %s %s)", buf, ptr, g.ptrInt(), size)
+		g.declareRuntime("zyxrt_buf_write", "void", "ptr", "ptr", g.ptrInt())
+		g.emit("  call void @zyxrt_buf_write(ptr %s, ptr %s, %s %s)", buf, ptr, g.ptrInt(), size)
 		return true
 	}
 	fn, argLL := "", ""
@@ -367,19 +370,20 @@ func (g *generator) addValue(module string, buf string, v *value) bool {
 	return true
 }
 
-// addShown appends a value of a declared type, which supplies the form
-// through its Show.
+// addShown appends a value of a declared type, which writes itself into the
+// buffer through its Show. Nothing becomes a string in between, so a value
+// costs one pass over its own text rather than a temporary string.
 func (g *generator) addShown(module string, buf string, v *value) bool {
 	sym := g.implMethod(v.typ, types.Show, "Show")
 	if sym == "" {
 		g.fail(fmt.Errorf("llvmgen: %s cannot be interpolated: it has no Show", v.typ))
 		return false
 	}
-	g.declareRuntime("zyxrt_strbuf_add", "void", "ptr", "ptr", g.ptrInt())
 	shown := g.newReg()
 	g.emit("  %s = call %s @%s(ptr %s)", shown, g.llType(types.Str), llvmName(sym), g.addrText(v))
 	ptr, size := g.splitFat(&value{text: shown, ll: g.llType(types.Str), typ: types.Str})
-	g.emit("  call void @zyxrt_strbuf_add(ptr %s, ptr %s, %s %s)", buf, ptr, g.ptrInt(), size)
+	g.declareRuntime("zyxrt_buf_write", "void", "ptr", "ptr", g.ptrInt())
+	g.emit("  call void @zyxrt_buf_write(ptr %s, ptr %s, %s %s)", buf, ptr, g.ptrInt(), size)
 	return true
 }
 
@@ -389,8 +393,8 @@ func (g *generator) appendGathered(buf, text, size string) {
 	g.emit("  %s = load ptr, ptr %s", ptr, text)
 	length := g.newReg()
 	g.emit("  %s = load %s, ptr %s", length, g.ptrInt(), size)
-	g.declareRuntime("zyxrt_strbuf_add", "void", "ptr", "ptr", g.ptrInt())
-	g.emit("  call void @zyxrt_strbuf_add(ptr %s, ptr %s, %s %s)", buf, ptr, g.ptrInt(), length)
+	g.declareRuntime("zyxrt_buf_write", "void", "ptr", "ptr", g.ptrInt())
+	g.emit("  call void @zyxrt_buf_write(ptr %s, ptr %s, %s %s)", buf, ptr, g.ptrInt(), length)
 }
 
 // literal lowers a literal. The kind the format wrote settles which literal

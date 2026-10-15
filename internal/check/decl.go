@@ -83,7 +83,10 @@ func buildBuiltinDecls() map[string]*Decl {
 			Methods: map[string]*types.Type{"Hash": types.FuncOf(types.Uint64)},
 		},
 		"Show": {
-			Type:    types.Show,
+			Type: types.Show,
+			// Show answers with the text of a value. The target form writes
+			// into a Buf instead, which needs the interface comparison to
+			// accept a method with no result first.
 			Methods: map[string]*types.Type{"Show": types.FuncOf(types.Str)},
 		},
 		"SyncSafe": {
