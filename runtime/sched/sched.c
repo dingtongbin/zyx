@@ -95,9 +95,10 @@ void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg) {
   if (!c) zyxrt_panic("out of memory", 13);
   c->fn = fn;
   c->arg = arg;
-  c->stack_size = ZYXXRT_STACK_MIN;
-  c->stack = malloc(c->stack_size);
+  c->stack_size = zyxrt_stack_size();
+  c->stack = zyxrt_stack_map(c->stack_size);
   if (!c->stack) zyxrt_panic("out of memory", 13);
+  zyxrt_stack_warm(c->stack, c->stack_size);
   c->ctx = zyxrt_ctx_new(c->stack, c->stack_size);
   zyxrt_sched_ready(c);
   return c;
@@ -106,7 +107,7 @@ void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg) {
 /* free_coro releases a finished coroutine. */
 static void free_coro(zyxrt_coro *c) {
   if (c->ctx) zyxrt_ctx_free(c->ctx);
-  free(c->stack);
+  if (c->stack) zyxrt_stack_unmap(c->stack, c->stack_size);
   free(c);
 }
 

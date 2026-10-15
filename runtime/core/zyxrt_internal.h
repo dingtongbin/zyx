@@ -35,6 +35,14 @@ void zyxrt_sched_enter(void);
 void zyxrt_ctx_switch(void *from, void *to);
 void zyxrt_ctx_free(void *ctx);
 
+/* The stack of a coroutine is reserved in full and committed page by page
+   as it is touched, so a coroutine that uses little memory costs little
+   memory and one that uses much still has room. An inaccessible page below
+   the stack turns running off its end into a fault rather than into damage
+   to whatever follows. */
+void *zyxrt_stack_map(size_t size);
+void zyxrt_stack_unmap(void *stack, size_t size);
+
 /* zyxrt_platform_init prepares the process for the runtime: the platform
    layer puts standard output in the mode the runtime writes in. */
 void zyxrt_platform_init(void);
@@ -57,5 +65,14 @@ void zyxrt_sched_wake(zyxrt_coro **list);
 
 /* The stack size every coroutine starts with. */
 #define ZYXXRT_STACK_MIN (2u * 1024u * 8u)
+
+/* The stack a coroutine's reservation holds when ZYX_STACK says nothing. */
+#define ZYXXRT_STACK_DEFAULT (1024u * 1024u)
+
+/* zyxrt_stack_warm commits the pages a new coroutine is expected to use. */
+void zyxrt_stack_warm(void *stack, size_t size);
+
+/* zyxrt_stack_size returns the size a coroutine's stack is reserved with. */
+size_t zyxrt_stack_size(void);
 
 #endif /* ZYXRUNTIME_INTERNAL_H */
