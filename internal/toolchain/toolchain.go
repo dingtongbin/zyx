@@ -200,6 +200,7 @@ func (t *Toolchain) Sources(target Target) []string {
 		filepath.Join(t.Runtime, "mem", "pool.c"),
 		filepath.Join(t.Runtime, "mem", "stack.c"),
 		filepath.Join(t.Runtime, "sched", "sched.c"),
+		filepath.Join(t.Runtime, "sched", "timer.c"),
 		filepath.Join(t.Runtime, "chan", "chan.c"),
 	}
 	// A hand-written stack switch replaces the portable context routines on

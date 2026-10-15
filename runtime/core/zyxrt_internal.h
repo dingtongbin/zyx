@@ -51,6 +51,9 @@ typedef struct zyxrt_coro {
   /* waiters holds the coroutines blocked on this one, newest first. They are
      woken when it finishes, which is what a join waits for. */
   struct zyxrt_coro *waiters;
+  /* wake_at is the monotonic deadline a sleeping coroutine waits for, in
+     nanoseconds. It is meaningful only while the coroutine is asleep. */
+  uint64_t wake_at;
 } zyxrt_coro;
 
 /* The platform context layer. A context runs entry on a stack of the given
@@ -88,6 +91,17 @@ void zyxrt_sched_suspend(zyxrt_coro *c);
    returned into. */
 void zyxrt_sched_abandon(zyxrt_coro *c);
 void zyxrt_sched_yield(void);
+/* zyxrt_sched_sleep suspends the running coroutine until a deadline, and
+   zyxrt_sched_wait readies every sleeper whose deadline has passed and
+   reports how long the scheduler should wait for the next one, or -1 when
+   none is asleep. */
+void zyxrt_sched_sleep(uint64_t ns);
+int64_t zyxrt_sched_wait(void);
+/* The clock. zyxrt_now is the monotonic time in nanoseconds, zyxrt_sleep
+   waits on the scheduler's thread, and zyxrt_timer_init prepares the clock. */
+void zyxrt_timer_init(void);
+uint64_t zyxrt_now(void);
+void zyxrt_sleep(uint64_t ns);
 int zyxrt_sched_run_once(void);
 zyxrt_coro *zyxrt_sched_current(void);
 void zyxrt_sched_wake(zyxrt_coro **list);

@@ -85,6 +85,46 @@ void zyxrt_sched_abandon(zyxrt_coro *c) {
   zyxrt_ctx_switch(c->ctx, sched_ctx);
 }
 
+/* sleepers holds the coroutines waiting for a deadline, newest first. */
+static zyxrt_coro *sleepers;
+
+void zyxrt_sched_sleep(uint64_t ns) {
+  zyxrt_coro *self = current;
+  if (!self) return;
+  self->wake_at = zyxrt_now() + ns;
+  self->wait_next = sleepers;
+  sleepers = self;
+  zyxrt_sched_suspend(self);
+}
+
+int64_t zyxrt_sched_wait(void) {
+  uint64_t now = zyxrt_now();
+  int64_t wait = -1;
+  int readied = 0;
+  zyxrt_coro **link = &sleepers;
+  while (*link) {
+    zyxrt_coro *c = *link;
+    int64_t remaining = (int64_t)(c->wake_at - now);
+    if (remaining <= 0) {
+      *link = c->wait_next;
+      zyxrt_sched_ready(c);
+      readied = 1;
+      continue;
+    }
+    if (wait < 0 || remaining < wait) {
+      wait = remaining;
+    }
+    link = &c->wait_next;
+  }
+  /* A coroutine that just became ready must run before the scheduler waits
+     for anything else, so the caller is told to run again rather than to
+     sleep. */
+  if (readied) {
+    return 0;
+  }
+  return wait;
+}
+
 void zyxrt_sched_yield(void) {
   zyxrt_coro *self = current;
   if (!self) return;

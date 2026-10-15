@@ -50,6 +50,11 @@ int zyxrt_coro_try_join(void *handle, void **result, void **panic);
 /* zyxrt_sched_yield lets another ready coroutine run. A select uses it when
    no arm is ready and the select has no default. */
 void zyxrt_sched_yield(void);
+/* zyxrt_now returns the monotonic clock in nanoseconds, and zyxrt_sched_sleep
+   suspends the running coroutine until that many nanoseconds have passed. A
+   select uses the pair to honour its timeout without spinning. */
+uint64_t zyxrt_now(void);
+void zyxrt_sched_sleep(uint64_t ns);
 /* zyxrt_coro_set_result records the value the running coroutine produced,
    which the handle's Join returns. A value that fits in a register crosses
    the boundary as itself; an object needs a copy, which the boundary marks

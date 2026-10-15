@@ -143,15 +143,24 @@ func (g *generator) boolFrom(reg string) *value {
 // priority. With no arm ready and no default, the coroutine yields and tries
 // again.
 func (g *generator) selectStmt(module string, n *zyxc.Node) {
-	if n.First("timeout-arm") != nil {
-		g.fail(fmt.Errorf("llvmgen: a select timeout needs the runtime clock, which is not implemented"))
-		return
-	}
 	end := g.newLabel("select.end")
 	loop := g.newLabel("select.loop")
+
+	// A timeout arm bounds the wait, so its deadline is taken once, before
+	// the arms are first checked.
+	deadline, timeoutArm := "", (*zyxc.Node)(nil)
+	for _, arm := range n.Children {
+		if arm.Kind == "timeout-arm" {
+			timeoutArm = arm
+			deadline = g.selectDeadline(module, arm)
+		}
+	}
+	if timeoutArm != nil && deadline == "" {
+		return
+	}
+
 	g.terminator("  br label %%%s", loop)
 	g.label(loop)
-
 	hasDefault := false
 	for _, arm := range n.Children {
 		switch arm.Kind {
@@ -159,6 +168,8 @@ func (g *generator) selectStmt(module string, n *zyxc.Node) {
 			g.selectRecv(module, arm, end)
 		case "send-arm":
 			g.selectSend(module, arm, end)
+		case "timeout-arm":
+			g.selectTimeout(module, arm, deadline, end)
 		case "default-arm":
 			hasDefault = true
 			g.stmt(module, g.wrapped(arm, "body"))
@@ -167,12 +178,57 @@ func (g *generator) selectStmt(module string, n *zyxc.Node) {
 			}
 		}
 	}
-	if !hasDefault && !g.fn.terminated {
+	if !hasDefault && timeoutArm == nil && !g.fn.terminated {
+		// Nothing bounds the wait and no arm is ready: let another coroutine
+		// run and try again.
 		g.declareRuntime("zyxrt_sched_yield", "void")
 		g.emit("  call void @zyxrt_sched_yield()")
 		g.terminator("  br label %%%s", loop)
+	} else if timeoutArm != nil && !g.fn.terminated {
+		// The deadline has not passed: wait for it rather than spin.
+		g.declareRuntime("zyxrt_sched_sleep", "void", g.ptrInt())
+		g.declareRuntime("zyxrt_now", g.ptrInt())
+		now := g.newReg()
+		g.emit("  %s = call %s @zyxrt_now()", now, g.ptrInt())
+		remaining := g.newReg()
+		g.emit("  %s = sub %s %s, %s", remaining, g.ptrInt(), deadline, now)
+		g.emit("  call void @zyxrt_sched_sleep(%s %s)", g.ptrInt(), remaining)
+		g.terminator("  br label %%%s", loop)
 	}
 	g.label(end)
+}
+
+// selectDeadline returns the absolute deadline a timeout arm waits for.
+func (g *generator) selectDeadline(module string, arm *zyxc.Node) string {
+	d := g.load(g.expr(module, g.wrapped(arm, "dur"), nil))
+	if d == nil {
+		return ""
+	}
+	g.declareRuntime("zyxrt_now", g.ptrInt())
+	start := g.newReg()
+	g.emit("  %s = call %s @zyxrt_now()", start, g.ptrInt())
+	out := g.newReg()
+	g.emit("  %s = add %s %s, %s", out, g.ptrInt(), start, d.text)
+	return out
+}
+
+// selectTimeout lowers the readiness test of a timeout arm: it is ready when
+// its deadline has passed.
+func (g *generator) selectTimeout(module string, arm *zyxc.Node, deadline, end string) {
+	g.declareRuntime("zyxrt_now", g.ptrInt())
+	now := g.newReg()
+	g.emit("  %s = call %s @zyxrt_now()", now, g.ptrInt())
+	body := g.newLabel("select.arm")
+	next := g.newLabel("select.next")
+	due := g.newReg()
+	g.emit("  %s = icmp uge %s %s, %s", due, g.ptrInt(), now, deadline)
+	g.terminator("  br i1 %s, label %%%s, label %%%s", due, body, next)
+	g.label(body)
+	g.stmt(module, g.wrapped(arm, "body"))
+	if !g.fn.terminated {
+		g.terminator("  br label %%%s", end)
+	}
+	g.label(next)
 }
 
 // selectRecv lowers a receive arm. A successful receive is the readiness
