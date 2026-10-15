@@ -42,15 +42,12 @@ type generator struct {
 	labels int
 	// thunks counts the coroutine entry points emitted.
 	thunks int
-	// pending holds the objects the current statement has finished with,
-	// which are released when the statement ends.
-	pending []pendingRelease
 }
 
 // A pendingRelease is one object the analysis marked as no longer used.
 type pendingRelease struct {
 	typ  *types.Type
-	addr string
+	slot string
 }
 
 // A funcState carries the state of one function's emission.
@@ -68,6 +65,11 @@ type funcState struct {
 	resultSlot string
 	// terminated marks a block that already ends in a terminator.
 	terminated bool
+	// pending holds the objects the current statement has finished with,
+	// which are released when the statement ends. It belongs to the
+	// function, because a release must land in the function that made the
+	// object.
+	pending []pendingRelease
 }
 
 // A varSlot is one local variable.

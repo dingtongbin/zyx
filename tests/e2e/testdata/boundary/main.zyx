@@ -1,0 +1,20 @@
+package main
+
+import "std/fmt"
+
+struct Bag {
+    total: i64
+}
+
+func use(bag: Bag) -> i64 {
+    return bag.total + 1
+}
+
+func main() {
+    region {
+        var bag = Bag { total: 41}
+        spawn use(bag)
+    }
+    fmt.PrintI64(42)
+    fmt.PrintNl()
+}

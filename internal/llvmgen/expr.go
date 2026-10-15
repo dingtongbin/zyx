@@ -145,8 +145,11 @@ func (g *generator) expr(module string, n *zyxc.Node, want *types.Type) *value {
 	if n != nil && hasMark(n, "static-release") && v != nil && releasable(v.typ) {
 		// The mark names the last use, not the last read of the value: the
 		// expression that consumes it still runs. The release is therefore
-		// held until the statement ends.
-		g.pending = append(g.pending, pendingRelease{typ: v.typ, addr: g.addrText(v)})
+		// held until the statement ends. The address is kept in a slot,
+		// because the block that computed it need not dominate the release.
+		slot := g.alloca(types.Raw)
+		g.emit("  store ptr %s, ptr %s", g.addrText(v), slot)
+		g.fn.pending = append(g.fn.pending, pendingRelease{typ: v.typ, slot: slot})
 	}
 	return v
 }

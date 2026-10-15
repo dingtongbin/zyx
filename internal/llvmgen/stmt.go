@@ -13,17 +13,17 @@ import (
 // stmt lowers one statement, then releases the objects the analysis marked as
 // no longer used inside it.
 func (g *generator) stmt(module string, n *zyxc.Node) {
-	mark := len(g.pending)
+	mark := len(g.fn.pending)
 	g.stmtNode(module, n)
 	g.flushReleases(mark)
 }
 
 // flushReleases releases the objects a statement finished with.
 func (g *generator) flushReleases(from int) {
-	pending := g.pending[from:]
-	g.pending = g.pending[:from]
+	pending := g.fn.pending[from:]
+	g.fn.pending = g.fn.pending[:from]
 	for _, p := range pending {
-		g.release(p.typ, p.addr)
+		g.release(p.typ, p.slot)
 	}
 }
 

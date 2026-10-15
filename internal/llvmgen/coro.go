@@ -74,9 +74,18 @@ func (g *generator) spawn(module string, n *zyxc.Node) *value {
 		if v == nil {
 			return nil
 		}
+		if hasMark(arg, "boundary-clone") && byAddress(v.typ) {
+			// The object crosses into another coroutine, so the copy is
+			// what the receiving coroutine owns.
+			if v = g.cloneInto(v); v == nil {
+				return nil
+			}
+		}
 		slot := g.newReg()
 		g.emit("  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d", slot, blockLL, base, i)
-		g.storeInto(slot, ptypes[i], v, true)
+		// The block holds the value the callee receives: a reference object
+		// is named by its reference, which is what the parameter carries.
+		g.storeInto(slot, ptypes[i], v, false)
 	}
 
 	thunk := g.spawnThunk(sym, ptypes, blockLL, result)
@@ -84,6 +93,29 @@ func (g *generator) spawn(module string, n *zyxc.Node) *value {
 	handle := g.newReg()
 	g.emit("  %s = call ptr @zyxrt_coro_spawn(ptr @%s, ptr %s)", handle, thunk, base)
 	return &value{text: handle, ll: "ptr", typ: types.JoinHandle.Instantiate(result)}
+}
+
+// cloneInto copies an object into the running coroutine's region, which is
+// what a value crossing a coroutine boundary needs when it is not SyncSafe.
+// The copy is shallow: a field that names another reference object is left
+// naming it, so a type that reaches one is reported rather than copied
+// halfway.
+func (g *generator) cloneInto(v *value) *value {
+	typ := v.typ
+	fields, ok := g.tab.Fields(typ)
+	if !ok {
+		g.fail(fmt.Errorf("llvmgen: the fields of %s are not known", typ))
+		return nil
+	}
+	for _, f := range fields {
+		if byAddress(f.Type) || f.Type.Kind == types.KindStr || f.Type.Kind == types.KindSlice {
+			g.fail(fmt.Errorf("llvmgen: a boundary copy of %s reaches %s, which is not lowered", typ, f.Type))
+			return nil
+		}
+	}
+	slot := g.allocate(typ)
+	g.copyObject(slot, g.addrText(v), typ)
+	return &value{text: slot, ll: "ptr", typ: typ}
 }
 
 // join lowers Join and TryJoin on a coroutine handle. A coroutine reports

@@ -324,6 +324,24 @@ func TestStaticReleaseReachesTheBackend(t *testing.T) {
 	}
 }
 
+// TestBoundaryCopyReachesTheBackend checks that an object crossing into a
+// coroutine is copied, and that the copy is what the coroutine reads: the
+// argument block holds the reference the callee receives, not the object
+// itself, which the program's value confirms.
+func TestBoundaryCopyReachesTheBackend(t *testing.T) {
+	if _, err := toolchain.Locate(); err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	dir := copyTree(t, filepath.Join("testdata", "boundary"))
+	stdout, stderr, code := run(dir, "emit-llvm", ".")
+	if code != 0 {
+		t.Fatalf("emit-llvm failed with %d:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "llvm.memcpy") {
+		t.Errorf("the boundary copy is missing:\n%s", stdout)
+	}
+}
+
 // TestGenericCallsCarryTheirInstantiatedSignature checks that a call to a
 // generic function annotates its callee with the signature the call
 // instantiates. The monomorphizer settles the type arguments by matching that

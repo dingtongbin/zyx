@@ -145,11 +145,8 @@ func (g *generator) deferThunk(sym string, ptypes []*types.Type, blockLL string)
 // its last use, so the space is reused within the region rather than at its
 // exit. The object must be one this backend allocated: a handle the runtime
 // owns is released by the runtime, which the container runtime does.
-func (g *generator) release(typ *types.Type, addr string) {
-	if addr == "" {
-		return
-	}
-	if !releasable(typ) {
+func (g *generator) release(typ *types.Type, slot string) {
+	if slot == "" || !releasable(typ) {
 		return
 	}
 	size, err := layout.Size(typ, g.tab, g.target.Layout())
@@ -157,6 +154,10 @@ func (g *generator) release(typ *types.Type, addr string) {
 		g.fail(fmt.Errorf("llvmgen: the size of %s: %w", typ, err))
 		return
 	}
+	// The address is read where the release happens, because the block that
+	// computed it need not dominate this one.
+	addr := g.newReg()
+	g.emit("  %s = load ptr, ptr %s", addr, slot)
 	g.declareRuntime("zyxrt_region_current", "ptr")
 	g.declareRuntime("zyxrt_region_release", "void", "ptr", "ptr", g.ptrInt())
 	region := g.newReg()
