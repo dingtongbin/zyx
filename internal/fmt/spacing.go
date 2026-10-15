@@ -44,9 +44,12 @@ func opensExpression(k token.Kind) bool {
 }
 
 // opensAType lists the tokens after which `<` starts a type argument list
-// rather than a comparison. The language capitalizes every type name, so an
-// identifier that begins with a capital letter names one.
+// rather than a comparison: a name the language capitalizes, and the
+// channel keyword, which takes a type argument the same way.
 func opensAType(k token.Kind, text string) bool {
+	if k == token.Chan {
+		return true
+	}
 	if k != token.Ident && k != token.SelfUpper {
 		return false
 	}

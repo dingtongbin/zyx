@@ -1,6 +1,7 @@
 package main
 
 import "std/fmt"
+import c "stdio.h"
 
 type Count = i64
 
@@ -128,7 +129,11 @@ func shapes() -> i64 {
     return total
 }
 
-func receive(ch: chan < i64 >) -> i64 {
+func shout(s: str) {
+    c.printf(s)
+}
+
+func receive(ch: chan<i64>) -> i64 {
     select {
         recv (ch) -> v, ok {
             if ok {
@@ -142,7 +147,7 @@ func receive(ch: chan < i64 >) -> i64 {
     }
 }
 
-func sendTo(ch: chan < i64 >, v: i64) -> i64 {
+func sendTo(ch: chan<i64>, v: i64) -> i64 {
     select {
         send (ch, v) {
             return 0
@@ -167,6 +172,7 @@ func main() {
     fmt.PrintNl()
     fmt.PrintI64(arrays())
     fmt.PrintNl()
+    shout("hi" + "" + "")
     fmt.PrintI64(repeats())
     fmt.PrintNl()
     fmt.PrintI64(tuples())

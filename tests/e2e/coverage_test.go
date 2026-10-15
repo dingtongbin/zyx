@@ -13,16 +13,16 @@ import (
 // intermediate form cannot quietly lose a construct.
 var coveredKinds = []string{
 	"alias", "arg", "arm", "array-lit", "array-repeat", "assign", "assign-op", "binary",
-	"bind", "bind-const", "block", "body", "break", "call", "callee",
+	"bind", "bind-const", "block", "body", "break", "c-call", "call", "callee",
 	"callee-type", "chan", "cond", "const", "continue", "convert", "count",
-	"default-arm", "dur",
-	"defer", "elem", "else", "entry", "enum", "expr-stmt", "extern-struct",
-	"extern-union", "field", "field-decl", "field-init", "for", "for-in",
-	"func", "func-ref", "hi", "idx", "if", "impl", "import", "index", "interface", "is",
-	"iter", "key", "lambda", "lhs", "lit", "lo", "map-lit", "match", "mcall",
-	"method-value", "msg", "name", "new", "operand", "panic", "param",
-	"part-expr", "part-text", "pat", "pat-bind", "pat-variant", "qual",
-	"range", "receiver", "recv", "recv-arm", "region", "result", "return", "rhs",
+	"default-arm", "defer", "dur", "elem", "else", "entry", "enum", "expr-stmt",
+	"extern-struct", "extern-union", "field", "field-decl", "field-init", "for",
+	"for-in", "func", "func-ref", "hi", "idx", "if", "impl", "import", "import-c",
+	"index", "interface", "is", "iter", "key", "lambda", "lhs", "lit", "lo",
+	"map-lit", "match", "mcall", "method-value", "msg", "name", "new", "operand",
+	"panic", "param", "part-expr", "part-text", "pat", "pat-bind", "pat-variant",
+	"qual", "range", "receiver", "recv", "recv-arm", "region", "result",
+	"return", "rhs",
 	"send-arm",
 	"select", "set-lit", "sig", "slice", "spawn", "struct", "struct-lit", "timeout-arm",
 	"subject", "target", "then", "tindex", "try", "tuple-lit", "type",
@@ -32,17 +32,7 @@ var coveredKinds = []string{
 // deferredKinds lists the kinds the format defines that no corpus reaches
 // yet, with the reason. Every entry is work the front end still owes, not a
 // decision to drop the kind.
-var deferredKinds = map[string]string{
-	// Both kinds wait on one resolver defect: `import c "h"` with a `c.f()`
-	// call reports CodeImportUnused. Four hypotheses are ruled out:
-	// resolveExpr reaches resolveSelector through the call's callee;
-	// checkUnusedImports runs after resolveDecls; r.file is the same pointer
-	// the check reads; and the nil-file branch would have reported
-	// CodeCNamespace instead. What remains is that the flag is reset or that
-	// two fileScope values exist for one file.
-	"c-call":   "no corpus calls C: an import c header is reported as unused",
-	"import-c": "no corpus imports a C header: an import c header is reported as unused",
-}
+var deferredKinds = map[string]string{}
 
 // kindPattern matches the kind that opens a line of the tree.
 var kindPattern = regexp.MustCompile(`(?m)^\s*([a-z][a-z0-9-]*)`)
