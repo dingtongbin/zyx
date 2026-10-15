@@ -19,8 +19,10 @@ interface Speaker {
 
 struct Dog {
     name: str
-    func Speak() -> str {
-        return "woof"
+    impl Speaker {
+        func Speak() -> str {
+            return self.name
+        }
     }
 }
 
@@ -115,7 +117,9 @@ func calls() -> i64 {
 func shapes() -> i64 {
     var s = Shape.Circle(3)
     var d = Dog { name: "rex"}
+    var speaker: Speaker = d
     var total = s.Sides()
+    if speaker is Dog { total += 0}
     return total
 }
 
