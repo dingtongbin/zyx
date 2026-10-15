@@ -25,14 +25,24 @@ func (d Diagnostic) RenderString() string {
 	return b.String()
 }
 
-// renderHead writes "<file>:<line>:<col>: <code> <message>".
+// renderHead writes "<file>:<line>:<col>: <code> <message>". A diagnostic
+// that covers a whole build rather than one place in a source file carries no
+// span, and writes its code and message alone.
 func (d Diagnostic) renderHead(b *strings.Builder, code, message string) {
+	if !d.Span.IsValid() {
+		fmt.Fprintf(b, "%s %s\n", code, message)
+		return
+	}
 	line, col := d.Span.StartPos()
 	fmt.Fprintf(b, "%s:%d:%d: %s %s\n", d.Span.File.Name(), line, col, code, message)
 }
 
 // renderNote writes "<file>:<line>:<col>: note: <message>".
 func (d Diagnostic) renderNote(b *strings.Builder, n Note) {
+	if !n.Span.IsValid() {
+		fmt.Fprintf(b, "note: %s\n", n.Message)
+		return
+	}
 	line, col := n.Span.StartPos()
 	fmt.Fprintf(b, "%s:%d:%d: note: %s\n", n.Span.File.Name(), line, col, n.Message)
 }
