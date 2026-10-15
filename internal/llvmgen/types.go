@@ -176,7 +176,9 @@ func (t *typeTable) Fields(ty *types.Type) ([]layout.Field, bool) {
 func (t *typeTable) Variants(ty *types.Type) ([]layout.Variant, bool) {
 	node := t.decls[ty.ID]
 	if node == nil || node.Kind != "enum" {
-		return nil, false
+		// A predeclared enum has no declaration in any tree: its variants
+		// are part of the language, so they come from the fixed table.
+		return predeclaredVariants(ty)
 	}
 	module := t.modules[ty.ID]
 	var out []layout.Variant
@@ -193,6 +195,32 @@ func (t *typeTable) Variants(ty *types.Type) ([]layout.Variant, bool) {
 			v.Payload = payload.Elems
 		}
 		out = append(out, v)
+	}
+	return out, true
+}
+
+// predeclaredVariants returns the variants of a predeclared enum with the
+// payload substituted for the type arguments this use supplies. The table is
+// a language fact, so reading it is a lookup rather than an inference.
+func predeclaredVariants(ty *types.Type) ([]layout.Variant, bool) {
+	variants, ok := types.PredeclaredVariants(ty.Name)
+	if !ok {
+		return nil, false
+	}
+	params, _ := types.PredeclaredParams(ty.Name)
+	bindings := map[string]*types.Type{}
+	for i, p := range params {
+		if i < len(ty.Args) {
+			bindings[p.ID] = ty.Args[i]
+		}
+	}
+	out := make([]layout.Variant, 0, len(variants))
+	for _, v := range variants {
+		payload := make([]*types.Type, 0, len(v.Payload))
+		for _, pt := range v.Payload {
+			payload = append(payload, types.Substitute(pt, bindings))
+		}
+		out = append(out, layout.Variant{Name: v.Name, Payload: payload})
 	}
 	return out, true
 }

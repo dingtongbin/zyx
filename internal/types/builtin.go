@@ -60,6 +60,65 @@ var (
 	SyncSafe = Named(KindInterface, "", "", "SyncSafe", 0)
 )
 
+// The type parameters of the predeclared enums. The checker and the backend
+// both read them, so a payload written in terms of a parameter means the same
+// thing to either.
+var (
+	optionT = Param("Option$T", "T")
+	resultT = Param("Result$T", "T")
+	resultE = Param("Result$E", "E")
+)
+
+// A Variant is one member of a predeclared enum, with its payload written in
+// terms of the enum's own type parameters.
+type Variant struct {
+	Name    string
+	Payload []*Type
+}
+
+// predeclaredParams lists the type parameters of a predeclared enum, in
+// declaration order.
+var predeclaredParams = map[string][]*Type{
+	"Option": {optionT},
+	"Result": {resultT, resultE},
+}
+
+// predeclaredVariants lists the variants of a predeclared enum, in
+// declaration order. An enum the language declares has its variants in the
+// program's own tree instead.
+var predeclaredVariants = map[string][]Variant{
+	"Option": {
+		{Name: "None"},
+		{Name: "Some", Payload: []*Type{optionT}},
+	},
+	"Result": {
+		{Name: "Ok", Payload: []*Type{resultT}},
+		{Name: "Err", Payload: []*Type{resultE}},
+	},
+	"Value": {
+		{Name: "Null"},
+		{Name: "Bool", Payload: []*Type{Bool}},
+		{Name: "Num", Payload: []*Type{Float64}},
+		{Name: "Str", Payload: []*Type{Str}},
+		{Name: "Arr", Payload: []*Type{Array.Instantiate(Value)}},
+		{Name: "Obj", Payload: []*Type{Map.Instantiate(Str, Value)}},
+	},
+}
+
+// PredeclaredParams returns the type parameters of a predeclared enum, in
+// declaration order.
+func PredeclaredParams(name string) ([]*Type, bool) {
+	params, ok := predeclaredParams[name]
+	return params, ok
+}
+
+// PredeclaredVariants returns the variants of a predeclared enum, in
+// declaration order.
+func PredeclaredVariants(name string) ([]Variant, bool) {
+	variants, ok := predeclaredVariants[name]
+	return variants, ok
+}
+
 // basics maps every basic kind to its singleton.
 var basics = map[Kind]*Type{
 	KindBool:      Bool,

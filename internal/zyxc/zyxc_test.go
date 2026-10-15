@@ -1,6 +1,7 @@
 package zyxc
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"zyx/internal/resolve"
 	"zyx/internal/source"
 	"zyx/internal/toolchain"
+	"zyx/internal/types"
 )
 
 // buildSource runs the front end on one package and returns its tree.
@@ -157,6 +159,32 @@ func TestMarkArgumentsSurviveARoundTrip(t *testing.T) {
 		if marks[i] != m {
 			t.Errorf("mark %d = %+v, want %+v", i, marks[i], m)
 		}
+	}
+}
+
+// A testResolver knows no declarations, which is enough for a text that names
+// only tuples and predeclared types.
+type testResolver struct{}
+
+func (testResolver) ImportPath(string) (string, bool) { return "", false }
+
+func (testResolver) KindOf(string) (types.Kind, error) {
+	return types.Invalid, fmt.Errorf("no declarations")
+}
+
+// A one-element list is a tuple, which is how an enum variant with a single
+// payload type writes it. Reading it as the element alone would leave that
+// variant's payload unreadable.
+func TestParseTypeReadsAOneElementTuple(t *testing.T) {
+	got, err := ParseType("example.com/app", "(f64)", testResolver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != types.KindTuple || len(got.Elems) != 1 {
+		t.Fatalf("(f64) = %s, want a one-element tuple", got)
+	}
+	if got.Elems[0].Kind != types.KindFloat64 {
+		t.Errorf("the element is %s, want f64", got.Elems[0])
 	}
 }
 

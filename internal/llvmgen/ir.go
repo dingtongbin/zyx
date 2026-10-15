@@ -147,6 +147,8 @@ func (g *generator) aggregateBody(t *types.Type) string {
 		return "{" + strings.Join(parts, ", ") + "}"
 	case types.KindUnion:
 		return g.unionBody(t)
+	case types.KindEnum:
+		return g.enumBody(t)
 	}
 	g.fail(fmt.Errorf("llvmgen: %s has no aggregate layout", t))
 	return "{ i8 }"
@@ -242,11 +244,8 @@ func (g *generator) llType(t *types.Type) string {
 			parts = append(parts, g.llType(e))
 		}
 		return "{" + strings.Join(parts, ", ") + "}"
-	case types.KindStruct, types.KindExternStruct, types.KindUnion:
+	case types.KindStruct, types.KindExternStruct, types.KindUnion, types.KindEnum:
 		return g.structName(t)
-	case types.KindEnum:
-		g.fail(fmt.Errorf("llvmgen: enums are not lowered yet"))
-		return "i8"
 	}
 	g.fail(fmt.Errorf("llvmgen: %s has no LLVM type", t))
 	return "i64"

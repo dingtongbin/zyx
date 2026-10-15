@@ -17,6 +17,10 @@ void *zyxrt_region_current(void);
    coroutine. */
 void *zyxrt_region_alloc_current(size_t size, size_t align);
 
+/* Strings. A str is a borrowed pointer and its length, so equality compares
+   the bytes rather than the two pointers. */
+int8_t zyxrt_str_eq(const char *a, size_t an, const char *b, size_t bn);
+
 /* Process entry. The generated main calls this with the address of the zyx
    main function, and the runtime runs it on the root region. */
 typedef void (*zyxrt_main_fn)(void *arg);

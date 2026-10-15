@@ -219,6 +219,30 @@ func TestEnumLayout(t *testing.T) {
 	}
 }
 
+// The shape is what the backend needs to mirror: the tag, and the union that
+// follows it. The backend lays the union out itself, so it must agree with
+// the size and alignment reported here.
+func TestEnumShape(t *testing.T) {
+	e := named(types.KindEnum, "Msg")
+	p := testProvider{variants: map[string][]Variant{
+		e.ID: {
+			{Name: "Ping"},
+			{Name: "Text", Payload: []*types.Type{types.Str}},
+			{Name: "Pair", Payload: []*types.Type{types.Int32, types.Int32}},
+		},
+	}}
+	shape, err := Enum(e, p, target64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shape.TagSize != 1 || shape.TagAlign != 1 {
+		t.Errorf("tag = %d/%d, want 1/1", shape.TagSize, shape.TagAlign)
+	}
+	if shape.PayloadSize != 16 || shape.PayloadAlign != 8 {
+		t.Errorf("payload = %d/%d, want 16/8", shape.PayloadSize, shape.PayloadAlign)
+	}
+}
+
 func TestEnumTagWidth(t *testing.T) {
 	e := named(types.KindEnum, "Big")
 	variants := make([]Variant, 300)

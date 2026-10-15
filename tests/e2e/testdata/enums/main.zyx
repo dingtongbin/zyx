@@ -1,0 +1,97 @@
+package main
+
+import "std/fmt"
+
+enum Shape {
+    Dot
+    Circle(f64)
+    Rect(f64, f64)
+    func Area() -> f64 {
+        match self {
+            Dot => return 0.0
+            Circle(r) => return r * r * 3.0
+            Rect(w, h) => return w * h
+        }
+    }
+}
+
+enum Color {
+    Red
+    Green
+    Blue
+    func Code() -> i64 {
+        match self {
+            Red => return 1
+            Green => return 2
+            Blue => return 3
+        }
+    }
+}
+
+func classify(n: i64) -> i64 {
+    match n {
+        0 => return 100
+        1 | 2 => return 200
+        3 .. 10 => return 300
+        other => return other
+    }
+    return- 1
+}
+
+func pairSum(t: (i64, i64)) -> i64 {
+    match t {
+        (a, b) => return a + b
+        _ => return 0
+    }
+    return 0
+}
+
+func same(a: str, b: str) -> bool {
+    return a == b
+}
+
+func divide(a: i64, b: i64) -> Result<i64, str> {
+    if b == 0 {
+        return Result.Err("zero")
+    }
+    return Result.Ok(a / b)
+}
+
+func report(r: Result<i64, str>) -> i64 {
+    match r {
+        Ok(v) => return v
+        Err(e) => return 0
+    }
+    return- 1
+}
+
+func main() {
+    var circle = Shape.Circle(2.0)
+    fmt.PrintF64(circle.Area())
+    fmt.PrintNl()
+    var rect = Shape.Rect(3.0, 5.0)
+    fmt.PrintF64(rect.Area())
+    fmt.PrintNl()
+    var dot = Shape.Dot
+    fmt.PrintF64(dot.Area())
+    fmt.PrintNl()
+    fmt.PrintI64(Color.Green.Code())
+    fmt.PrintNl()
+    fmt.PrintI64(classify(0))
+    fmt.PrintNl()
+    fmt.PrintI64(classify(2))
+    fmt.PrintNl()
+    fmt.PrintI64(classify(7))
+    fmt.PrintNl()
+    fmt.PrintI64(classify(42))
+    fmt.PrintNl()
+    fmt.PrintI64(pairSum((3, 4)))
+    fmt.PrintNl()
+    fmt.PrintBool(same("abc", "abc"))
+    fmt.PrintBool(same("abc", "abd"))
+    fmt.PrintNl()
+    fmt.PrintI64(report(divide(10, 2)))
+    fmt.PrintNl()
+    fmt.PrintI64(report(divide(10, 0)))
+    fmt.PrintNl()
+}

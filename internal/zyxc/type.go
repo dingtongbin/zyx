@@ -149,9 +149,12 @@ func (p *typeParser) parseTuple() (*types.Type, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(elems) < 2 {
-		return nil, fmt.Errorf("zyxc: a tuple needs two elements")
+	if len(elems) == 0 {
+		return nil, fmt.Errorf("zyxc: a tuple needs an element")
 	}
+	// A one-element list is a tuple like any other. An enum variant whose
+	// payload holds one type writes it this way, so the text has to read
+	// back as that tuple rather than as the element alone.
 	return types.TupleOf(elems...), nil
 }
 

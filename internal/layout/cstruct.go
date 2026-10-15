@@ -85,25 +85,53 @@ func unionLayout(fields []Field, p Provider, target Target, seen map[string]bool
 // enumLayout lays out an enum: a tag that fits the variant count, followed
 // by a union of the variant payloads.
 func enumLayout(t *types.Type, p Provider, target Target, seen map[string]bool) (uint64, uint64, error) {
+	shape, err := Enum(t, p, target)
+	if err != nil {
+		return 0, 0, err
+	}
+	align := maxAlign(shape.TagAlign, shape.PayloadAlign)
+	size := alignUp(shape.TagSize, shape.PayloadAlign) + shape.PayloadSize
+	return alignUp(size, align), align, nil
+}
+
+// An EnumShape describes the layout of an enum: a tag that fits the variant
+// count, followed by a union of the variant payloads, aligned to the widest
+// payload. The tag occupies the object from offset zero, and the payload
+// union follows it at the next multiple of PayloadAlign.
+type EnumShape struct {
+	// TagSize and TagAlign describe the tag.
+	TagSize, TagAlign uint64
+	// PayloadSize and PayloadAlign describe the union of the payloads. The
+	// union is empty, with an alignment of one, when no variant carries a
+	// payload.
+	PayloadSize, PayloadAlign uint64
+}
+
+// Enum returns the layout of an enum. The enum itself stands on the cycle
+// path, so a variant whose payload contains the enum by value is reported
+// rather than laid out forever.
+func Enum(t *types.Type, p Provider, target Target) (EnumShape, error) {
 	variants, ok := p.Variants(t)
 	if !ok {
-		return 0, 0, ErrUnknown
+		return EnumShape{}, ErrUnknown
 	}
-	tagSize, tagAlign := tagLayout(len(variants))
-	payloadSize, payloadAlign := uint64(0), uint64(1)
+	seen := map[string]bool{}
+	if t != nil {
+		seen[typeKey(t)] = true
+	}
+	shape := EnumShape{PayloadAlign: 1}
+	shape.TagSize, shape.TagAlign = tagLayout(len(variants))
 	for _, v := range variants {
 		size, align, err := structSize(fieldsOfTypes(v.Payload), p, target, seen, false, false)
 		if err != nil {
-			return 0, 0, err
+			return EnumShape{}, err
 		}
-		if size > payloadSize {
-			payloadSize = size
+		if size > shape.PayloadSize {
+			shape.PayloadSize = size
 		}
-		payloadAlign = maxAlign(payloadAlign, align)
+		shape.PayloadAlign = maxAlign(shape.PayloadAlign, align)
 	}
-	align := maxAlign(tagAlign, payloadAlign)
-	size := alignUp(tagSize, payloadAlign) + payloadSize
-	return alignUp(size, align), align, nil
+	return shape, nil
 }
 
 // tagLayout returns the size and alignment of the tag of an enum with n

@@ -25,9 +25,9 @@ var builtinDecls = buildBuiltinDecls()
 
 // buildBuiltinDecls builds the member table of the pre-imported types.
 func buildBuiltinDecls() map[string]*Decl {
-	optionT := types.Param("Option$T", "T")
-	resultT := types.Param("Result$T", "T")
-	resultE := types.Param("Result$E", "E")
+	optionT := predeclaredParams("Option")[0]
+	resultParams := predeclaredParams("Result")
+	resultT, resultE := resultParams[0], resultParams[1]
 	handleR := types.Param("JoinHandle$R", "R")
 	self := types.Param(selfParam, selfParam)
 	resultOf := func(ok, err *types.Type) *types.Type {
@@ -36,8 +36,8 @@ func buildBuiltinDecls() map[string]*Decl {
 	return map[string]*Decl{
 		"Option": {
 			Type:     types.Option,
-			Params:   []*types.Type{optionT},
-			Variants: []*Variant{{Name: "None"}, {Name: "Some", Payload: []*types.Type{optionT}}},
+			Params:   predeclaredParams("Option"),
+			Variants: predeclaredVariants("Option"),
 			Methods: map[string]*types.Type{
 				"IsSome":   types.FuncOf(types.Bool),
 				"IsNone":   types.FuncOf(types.Bool),
@@ -46,12 +46,9 @@ func buildBuiltinDecls() map[string]*Decl {
 			},
 		},
 		"Result": {
-			Type:   types.Result,
-			Params: []*types.Type{resultT, resultE},
-			Variants: []*Variant{
-				{Name: "Ok", Payload: []*types.Type{resultT}},
-				{Name: "Err", Payload: []*types.Type{resultE}},
-			},
+			Type:     types.Result,
+			Params:   predeclaredParams("Result"),
+			Variants: predeclaredVariants("Result"),
 			Methods: map[string]*types.Type{
 				"IsOk":     types.FuncOf(types.Bool),
 				"IsErr":    types.FuncOf(types.Bool),
@@ -70,15 +67,8 @@ func buildBuiltinDecls() map[string]*Decl {
 			},
 		},
 		"Value": {
-			Type: types.Value,
-			Variants: []*Variant{
-				{Name: "Null"},
-				{Name: "Bool", Payload: []*types.Type{types.Bool}},
-				{Name: "Num", Payload: []*types.Type{types.Float64}},
-				{Name: "Str", Payload: []*types.Type{types.Str}},
-				{Name: "Arr", Payload: []*types.Type{types.Array.Instantiate(types.Value)}},
-				{Name: "Obj", Payload: []*types.Type{types.Map.Instantiate(types.Str, types.Value)}},
-			},
+			Type:     types.Value,
+			Variants: predeclaredVariants("Value"),
 		},
 		"PanicError": {
 			Type: types.PanicError,
@@ -104,6 +94,24 @@ func buildBuiltinDecls() map[string]*Decl {
 			Methods: map[string]*types.Type{},
 		},
 	}
+}
+
+// predeclaredParams returns the type parameters of a predeclared enum, which
+// the types package owns so that the checker and the backend agree on them.
+func predeclaredParams(name string) []*types.Type {
+	params, _ := types.PredeclaredParams(name)
+	return params
+}
+
+// predeclaredVariants returns the variants of a predeclared enum in the
+// checker's own form.
+func predeclaredVariants(name string) []*Variant {
+	list, _ := types.PredeclaredVariants(name)
+	out := make([]*Variant, 0, len(list))
+	for _, v := range list {
+		out = append(out, &Variant{Name: v.Name, Payload: v.Payload})
+	}
+	return out
 }
 
 // funcContext describes where a function declaration appears.

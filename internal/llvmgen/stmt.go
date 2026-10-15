@@ -30,6 +30,8 @@ func (g *generator) stmt(module string, n *zyxc.Node) {
 		g.bind(module, n)
 	case "if":
 		g.ifStmt(module, n)
+	case "match":
+		g.matchStmt(module, n)
 	case "for":
 		g.forStmt(module, n)
 	case "break":

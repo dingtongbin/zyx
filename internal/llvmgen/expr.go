@@ -138,6 +138,8 @@ func (g *generator) expr(module string, n *zyxc.Node, want *types.Type) *value {
 		return g.tupleIndex(module, n)
 	case "struct-lit":
 		return g.structLit(module, n)
+	case "variant-lit":
+		return g.variantLit(module, n)
 	case "array-lit":
 		return g.arrayLit(module, n)
 	case "tuple-lit":
@@ -360,8 +362,7 @@ func isComparison(op string) bool {
 func (g *generator) compare(op string, a, b *value) *value {
 	a, b = g.load(a), g.load(b)
 	if a.typ.IsStr() || b.typ.IsStr() {
-		g.fail(fmt.Errorf("llvmgen: comparing strings is not lowered"))
-		return nil
+		return g.compareStrings(op, a, b)
 	}
 	pred := map[string]string{
 		"==": "eq", "!=": "ne", "<": "lt", "<=": "le", ">": "gt", ">=": "ge",
@@ -382,6 +383,56 @@ func (g *generator) compare(op string, a, b *value) *value {
 	reg := g.newReg()
 	g.emit("  %s = %s %s %s, %s", reg, instr, ll, a.text, b.text)
 	return &value{text: reg, ll: "i1", typ: types.Bool}
+}
+
+// compareStrings lowers an equality test of two strings, which compares the
+// bytes rather than the two fat pointers. Only equality is defined on str.
+func (g *generator) compareStrings(op string, a, b *value) *value {
+	if op != "==" && op != "!=" {
+		g.fail(fmt.Errorf("llvmgen: only == and != compare strings, not %s", op))
+		return nil
+	}
+	g.declareRuntime("zyxrt_str_eq", "i8", "ptr", g.ptrInt(), "ptr", g.ptrInt())
+	ap, al := g.splitFat(a)
+	bp, bl := g.splitFat(b)
+	call := g.newReg()
+	g.emit("  %s = call i8 @zyxrt_str_eq(ptr %s, %s %s, ptr %s, %s %s)",
+		call, ap, g.ptrInt(), al, bp, g.ptrInt(), bl)
+	// The runtime answers one when the two strings are equal.
+	pred := "ne"
+	if op == "!=" {
+		pred = "eq"
+	}
+	reg := g.newReg()
+	g.emit("  %s = icmp %s i8 %s, 0", reg, pred, call)
+	return &value{text: reg, ll: "i1", typ: types.Bool}
+}
+
+// splitFat returns the pointer and the length of a fat value.
+func (g *generator) splitFat(v *value) (string, string) {
+	ptr := g.newReg()
+	g.emit("  %s = extractvalue %s %s, 0", ptr, v.ll, v.text)
+	length := g.newReg()
+	g.emit("  %s = extractvalue %s %s, 1", length, v.ll, v.text)
+	return ptr, length
+}
+
+// equality returns the condition that two values of one type are equal.
+func (g *generator) equality(a, b *value) string {
+	v := g.compare("==", a, b)
+	if v == nil {
+		return ""
+	}
+	return v.text
+}
+
+// order returns the condition an ordered comparison of two values selects.
+func (g *generator) order(op string, a, b *value) string {
+	v := g.compare(op, a, b)
+	if v == nil {
+		return ""
+	}
+	return v.text
 }
 
 // arith lowers an arithmetic or bitwise operator.
