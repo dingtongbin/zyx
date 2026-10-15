@@ -33,6 +33,13 @@ var coveredKinds = []string{
 // yet, with the reason. Every entry is work the front end still owes, not a
 // decision to drop the kind.
 var deferredKinds = map[string]string{
+	// Both kinds wait on one resolver defect: `import c "h"` with a `c.f()`
+	// call reports CodeImportUnused. Four hypotheses are ruled out:
+	// resolveExpr reaches resolveSelector through the call's callee;
+	// checkUnusedImports runs after resolveDecls; r.file is the same pointer
+	// the check reads; and the nil-file branch would have reported
+	// CodeCNamespace instead. What remains is that the flag is reset or that
+	// two fileScope values exist for one file.
 	"c-call":   "no corpus calls C: an import c header is reported as unused",
 	"import-c": "no corpus imports a C header: an import c header is reported as unused",
 }
