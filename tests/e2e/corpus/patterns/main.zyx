@@ -1,0 +1,68 @@
+package main
+
+import "std/fmt"
+
+enum Shape {
+    Dot
+    Circle(f64)
+    func Sides() -> i64 {
+        match self {
+            Dot => return 0
+            Circle(r) => return 1
+        }
+    }
+}
+
+const sizes = meta.size_of(i64)
+
+const wait = dur.ms(100)
+
+struct Tally {
+    total: i64
+    func Add(n: i64) -> i64 {
+        return self.total + n
+    }
+}
+
+func classify(n: i64) -> i64 {
+    match n {
+        0 => return 1
+        1 | 2 => return 2
+        3 .. 10 => return 3
+        _ => return 4
+    }
+    return 0
+}
+
+func sum(pair: (i64, i64)) -> i64 {
+    match pair {
+        (a, b) => return a + b
+        _ => return 0
+    }
+    return 0
+}
+
+func fold(x: i64) -> i64 {
+    if !(x > 0) {
+        return- x
+    }
+    return ~x
+}
+
+func main() {
+    var shape = Shape.Circle(1.5)
+    fmt.PrintI64(shape.Sides())
+    fmt.PrintNl()
+    var t: Tally = Tally { total: 1}
+    var add = t.Add
+    fmt.PrintI64(add(2))
+    fmt.PrintNl()
+    fmt.PrintI64(classify(1))
+    fmt.PrintNl()
+    fmt.PrintI64(sum((1, 2)))
+    fmt.PrintNl()
+    fmt.PrintI64(fold(3))
+    fmt.PrintNl()
+    fmt.PrintI64(i64(sizes))
+    fmt.PrintNl()
+}

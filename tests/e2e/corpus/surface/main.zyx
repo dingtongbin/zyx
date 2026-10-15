@@ -133,6 +133,27 @@ func shout(s: str) {
     c.printf(s)
 }
 
+func stamp(n: i32) {
+    c.printf("%d\n", & n)
+}
+
+func onPanic(e: PanicError) { }
+
+func work() -> i64 {
+    return 3
+}
+
+func measure() -> i64 {
+    region {
+        var h = spawn_watched work(), func onPanic
+        match h.Join() {
+            Ok(v) => return v
+            Err(e) => return 0
+        }
+    }
+    return 0
+}
+
 func receive(ch: chan<i64>) -> i64 {
     select {
         recv (ch) -> v, ok {

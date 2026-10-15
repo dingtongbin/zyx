@@ -941,7 +941,12 @@ func (b *builder) namespace(v *ast.SelectorExpr) string {
 		return ""
 	}
 	sym := b.rinfo.Defs[id]
-	if sym == nil || sym.Kind != resolve.KindPackage {
+	if sym == nil {
+		return ""
+	}
+	// The two comptime namespaces are predeclared names, so they carry the
+	// builtin kind; an imported package carries the package kind.
+	if sym.Kind != resolve.KindPackage && sym.Kind != resolve.KindBuiltin {
 		return ""
 	}
 	switch sym.Name {
@@ -1052,7 +1057,7 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 			n.Child(b.wrap("recv", b.expr(sel.X)))
 			return b.at(n, v.Sp)
 		case b.isVariant(sel):
-			n := New("variant-lit", b.typeText(b.cpkg.Nodes[sel.X]), sel.Name.Name)
+			n := New("variant-lit", b.typeText(b.staticType(v)), sel.Name.Name)
 			n.Child(b.args(v.Args)...)
 			return b.at(n, v.Sp)
 		case b.isMethodCall(sel):
@@ -1073,7 +1078,7 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 		}
 		return nil
 	}
-	if id, ok := v.Fn.(*ast.Ident); ok && b.isTypeCallee(id) {
+	if id, ok := v.Fn.(*ast.Ident); ok && b.isTypeName(id) {
 		n := New("convert", b.typeText(b.cpkg.Nodes[id]))
 		n.Child(b.wrap("operand", b.expr(firstArg(v))))
 		return b.at(n, v.Sp)
@@ -1087,22 +1092,6 @@ func firstArg(v *ast.CallExpr) ast.Expr {
 		return nil
 	}
 	return v.Args[0]
-}
-
-// isTypeCallee reports whether a callee names a type, which makes the call a
-// conversion.
-func (b *builder) isTypeCallee(id *ast.Ident) bool {
-	sym := b.rinfo.Defs[id]
-	if sym == nil {
-		return false
-	}
-	switch sym.Kind {
-	case resolve.KindType, resolve.KindTypeParam, resolve.KindCSymbol:
-		return true
-	case resolve.KindBuiltin:
-		return sym.Name != "panic"
-	}
-	return false
 }
 
 // literalNode renders a literal. The kind is written out, so the backend
@@ -1156,20 +1145,23 @@ func (b *builder) selector(v *ast.SelectorExpr) *Node {
 	case b.isCCall(v):
 		return b.at(New("c-call", v.Name.Name), v.Sp)
 	case b.isVariant(v):
-		n := New("variant-lit", b.typeText(b.cpkg.Nodes[v.X]), v.Name.Name)
-		return b.at(n, v.Sp)
+		return b.at(New("variant-lit", b.typeText(b.staticType(v)), v.Name.Name), v.Sp)
 	case b.isMethodCall(v):
-		n := New("mcall", v.Name.Name, b.memberID(v.X, v.Name.Name))
+		// In expression position a method names a bound method value. A call
+		// is rendered by callNode, which carries the arguments.
+		n := New("method-value", v.Name.Name, b.memberID(v.X, v.Name.Name))
 		n.Child(b.wrap("recv", b.expr(v.X)))
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	case b.isFieldAccess(v):
 		n := New("field", v.Name.Name, b.memberID(v.X, v.Name.Name))
 		n.Child(b.wrap("recv", b.expr(v.X)))
 		return b.at(n, v.Sp)
 	}
-	n := New("method-value", v.Name.Name, b.memberID(v.X, v.Name.Name))
-	n.Child(b.wrap("recv", b.expr(v.X)))
-	return b.at(n, v.Sp)
+	// A selector that names no package, namespace, variant, method, or field
+	// has no symbol to carry, so emitting it would leave the backend a name it
+	// cannot resolve.
+	b.fail(v, "the selector "+v.Name.Name)
+	return nil
 }
 
 // memberID returns the symbol id of a member of a receiver's type. A method
@@ -1219,18 +1211,42 @@ func (b *builder) isCCall(v *ast.SelectorExpr) bool {
 	return sym != nil && sym.Kind == resolve.KindPackage && sym.Name == "c"
 }
 
-// isVariant reports whether a selector names an enum variant.
+// isVariant reports whether a selector constructs an enum variant. The
+// qualifier must name a type, so a value whose name matches a variant is not
+// mistaken for one, and the enum is read from the variant name, which is the
+// node the checker records it on.
 func (b *builder) isVariant(v *ast.SelectorExpr) bool {
 	id := qualifierName(v)
-	if id == nil {
+	if id == nil || !b.isTypeName(id) {
 		return false
 	}
-	recv := b.cpkg.Nodes[id]
-	if recv == nil || recv.Kind != types.KindEnum {
+	t := b.cpkg.Nodes[v.Name]
+	if t == nil || t.Kind != types.KindEnum {
 		return false
 	}
-	d := b.cpkg.Decl(recv)
+	d := b.cpkg.Decl(t)
 	return d != nil && d.Variant(v.Name.Name) != nil
+}
+
+// isTypeName reports whether an identifier names a type. The predeclared
+// names split in two: the type names name types, while the two comptime
+// namespaces and the global function do not.
+func (b *builder) isTypeName(id *ast.Ident) bool {
+	sym := b.rinfo.Defs[id]
+	if sym == nil {
+		return false
+	}
+	switch sym.Kind {
+	case resolve.KindType, resolve.KindTypeParam, resolve.KindCSymbol:
+		return true
+	case resolve.KindBuiltin:
+		switch sym.Name {
+		case "meta", "dur", "panic":
+			return false
+		}
+		return true
+	}
+	return false
 }
 
 // isMethodCall reports whether the receiver's type declares the method,

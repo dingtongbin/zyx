@@ -12,22 +12,44 @@ import (
 // corpus grows: a kind that stops being emitted fails the test below, so the
 // intermediate form cannot quietly lose a construct.
 var coveredKinds = []string{
-	"alias", "arg", "arm", "array-lit", "array-repeat", "assign", "assign-op", "binary",
+	"addr", "alias", "arg", "arm", "array-lit", "array-repeat", "assign", "assign-op",
+	"binary",
 	"bind", "bind-const", "block", "body", "break", "c-call", "call", "callee",
 	"callee-type", "chan", "cond", "const", "continue", "convert", "count",
 	"default-arm", "defer", "dur", "elem", "else", "entry", "enum", "expr-stmt",
 	"extern-struct", "extern-union", "field", "field-decl", "field-init", "for",
 	"for-in", "func", "func-ref", "hi", "idx", "if", "impl", "import", "import-c",
-	"index", "init", "interface", "is", "iter", "key", "lambda", "lhs", "lit", "lo",
-	"map-lit", "match", "mcall", "method-value", "msg", "name", "new", "operand",
-	"panic", "param", "part-expr", "part-text", "pat", "pat-bind", "pat-variant",
+	"index", "init", "interface", "is", "iter", "join", "key", "lambda", "lhs", "lit",
+	"lo",
+	"map-lit", "match", "mcall", "meta", "method-value", "msg", "name", "new",
+	"operand",
+	"panic", "param", "part-expr", "part-text", "pat", "pat-bind", "pat-lit",
+	"pat-or", "pat-range", "pat-tuple", "pat-variant", "pat-wild",
 	"qual", "range", "receiver", "recv", "recv-arm", "region", "result",
 	"return", "rhs",
 	"send-arm",
 	"select", "set-lit", "sig", "slice", "spawn", "struct", "struct-lit", "timeout-arm",
 	"subject", "target", "then", "tindex", "try", "tuple-lit", "type",
-	"type-param",
-	"value", "var", "variant",
+	"type-param", "unary",
+	"value", "var", "variant", "variant-lit", "watcher",
+}
+
+// specKinds lists every node kind the format defines, mirroring the kind
+// tables of the toolchain document and the notes beside them. The document is
+// the source of truth: a kind added there belongs here too, and the coverage
+// test below is what makes the two agree.
+var specKinds = []string{
+	"addr", "alias", "arm", "array-lit", "array-repeat", "assign", "assign-op",
+	"binary", "bind", "bind-const", "block", "break", "call", "c-call", "const",
+	"continue", "convert", "default-arm", "defer", "dur", "enum", "expr-stmt",
+	"extern-struct", "extern-union", "field", "field-decl", "for", "for-in", "func",
+	"func-ref", "if", "impl", "import", "import-c", "index", "interface", "is",
+	"join", "lambda", "lit", "map-lit", "match", "mcall", "meta", "method-value",
+	"name", "new", "panic", "pat-bind", "pat-lit", "pat-or", "pat-range",
+	"pat-tuple", "pat-variant", "pat-wild", "qual", "range", "receiver",
+	"recv-arm", "region", "return", "select", "send-arm", "set-lit", "sig",
+	"slice", "spawn", "struct", "struct-lit", "timeout-arm", "tindex", "try",
+	"type-param", "unary", "var", "variant", "variant-lit",
 }
 
 // deferredKinds lists the kinds the format defines that no corpus reaches
@@ -102,6 +124,31 @@ func TestCorpusCoversTheIntermediateForm(t *testing.T) {
 	sort.Strings(extra)
 	if len(extra) != 0 {
 		t.Errorf("the corpus reaches kinds the list does not name: %s", strings.Join(extra, " "))
+	}
+}
+
+// TestEverySpecKindIsExercisedOrDeferred checks that the corpus reaches every
+// kind the format defines. A kind no corpus reaches is a construct nothing
+// verifies, and the only way past this test is to reach it or to record in
+// deferredKinds why not.
+func TestEverySpecKindIsExercisedOrDeferred(t *testing.T) {
+	covered := map[string]bool{}
+	for _, kind := range coveredKinds {
+		covered[kind] = true
+	}
+	var unexercised []string
+	for _, kind := range specKinds {
+		if covered[kind] {
+			continue
+		}
+		if reason, ok := deferredKinds[kind]; ok && reason != "" {
+			continue
+		}
+		unexercised = append(unexercised, kind)
+	}
+	if len(unexercised) != 0 {
+		t.Errorf("no corpus reaches these kinds and none is deferred: %s",
+			strings.Join(unexercised, " "))
 	}
 }
 
