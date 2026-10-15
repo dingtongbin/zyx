@@ -41,13 +41,22 @@ type CompileOptions struct {
 
 // Locate finds the compiler programs and the runtime tree. It reports the
 // first component that is missing.
+//
+// A distribution ships the toolchain next to the compiler, so the search
+// looks there first, then at the directories the environment names, then
+// beside whichever LLVM tool the host already provides, and finally along
+// the search path.
 func Locate() (*Toolchain, error) {
+	dirs := candidateDirs()
 	t := &Toolchain{
-		Clang:   lookPath("clang"),
-		LLC:     lookPath("llc"),
-		Opt:     lookPath("opt"),
-		CC:      firstPath("clang", "gcc", "cc"),
+		Clang:   findTool("clang", dirs),
+		LLC:     findTool("llc", dirs),
+		Opt:     findTool("opt", dirs),
+		CC:      findTool("clang", dirs),
 		Runtime: findRuntime(),
+	}
+	if t.CC == "" {
+		t.CC = firstOf([]string{"gcc", "cc"}, dirs)
 	}
 	if t.Clang == "" && t.LLC == "" {
 		return nil, fmt.Errorf("no LLVM compiler found: install clang or the LLVM tools")
@@ -61,6 +70,76 @@ func Locate() (*Toolchain, error) {
 	return t, nil
 }
 
+// candidateDirs lists the directories the toolchain search visits, in
+// order.
+func candidateDirs() []string {
+	var dirs []string
+	if dir := os.Getenv("ZYX_LLVM_BIN"); dir != "" {
+		dirs = append(dirs, filepath.SplitList(dir)...)
+	}
+	if exe, err := os.Executable(); err == nil {
+		base := filepath.Dir(exe)
+		dirs = append(dirs, filepath.Join(base, "toolchain", "bin"), filepath.Join(base, "bin"))
+	}
+	bindir := llvmBindir()
+	if bindir == "" {
+		return dirs
+	}
+	dirs = append(dirs, bindir)
+	// Several systems install one LLVM toolchain per target environment,
+	// laid out as prefix/environment/bin, so the sibling environments of
+	// the one llvm-config reports may hold the programs it lacks.
+	prefix := filepath.Dir(filepath.Dir(bindir))
+	entries, err := os.ReadDir(prefix)
+	if err != nil {
+		return dirs
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			dirs = append(dirs, filepath.Join(prefix, entry.Name(), "bin"))
+		}
+	}
+	return dirs
+}
+
+// llvmBindir returns the directory llvm-config reports, or the empty
+// string when the host has no llvm-config.
+func llvmBindir() string {
+	program := lookPath("llvm-config")
+	if program == "" {
+		return ""
+	}
+	out, err := exec.Command(program, "--bindir").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// findTool returns the path of a program, preferring the candidate
+// directories over the search path.
+func findTool(name string, dirs []string) string {
+	for _, dir := range dirs {
+		for _, suffix := range []string{".exe", ""} {
+			candidate := filepath.Join(dir, name+suffix)
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate
+			}
+		}
+	}
+	return lookPath(name)
+}
+
+// firstOf returns the path of the first program that exists.
+func firstOf(names []string, dirs []string) string {
+	for _, name := range names {
+		if p := findTool(name, dirs); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
 // lookPath returns the path of a program, or the empty string.
 func lookPath(name string) string {
 	p, err := exec.LookPath(name)
@@ -68,16 +147,6 @@ func lookPath(name string) string {
 		return ""
 	}
 	return p
-}
-
-// firstPath returns the path of the first program that exists.
-func firstPath(names ...string) string {
-	for _, name := range names {
-		if p := lookPath(name); p != "" {
-			return p
-		}
-	}
-	return ""
 }
 
 // findRuntime locates the runtime tree. The environment wins, then the tree

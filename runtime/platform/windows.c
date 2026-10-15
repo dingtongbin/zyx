@@ -15,6 +15,11 @@ void zyxrt_platform_init(void) {
   _setmode(_fileno(stderr), _O_BINARY);
 }
 
+/* A Windows C runtime expects this symbol as soon as a translation unit
+   touches floating point, and a compiler that links without the vendor
+   startup must supply it. */
+int _fltused = 0;
+
 void *zyxrt_ctx_thread(void) { return ConvertThreadToFiber(NULL); }
 
 void *zyxrt_ctx_new(void *stack, size_t size, void (*entry)(void)) {
