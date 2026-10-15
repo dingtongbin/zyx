@@ -27,6 +27,24 @@ int zyxrt_array_get(void *handle, size_t index, void *out);
 void zyxrt_array_get_unchecked(void *handle, size_t index, void *out);
 void zyxrt_array_remove(void *handle, size_t index);
 
+/* A map hashes and compares a key through the two functions it is given, so
+   the same table serves a scalar key, a string key, and a key of a type with
+   its own Hash and Eq. */
+void *zyxrt_map_new(size_t key_size, size_t val_size, void *hash, void *eq);
+size_t zyxrt_map_len(void *handle);
+void zyxrt_map_set(void *handle, const void *key, const void *value);
+int zyxrt_map_get(void *handle, const void *key, void *out);
+int zyxrt_map_contains(void *handle, const void *key);
+int zyxrt_map_remove(void *handle, const void *key, void *out);
+void zyxrt_map_keys(void *handle, void *out);
+void zyxrt_map_values(void *handle, void *out);
+void *zyxrt_map_key_list(void *handle, size_t key_size);
+/* The hashes and comparisons the language supplies for its own key types. */
+uint64_t zyxrt_hash_bytes(const void *key, size_t size);
+int zyxrt_eq_bytes(const void *a, const void *b, size_t size);
+uint64_t zyxrt_hash_str_key(const void *key, size_t size);
+int zyxrt_eq_str_key(const void *a, const void *b, size_t size);
+
 /* An explicit region block makes its own region the one new objects belong
    to, and waits for the coroutines started in it before it releases them. */
 void zyxrt_region_enter(void *region);

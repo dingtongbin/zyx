@@ -194,6 +194,8 @@ func (g *generator) exprValue(module string, n *zyxc.Node, want *types.Type) *va
 		return g.newExpr(module, n)
 	case "struct-lit":
 		return g.structLit(module, n)
+	case "map-lit":
+		return g.mapLit(module, n)
 	case "variant-lit":
 		return g.variantLit(module, n)
 	case "array-lit":

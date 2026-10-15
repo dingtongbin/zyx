@@ -27,6 +27,12 @@ void *zyxrt_array_new(size_t elem, size_t cap) {
   return a;
 }
 
+/* zyxrt_array_data returns the buffer, which the runtime writes into when it
+   fills an array in one step. */
+unsigned char *zyxrt_array_data(void *handle) {
+  return ((zyxrt_array *)handle)->data;
+}
+
 size_t zyxrt_array_len(void *handle) {
   zyxrt_array *a = (zyxrt_array *)handle;
   return a == NULL ? 0 : a->len;

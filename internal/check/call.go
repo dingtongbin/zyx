@@ -443,6 +443,9 @@ var containerMethods = map[string]map[string]func(*types.Type) *types.Type{
 		"Contains": func(recv *types.Type) *types.Type {
 			return types.FuncOf(types.Bool, arg(recv, 0))
 		},
+		"Set": func(recv *types.Type) *types.Type {
+			return types.FuncOf(void, arg(recv, 0), arg(recv, 1))
+		},
 		"Remove": func(recv *types.Type) *types.Type {
 			return types.FuncOf(types.Option.Instantiate(arg(recv, 1)), arg(recv, 0))
 		},
