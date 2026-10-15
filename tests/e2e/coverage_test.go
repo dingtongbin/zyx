@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"zyx/internal/zyxc"
 )
 
 // coveredKinds lists the node kinds the corpus exercises. It grows as the
@@ -57,6 +59,97 @@ var specKinds = []string{
 // decision to drop the kind.
 var deferredKinds = map[string]string{}
 
+// specMarks lists every mark the format defines, mirroring the mark table of
+// the toolchain document. As with specKinds, the document is the source of
+// truth.
+var specMarks = []string{
+	"alias", "boundary-clone", "boundary-share", "c-blocking", "c-fast",
+	"chan:close", "chan:recv", "chan:select", "chan:send", "chan:try",
+	"coro:body", "coro:handoff", "coro:host", "coro:panic-path", "coro:region",
+	"coro:spawn", "defer-site", "defers", "entry", "home", "init", "iter-guard",
+	"last-use", "mono-rule", "move", "region:enter", "region:exit", "shared-bind",
+	"shared-ref", "shared-store", "static-release", "transfer", "view-borrow",
+	"watched",
+}
+
+// coveredMarks lists the marks the corpus emits. It grows as the corpus
+// grows: a mark that stops being emitted fails the test below.
+var coveredMarks = []string{
+	"alias", "c-blocking", "chan:select", "coro:handoff", "coro:host",
+	"coro:panic-path", "coro:region", "coro:spawn", "defer-site", "defers",
+	"entry", "home", "init", "iter-guard", "region:enter", "region:exit",
+	"transfer", "view-borrow", "watched",
+}
+
+// deferredMarks lists the marks the format defines that no corpus reaches
+// yet, with the reason. Every entry is work the front end still owes, not a
+// decision to drop the mark.
+var deferredMarks = map[string]string{
+	"boundary-clone": memoryPass,
+	"boundary-share": memoryPass,
+	"c-fast":         "the front end does not classify C calls yet",
+	"chan:close":     memoryPass,
+	"chan:recv":      memoryPass,
+	"chan:send":      memoryPass,
+	"chan:try":       memoryPass,
+	"coro:body":      memoryPass,
+	"last-use":       memoryPass,
+	"mono-rule":      "comptime evaluation is not implemented yet",
+	"move":           memoryPass,
+	"shared-bind":    memoryPass,
+	"shared-ref":     memoryPass,
+	"shared-store":   memoryPass,
+	"static-release": memoryPass,
+}
+
+// memoryPass is the reason the ownership and boundary marks are deferred:
+// they come from the pass that decides where an object lives and when it is
+// released, which the front end does not run yet.
+const memoryPass = "the ownership and release pass does not run yet"
+
+// emitMarks returns every mark the intermediate form of a package writes,
+// read back through the format's own reader. Reading the text rather than
+// scanning it also checks that what the writer wrote is what the reader reads.
+func emitMarks(t *testing.T, dir string) map[string]bool {
+	t.Helper()
+	stdout, stderr, code := run(dir, "emit-zyxc", ".")
+	if code != 0 {
+		t.Fatalf("emit-zyxc failed with %d:\n%s", code, stderr)
+	}
+	file, err := zyxc.Parse([]byte(stdout))
+	if err != nil {
+		t.Fatalf("the emitted form does not parse: %v", err)
+	}
+	marks := map[string]bool{}
+	var walk func(*zyxc.Node)
+	walk = func(n *zyxc.Node) {
+		for _, m := range n.Marks {
+			marks[m.Name] = true
+		}
+		for _, child := range n.Children {
+			walk(child)
+		}
+	}
+	for _, decl := range file.Decls {
+		walk(decl)
+	}
+	return marks
+}
+
+// corpusDirs returns every program the corpus check reads, over both the
+// programs that run and the ones that are only checked.
+func corpusDirs(t *testing.T) []string {
+	t.Helper()
+	var dirs []string
+	for _, name := range programs(t) {
+		dirs = append(dirs, filepath.Join("testdata", name))
+	}
+	for _, name := range corpus(t) {
+		dirs = append(dirs, filepath.Join("corpus", name))
+	}
+	return dirs
+}
+
 // kindPattern matches the kind that opens a line of the tree.
 var kindPattern = regexp.MustCompile(`(?m)^\s*([a-z][a-z0-9-]*)`)
 
@@ -85,19 +178,79 @@ func emitKinds(t *testing.T, dir string) map[string]bool {
 func corpusKinds(t *testing.T) map[string]bool {
 	t.Helper()
 	seen := map[string]bool{}
-	var dirs []string
-	for _, name := range programs(t) {
-		dirs = append(dirs, filepath.Join("testdata", name))
-	}
-	for _, name := range corpus(t) {
-		dirs = append(dirs, filepath.Join("corpus", name))
-	}
-	for _, dir := range dirs {
+	for _, dir := range corpusDirs(t) {
 		for kind := range emitKinds(t, copyTree(t, dir)) {
 			seen[kind] = true
 		}
 	}
 	return seen
+}
+
+// corpusMarks returns every mark the corpus reaches.
+func corpusMarks(t *testing.T) map[string]bool {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, dir := range corpusDirs(t) {
+		for mark := range emitMarks(t, copyTree(t, dir)) {
+			seen[mark] = true
+		}
+	}
+	return seen
+}
+
+// TestCorpusCoversTheMarks checks that every mark the corpus is known to
+// exercise still reaches the intermediate form, and that no mark appears that
+// the list does not name.
+func TestCorpusCoversTheMarks(t *testing.T) {
+	seen := corpusMarks(t)
+	var missing []string
+	for _, mark := range coveredMarks {
+		if !seen[mark] {
+			missing = append(missing, mark)
+		}
+	}
+	if len(missing) != 0 {
+		t.Errorf("the corpus no longer emits these marks: %s", strings.Join(missing, " "))
+	}
+	var extra []string
+	for mark := range seen {
+		if !contains(coveredMarks, mark) {
+			extra = append(extra, mark)
+		}
+	}
+	sort.Strings(extra)
+	if len(extra) != 0 {
+		t.Errorf("the corpus emits marks the list does not name: %s", strings.Join(extra, " "))
+	}
+}
+
+// TestEverySpecMarkIsEmittedOrDeferred checks that the corpus emits every
+// mark the format defines, or that the mark is recorded in deferredMarks with
+// a reason. A mark nothing emits is a fact nothing records.
+func TestEverySpecMarkIsEmittedOrDeferred(t *testing.T) {
+	emitted := map[string]bool{}
+	for _, mark := range coveredMarks {
+		emitted[mark] = true
+	}
+	var unrecorded []string
+	for _, mark := range specMarks {
+		if emitted[mark] {
+			continue
+		}
+		if reason, ok := deferredMarks[mark]; ok && reason != "" {
+			continue
+		}
+		unrecorded = append(unrecorded, mark)
+	}
+	if len(unrecorded) != 0 {
+		t.Errorf("no corpus emits these marks and none is deferred: %s",
+			strings.Join(unrecorded, " "))
+	}
+	for mark := range deferredMarks {
+		if !contains(specMarks, mark) {
+			t.Errorf("deferredMarks names %q, which the format does not define", mark)
+		}
+	}
 }
 
 // TestCorpusCoversTheIntermediateForm checks that every kind the corpus is
