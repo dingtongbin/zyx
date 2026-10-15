@@ -85,10 +85,17 @@ func (b *builder) walkFunc(f *ast.FuncDecl) {
 	b.walkExpr(f.BodyExpr)
 }
 
-// walkStmt walks one statement.
+// walkStmt walks one statement. A statement the parser left empty appears as
+// a nil node, which a walk must not follow.
 func (b *builder) walkStmt(s ast.Stmt) {
+	if s == nil {
+		return
+	}
 	switch v := s.(type) {
 	case *ast.BlockStmt:
+		if v == nil {
+			return
+		}
 		for _, x := range v.Stmts {
 			b.walkStmt(x)
 		}

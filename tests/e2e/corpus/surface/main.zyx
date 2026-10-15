@@ -1,0 +1,144 @@
+package main
+
+import "std/fmt"
+
+type Count = i64
+
+extern struct Handle {
+    fd: i32
+}
+
+extern union Payload {
+    asInt: i64
+    asPtr: raw
+}
+
+interface Speaker {
+    func Speak() -> str
+}
+
+struct Dog {
+    name: str
+    func Speak() -> str {
+        return "woof"
+    }
+}
+
+enum Shape {
+    Dot
+    Circle(i64)
+    func Sides() -> i64 {
+        match self {
+            Dot => return 0
+            Circle(r) => return r
+        }
+    }
+}
+
+const limit: Count = 8
+
+var counter: Count = 0
+
+func add(a: i64, b: i64) -> i64 {
+    return a + b
+}
+
+func pick(chooseFirst: bool) -> i64 {
+    const first: i64 = 1
+    const second: i64 = 2
+    if chooseFirst {
+        return first
+    }
+    return second
+}
+
+func divide(a: i64, b: i64) -> Result<i64, str> {
+    if b == 0 {
+        return Result.Err("zero")
+    }
+    return Result.Ok(a / b)
+}
+
+func guarded(a: i64, b: i64) -> Result<i64, str> {
+    var r = try divide(a, b)
+    return Result.Ok(r)
+}
+
+func arrays() -> i64 {
+    var xs: [i64;
+    4] = [1, 2, 3, 4]
+    var head = xs [0 .. 2]
+    var total = head [0] + xs [3]
+    return total
+}
+
+func tuples() -> i64 {
+    var pair = (1, 2)
+    var first = pair.0
+    var second = pair.1
+    return first + second
+}
+
+func containers() -> i64 {
+    var m: Map<str, i64> = Map { "a": 1}
+    var s: Set<i64> = Set { 1}
+    var arr = new Array<i64> (2)
+    var total = 0
+    for k, v in m {
+        total += v
+    }
+    for x in s {
+        total += x
+    }
+    for y in arr {
+        total += y
+    }
+    for i in 0 .. 2 {
+        total += i
+    }
+    return total
+}
+
+func IsPositive(x: i64) -> bool {
+    return x > 0
+}
+
+func calls() -> i64 {
+    var f = func IsPositive
+    var g = func(x: i64) -> bool => x > 0
+    if f(1) && g(1) {
+        return 1
+    }
+    return 0
+}
+
+func shapes() -> i64 {
+    var s = Shape.Circle(3)
+    var d = Dog { name: "rex"}
+    var total = s.Sides()
+    return total
+}
+
+func main() {
+    var h = Handle { fd: 0}
+    if h.fd != 0 {
+        fmt.PrintNl()
+    }
+    counter = limit
+    fmt.PrintI64(add(1, 2))
+    fmt.PrintNl()
+    fmt.PrintI64(pick(true))
+    fmt.PrintNl()
+    fmt.PrintI64(guarded(6, 3).UnwrapOr(0))
+    fmt.PrintNl()
+    fmt.PrintI64(arrays())
+    fmt.PrintNl()
+    fmt.PrintI64(tuples())
+    fmt.PrintNl()
+    fmt.PrintI64(containers())
+    fmt.PrintNl()
+    fmt.PrintI64(calls())
+    fmt.PrintNl()
+    fmt.PrintI64(shapes())
+    fmt.PrintNl()
+}

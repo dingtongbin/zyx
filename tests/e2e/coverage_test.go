@@ -12,25 +12,49 @@ import (
 // corpus grows: a kind that stops being emitted fails the test below, so the
 // intermediate form cannot quietly lose a construct.
 var coveredKinds = []string{
-	"arg", "arm", "assign", "assign-op", "binary", "bind", "block", "body",
-	"break", "call", "callee", "callee-type", "cond", "continue", "convert",
-	"default-arm", "defer", "else", "expr-stmt", "field", "field-decl",
-	"field-init", "for", "func", "if", "lhs", "lit", "match", "mcall",
-	"method-value", "msg", "name", "operand", "panic", "param", "part-expr",
-	"part-text", "pat", "pat-bind", "pat-variant", "qual", "receiver", "recv",
-	"region", "result", "return", "rhs", "select", "sig", "spawn", "struct-lit",
-	"subject", "target", "then", "type", "value", "variant",
+	"alias", "arg", "arm", "array-lit", "assign", "assign-op", "binary",
+	"bind", "bind-const", "block", "body", "break", "call", "callee",
+	"callee-type", "cond", "const", "continue", "convert", "default-arm",
+	"defer", "elem", "else", "entry", "enum", "expr-stmt", "extern-struct",
+	"extern-union", "field", "field-decl", "field-init", "for", "for-in",
+	"func", "func-ref", "hi", "idx", "if", "import", "index", "interface",
+	"iter", "key", "lambda", "lhs", "lit", "lo", "map-lit", "match", "mcall",
+	"method-value", "msg", "name", "new", "operand", "panic", "param",
+	"part-expr", "part-text", "pat", "pat-bind", "pat-variant", "qual",
+	"range", "receiver", "recv", "region", "result", "return", "rhs",
+	"select", "set-lit", "sig", "slice", "spawn", "struct", "struct-lit",
+	"subject", "target", "then", "tindex", "try", "tuple-lit", "type",
+	"value", "var", "variant",
+}
+
+// deferredKinds lists the kinds the format defines that no corpus reaches
+// yet, with the reason. Every entry is work the front end still owes, not a
+// decision to drop the kind.
+var deferredKinds = map[string]string{
+	"array-repeat": "no corpus repeats an array",
+	"c-call":       "no corpus calls C",
+	"import-c":     "no corpus imports a C header",
+	"is":           "no corpus narrows an interface value",
+	"recv-arm":     "no corpus selects a receive arm",
+	"send-arm":     "no corpus selects a send arm",
+	"timeout-arm":  "no corpus selects a timeout arm",
 }
 
 // kindPattern matches the kind that opens a line of the tree.
-var kindPattern = regexp.MustCompile(`(?m)^\s+([a-z][a-z0-9-]*)`)
+var kindPattern = regexp.MustCompile(`(?m)^\s*([a-z][a-z0-9-]*)`)
 
 // emitKinds returns every node kind the intermediate form of a package uses.
+// The four header lines are not nodes, so the scan starts after them.
 func emitKinds(t *testing.T, dir string) map[string]bool {
 	t.Helper()
 	stdout, stderr, code := run(dir, "emit-zyxc", ".")
 	if code != 0 {
 		t.Fatalf("emit-zyxc failed with %d:\n%s", code, stderr)
+	}
+	for i := 0; i < 4; i++ {
+		if _, rest, ok := strings.Cut(stdout, "\n"); ok {
+			stdout = rest
+		}
 	}
 	kinds := map[string]bool{}
 	for _, match := range kindPattern.FindAllStringSubmatch(stdout, -1) {
@@ -39,11 +63,10 @@ func emitKinds(t *testing.T, dir string) map[string]bool {
 	return kinds
 }
 
-// TestCorpusCoversTheIntermediateForm runs the corpus through the emitter
-// and checks that every kind the corpus is known to exercise still appears.
-// A construct that stops reaching the intermediate form is a hole in the
-// compiler, and this is where it shows up rather than in the backend.
-func TestCorpusCoversTheIntermediateForm(t *testing.T) {
+// corpusKinds returns every kind the corpus reaches, over both the programs
+// that run and the ones that are only checked.
+func corpusKinds(t *testing.T) map[string]bool {
+	t.Helper()
 	seen := map[string]bool{}
 	var dirs []string
 	for _, name := range programs(t) {
@@ -53,11 +76,19 @@ func TestCorpusCoversTheIntermediateForm(t *testing.T) {
 		dirs = append(dirs, filepath.Join("corpus", name))
 	}
 	for _, dir := range dirs {
-		copied := copyTree(t, dir)
-		for kind := range emitKinds(t, copied) {
+		for kind := range emitKinds(t, copyTree(t, dir)) {
 			seen[kind] = true
 		}
 	}
+	return seen
+}
+
+// TestCorpusCoversTheIntermediateForm checks that every kind the corpus is
+// known to exercise still reaches the intermediate form. A construct that
+// stops being emitted is a hole in the compiler, and this is where it shows
+// up rather than in the backend.
+func TestCorpusCoversTheIntermediateForm(t *testing.T) {
+	seen := corpusKinds(t)
 	var missing []string
 	for _, kind := range coveredKinds {
 		if !seen[kind] {
@@ -67,9 +98,6 @@ func TestCorpusCoversTheIntermediateForm(t *testing.T) {
 	if len(missing) != 0 {
 		t.Errorf("the corpus no longer reaches these kinds: %s", strings.Join(missing, " "))
 	}
-	// A kind that appears but is not on the list is not a failure: the list
-	// records what the corpus is known to cover, and it should be extended
-	// when a new construct joins the corpus.
 	var extra []string
 	for kind := range seen {
 		if !contains(coveredKinds, kind) {
@@ -78,7 +106,25 @@ func TestCorpusCoversTheIntermediateForm(t *testing.T) {
 	}
 	sort.Strings(extra)
 	if len(extra) != 0 {
-		t.Logf("kinds the corpus reaches that the list does not name yet: %s", strings.Join(extra, " "))
+		t.Errorf("the corpus reaches kinds the list does not name: %s", strings.Join(extra, " "))
+	}
+}
+
+// TestDeferredKindsAreStillUnreached checks the record of what the front end
+// still owes a corpus for. When a construct joins the corpus, its entry must
+// move to coveredKinds, and this test says so.
+func TestDeferredKindsAreStillUnreached(t *testing.T) {
+	seen := corpusKinds(t)
+	var reached []string
+	for kind := range deferredKinds {
+		if seen[kind] {
+			reached = append(reached, kind)
+		}
+	}
+	sort.Strings(reached)
+	if len(reached) != 0 {
+		t.Errorf("these kinds now have a corpus and belong on the covered list: %s",
+			strings.Join(reached, " "))
 	}
 }
 
@@ -90,52 +136,4 @@ func contains(list []string, want string) bool {
 		}
 	}
 	return false
-}
-
-// TestSpecKindsAreReachable checks that every kind the format defines is
-// either reachable from the corpus or explicitly deferred. The list is the
-// record of what the front end still owes the backend.
-func TestSpecKindsAreReachable(t *testing.T) {
-	// deferred lists the kinds no corpus reaches yet, with the reason. Every
-	// entry is work the front end still owes, not a decision to drop it.
-	deferred := map[string]string{
-		"alias":         "no corpus declares a type alias",
-		"array-lit":     "no corpus builds a fixed-size array",
-		"array-repeat":  "no corpus repeats an array",
-		"bind-const":    "no corpus declares a local constant",
-		"c-call":        "no corpus calls C",
-		"const":         "no corpus declares a top-level constant",
-		"enum":          "no corpus declares an enum in the entry package",
-		"extern-struct": "no corpus declares a C struct",
-		"extern-union":  "no corpus declares a C union",
-		"for-in":        "no corpus iterates a container",
-		"func-ref":      "no corpus refers to a function by name",
-		"import":        "the entry package of every corpus program imports nothing",
-		"import-c":      "no corpus imports a C header",
-		"index":         "no corpus indexes an array",
-		"interface":     "no corpus declares an interface in the entry package",
-		"is":            "no corpus narrows an interface value",
-		"lambda":        "no corpus writes a lambda",
-		"map-lit":       "no corpus builds a map",
-		"new":           "no corpus creates a container",
-		"range":         "no corpus writes a range",
-		"recv-arm":      "no corpus selects a receive arm",
-		"send-arm":      "no corpus selects a send arm",
-		"set-lit":       "no corpus builds a set",
-		"slice":         "no corpus slices",
-		"timeout-arm":   "no corpus selects a timeout arm",
-		"tindex":        "no corpus reads a tuple element",
-		"try":           "no corpus propagates a Result",
-		"tuple-lit":     "no corpus builds a tuple",
-		"var":           "no corpus declares a top-level variable",
-	}
-	if len(deferred) == 0 {
-		return
-	}
-	names := make([]string, 0, len(deferred))
-	for kind := range deferred {
-		names = append(names, kind)
-	}
-	sort.Strings(names)
-	t.Logf("kinds the front end still owes a corpus for (%d): %s", len(names), strings.Join(names, " "))
 }
