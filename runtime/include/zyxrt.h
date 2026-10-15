@@ -16,10 +16,6 @@ void *zyxrt_region_current(void);
 /* zyxrt_region_alloc_current creates an object in the region of the running
    coroutine. */
 void *zyxrt_region_alloc_current(size_t size, size_t align);
-/* zyxrt_region_release returns one object to its region before the region
-   exits, which is what a static release point does. The size names the size
-   class, so no object carries a header. */
-void zyxrt_region_release(void *region, void *object, size_t size);
 
 /* Strings. A str is a borrowed pointer and its length, so equality compares
    the bytes rather than the two pointers. */

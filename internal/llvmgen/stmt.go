@@ -10,25 +10,8 @@ import (
 	"zyx/internal/zyxc"
 )
 
-// stmt lowers one statement, then releases the objects the analysis marked as
-// no longer used inside it.
+// stmt lowers one statement.
 func (g *generator) stmt(module string, n *zyxc.Node) {
-	mark := len(g.pending)
-	g.stmtNode(module, n)
-	g.flushReleases(mark)
-}
-
-// flushReleases releases the objects a statement finished with.
-func (g *generator) flushReleases(from int) {
-	pending := g.pending[from:]
-	g.pending = g.pending[:from]
-	for _, p := range pending {
-		g.release(p.typ, p.addr)
-	}
-}
-
-// stmtNode lowers one statement.
-func (g *generator) stmtNode(module string, n *zyxc.Node) {
 	if n == nil {
 		return
 	}
