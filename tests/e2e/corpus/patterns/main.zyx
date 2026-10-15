@@ -19,7 +19,9 @@ const wait = dur.ms(100)
 
 struct Tally {
     total: i64
-    func init(n: i64) -> Self { return Tally { total: n}}
+    func init(n: i64) -> Self {
+        return Tally { total: n}
+    }
     func Add(n: i64) -> i64 {
         return self.total + n
     }

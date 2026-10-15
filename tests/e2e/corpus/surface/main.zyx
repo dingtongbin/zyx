@@ -125,7 +125,9 @@ func shapes() -> i64 {
     var d = Dog { name: "rex"}
     var speaker: Speaker = d
     var total = s.Sides()
-    if speaker is Dog { total += 0}
+    if speaker is Dog {
+        total += 0
+    }
     return total
 }
 

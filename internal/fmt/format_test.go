@@ -56,6 +56,17 @@ func TestFormatIndentsBlocks(t *testing.T) {
 	}
 }
 
+// A result type that is a user-declared type is a type name like any other,
+// so the brace after it opens a body rather than a construction. The source
+// below is already canonical, which makes formatting it a no-op.
+func TestFormatKeepsABodyAfterAUserResultType(t *testing.T) {
+	src := "package main\n\nstruct Tally {\n    total: i64\n    func init(n: i64) -> Tally {\n" +
+		"        return Tally { total: n}\n    }\n}\n"
+	if got := format(src); got != src {
+		t.Errorf("format =\n%q\nwant\n%q", got, src)
+	}
+}
+
 func TestFormatKeepsAnEmptyBodyOnOneLine(t *testing.T) {
 	src := "package main\nfunc main() {\n}\nfunc other() {\n}\n"
 	got := format(src)

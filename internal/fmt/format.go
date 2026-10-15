@@ -219,8 +219,10 @@ func (p *printer) separates() bool {
 }
 
 // opensBlock reports whether a brace opens a statement block rather than an
-// aggregate literal. A literal follows a type name; a declaration keyword
-// before that name makes the brace a body.
+// aggregate literal. A literal follows a type name; a token that can only
+// stand before a body makes the brace a body even when the token before it is
+// a type name, which is how a result type of a user-declared type is told
+// from a construction.
 func (p *printer) opensBlock(toks []token.Token, i int) bool {
 	if i == 0 {
 		return true
@@ -231,7 +233,8 @@ func (p *printer) opensBlock(toks []token.Token, i int) bool {
 	}
 	if i >= 2 {
 		switch toks[i-2].Kind {
-		case token.Struct, token.Enum, token.Interface, token.Impl, token.Extern, token.Union:
+		case token.Struct, token.Enum, token.Interface, token.Impl, token.Extern, token.Union,
+			token.Arrow, token.Is, token.For:
 			return true
 		}
 	}
