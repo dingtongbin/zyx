@@ -291,10 +291,10 @@ func newChecker(pkg *resolve.Package, info *resolve.Info, imports Imports, targe
 		consts:  map[string]*Value{},
 	}
 	c.out = &Package{
-		Path:     c.path,
-		Types:    map[string]*types.Type{},
-		Decls:    map[string]*types.Type{},
-		Declared: map[string]*Decl{},
+		Path:            c.path,
+		Types:           map[string]*types.Type{},
+		Decls:           map[string]*types.Type{},
+		Declared:        map[string]*Decl{},
 		Nodes:           map[ast.Node]*types.Type{},
 		PatternVariants: map[ast.Node]bool{},
 		Consts:          map[string]*Value{},
