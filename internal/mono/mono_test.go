@@ -14,7 +14,7 @@ func testProgram() *Program {
 	file.Decls = []*zyxc.Node{
 		zyxc.New("func", "twice", "plain", "example.com/app.twice").
 			Child(
-				zyxc.New("param", "T", "example.com/app.twice$T"),
+				zyxc.New("type-param", "T", "example.com/app.twice$T"),
 				zyxc.New("param", "v", "T"),
 				zyxc.New("result", "T"),
 				zyxc.New("block").Child(
@@ -25,7 +25,7 @@ func testProgram() *Program {
 			),
 		zyxc.New("struct", "Box", "example.com/app.Box").
 			Child(
-				zyxc.New("param", "T", "example.com/app.Box$T"),
+				zyxc.New("type-param", "T", "example.com/app.Box$T"),
 				zyxc.New("field", "value", "T"),
 				zyxc.New("func", "Get", "plain", "example.com/app.Box.Get").
 					Child(

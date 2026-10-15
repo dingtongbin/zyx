@@ -26,6 +26,7 @@ var coveredKinds = []string{
 	"send-arm",
 	"select", "set-lit", "sig", "slice", "spawn", "struct", "struct-lit", "timeout-arm",
 	"subject", "target", "then", "tindex", "try", "tuple-lit", "type",
+	"type-param",
 	"value", "var", "variant",
 }
 

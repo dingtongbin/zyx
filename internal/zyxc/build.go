@@ -300,7 +300,7 @@ func (b *builder) typeParams(params []*ast.TypeParam) []*Node {
 		if tp.Name == nil {
 			continue
 		}
-		n := New("param", tp.Name.Name, b.symID(tp.Name))
+		n := New("type-param", tp.Name.Name, b.symID(tp.Name))
 		for _, c := range tp.Constraints {
 			n.Payload = append(n.Payload, b.typeText(b.cpkg.Nodes[c]))
 		}

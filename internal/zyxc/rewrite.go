@@ -50,14 +50,12 @@ func EachType(n *Node, f func(text string) string) {
 			rewriteSlot(n, 1, f)
 		}
 	case "param":
+		rewriteSlot(n, 1, f)
+	case "type-param":
 		// A type parameter carries a symbol id rather than a type; its
 		// constraints are type texts.
-		if isTypeParam(n) {
-			for i := 2; i < len(n.Payload); i++ {
-				rewriteSlot(n, i, f)
-			}
-		} else {
-			rewriteSlot(n, 1, f)
+		for i := 2; i < len(n.Payload); i++ {
+			rewriteSlot(n, i, f)
 		}
 	default:
 		for _, slot := range typeSlots[n.Kind] {

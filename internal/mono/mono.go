@@ -183,11 +183,13 @@ func generic(n *zyxc.Node) bool {
 	return len(typeParamsOf(n)) != 0
 }
 
-// typeParamsOf returns the type parameters of a declaration, in order.
+// typeParamsOf returns the type parameters of a declaration, in order. A
+// type parameter is its own kind, so a function parameter can never be
+// mistaken for one.
 func typeParamsOf(n *zyxc.Node) []*zyxc.Node {
 	var out []*zyxc.Node
 	for _, child := range n.Children {
-		if child.Kind != "param" || !isTypeParam(child) {
+		if child.Kind != "type-param" {
 			break
 		}
 		out = append(out, child)
@@ -195,12 +197,8 @@ func typeParamsOf(n *zyxc.Node) []*zyxc.Node {
 	return out
 }
 
-// isTypeParam reports whether a `param` node declares a generic parameter.
-// A type parameter carries a symbol id, which holds the `$` that separates
-// it from its declaration.
-func isTypeParam(n *zyxc.Node) bool {
-	return len(n.Payload) >= 2 && strings.Contains(n.Payload[1], "$")
-}
+// isTypeParam reports whether a node declares a generic parameter.
+func isTypeParam(n *zyxc.Node) bool { return n.Kind == "type-param" }
 
 // paramScope returns the type parameters of a declaration as the scope a
 // type text of that declaration is read in.
