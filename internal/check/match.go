@@ -57,7 +57,9 @@ func (c *checker) checkPattern(p ast.Pattern, subject *types.Type) {
 }
 
 // checkBindPattern checks a bare name. It is a variant when the subject is
-// an enum with a variant of that name, and a binding otherwise.
+// an enum with a variant of that name, and a binding otherwise. The result
+// is recorded, because the syntax alone cannot tell the two apart and the
+// intermediate form must.
 func (c *checker) checkBindPattern(v *ast.BindPattern, subject *types.Type) {
 	if v.Name == nil {
 		return
@@ -69,6 +71,7 @@ func (c *checker) checkBindPattern(v *ast.BindPattern, subject *types.Type) {
 					"write the payload pattern after the variant name",
 					"%s.%s takes a payload", subject.Name, v.Name.Name)
 			}
+			c.out.PatternVariants[v] = true
 			return
 		}
 	}

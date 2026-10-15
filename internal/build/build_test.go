@@ -344,3 +344,28 @@ func TestParseIsDeterministicAcrossManyFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestPayloadFreeVariantPatternIsAVariant(t *testing.T) {
+	l := loader(t, map[string]string{
+		"app/app.zyx": "package app\n\nenum Colour {\n\tRed\n\tGreen\n}\n\nfunc Name(colour: Colour) -> i64 {\n\tmatch colour {\n\t\tRed => return 1\n\t\tGreen => return 2\n\t}\n}\n",
+	})
+	s := &Session{Loader: l}
+	results, err := s.FrontEnd("example.com/app/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || len(results[0].Diags) != 0 {
+		t.Fatalf("diagnostics: %v", results[0].Diags)
+	}
+	text := string(results[0].Text)
+	// A bare name that names a variant is a variant pattern, not a binding:
+	// a binding would make the arm irrefutable and the enum unmatched.
+	for _, want := range []string{"pat-variant Red", "pat-variant Green"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the tree is missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "pat-bind Red") || strings.Contains(text, "pat-bind Green") {
+		t.Errorf("a variant name was taken as a binding:\n%s", text)
+	}
+}

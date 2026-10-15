@@ -171,6 +171,10 @@ type Package struct {
 	// Nodes maps each checked type expression and declaration name to its
 	// type.
 	Nodes map[ast.Node]*types.Type
+	// PatternVariants marks the bare-name patterns that name a variant of
+	// the matched enum rather than binding a name. The syntax cannot tell
+	// the two apart, so the check settles it.
+	PatternVariants map[ast.Node]bool
 	// Consts maps each evaluated constant to its value.
 	Consts map[string]*Value
 	// Interface is the surface downstream packages consume.
@@ -291,9 +295,10 @@ func newChecker(pkg *resolve.Package, info *resolve.Info, imports Imports, targe
 		Types:    map[string]*types.Type{},
 		Decls:    map[string]*types.Type{},
 		Declared: map[string]*Decl{},
-		Nodes:    map[ast.Node]*types.Type{},
-		Consts:   map[string]*Value{},
-		imports:  imports,
+		Nodes:           map[ast.Node]*types.Type{},
+		PatternVariants: map[ast.Node]bool{},
+		Consts:          map[string]*Value{},
+		imports:         imports,
 	}
 	if info != nil {
 		c.out.Name = info.Name

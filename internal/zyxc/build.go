@@ -607,6 +607,9 @@ func (b *builder) pattern(p ast.Pattern) *Node {
 	case *ast.WildcardPattern:
 		return b.at(New("pat-wild"), v.Sp)
 	case *ast.BindPattern:
+		if b.cpkg.PatternVariants[v] {
+			return b.at(New("pat-variant", v.Name.Name), v.Sp)
+		}
 		n := New("pat-bind", v.Name.Name, b.symID(v.Name))
 		if t := b.staticType(v.Name); t != nil {
 			n.Child(New("type", b.typeText(t)))
