@@ -1,0 +1,24 @@
+package shapes
+
+struct Vec {
+    x: i64
+    y: i64
+}
+
+struct Rect {
+    origin: Vec
+    width: i64
+    height: i64
+    func Area() -> i64 {
+        return self.width * self.height
+    }
+    func Move(dx: i64, dy: i64) {
+        self.origin.x += dx
+        self.origin.y += dy
+    }
+    func Corner() -> i64 {
+        return self.origin.x + self.origin.y
+    }
+}
+
+func Make(w: i64, h: i64) -> Rect { return Rect { origin: Vec { x: 0, y: 0}, width: w, height: h,}}

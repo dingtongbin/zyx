@@ -1,0 +1,74 @@
+package main
+
+import "std/fmt"
+
+func collatz(start: i64) -> i64 {
+    var n = start
+    var steps = 0
+    for n != 1 {
+        if n % 2 == 0 {
+            n = n / 2
+        }  else {
+            n = 3 * n + 1
+        }
+        steps += 1
+    }
+    return steps
+}
+
+func skipMultiples(limit: i64) -> i64 {
+    var total = 0
+    var i = 0
+    for i < limit {
+        i += 1
+        if i % 3 == 0 {
+            continue
+        }
+        if i > 10 {
+            break
+        }
+        total += i
+    }
+    return total
+}
+
+func nested(depth: i64) -> i64 {
+    var count = 0
+    var i = 0
+    for i < depth {
+        var j = 0
+        for j < depth {
+            if (i + j) % 2 == 0 {
+                count += 1
+            }
+            j += 1
+        }
+        i += 1
+    }
+    return count
+}
+
+func classify(n: i64) -> i64 {
+    if n < 0 {
+        return 0 - 1
+    }  else if n == 0 {
+        return 0
+    }  else if n < 10 {
+        return 1
+    }
+    return 2
+}
+
+func main() {
+    fmt.PrintI64(collatz(27))
+    fmt.PrintNl()
+    fmt.PrintI64(skipMultiples(20))
+    fmt.PrintNl()
+    fmt.PrintI64(nested(4))
+    fmt.PrintNl()
+    fmt.PrintI64(classify(0 - 3))
+    fmt.PrintI64(classify(0))
+    fmt.PrintI64(classify(5))
+    fmt.PrintI64(classify(50))
+    fmt.PrintNl()
+}

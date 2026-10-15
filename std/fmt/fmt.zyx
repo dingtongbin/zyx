@@ -1,1 +1,44 @@
 package fmt
+
+import c "zyxrt.h"
+
+// Print writes a string's UTF-8 bytes to standard output.
+func Print(s: str) {
+	c.zyxrt_print_str(s)
+}
+
+// Println writes a string and a line feed.
+func Println(s: str) {
+	c.zyxrt_print_str(s)
+	c.zyxrt_print_nl()
+}
+
+// PrintI64 writes a signed integer in decimal.
+func PrintI64(v: i64) {
+	c.zyxrt_print_i64(v)
+}
+
+// PrintU64 writes an unsigned integer in decimal.
+func PrintU64(v: u64) {
+	c.zyxrt_print_u64(v)
+}
+
+// PrintF64 writes a floating-point value.
+func PrintF64(v: f64) {
+	c.zyxrt_print_f64(v)
+}
+
+// PrintBool writes true or false.
+func PrintBool(v: bool) {
+	c.zyxrt_print_bool(v)
+}
+
+// PrintChar writes one character as UTF-8.
+func PrintChar(ch: char) {
+	c.zyxrt_print_char(ch)
+}
+
+// PrintNl writes a line feed.
+func PrintNl() {
+	c.zyxrt_print_nl()
+}

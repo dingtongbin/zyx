@@ -93,6 +93,10 @@ func main() {
 	fmt.Printf("OK: %d file(s) checked\n", files)
 }
 
+// utf8Marker marks a line of test data that is deliberately non-ASCII, which
+// the code English rule allows for tests of UTF-8 handling.
+const utf8Marker = "utf8 handling test data"
+
 func checkFile(path string) int {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -115,17 +119,25 @@ func checkFile(path string) int {
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	marked := false
 	for number := 1; scanner.Scan(); number++ {
 		line := scanner.Text()
-		for _, r := range line {
-			if r > 0x7F {
-				report("non-ascii", fmt.Sprintf("line %d: %s", number, line))
-				break
+		// A line directly after the marker may hold non-ASCII test data.
+		if !marked {
+			for _, r := range line {
+				if r > 0x7F {
+					report("non-ascii", fmt.Sprintf("line %d: %s", number, line))
+					break
+				}
 			}
 		}
+		marked = false
 		comment := commentTail(line)
 		if comment == "" {
 			continue
+		}
+		if strings.Contains(comment, utf8Marker) {
+			marked = true
 		}
 		for _, pattern := range noisePatterns {
 			if pattern.expr.MatchString(comment) {
