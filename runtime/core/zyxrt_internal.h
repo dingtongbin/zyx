@@ -25,7 +25,9 @@ typedef struct zyxrt_coro {
 } zyxrt_coro;
 
 /* The platform context layer. A context runs entry on a stack of the given
-   size and switches cooperatively to another context. */
+   size and switches cooperatively to another context. On the architectures
+   with a hand-written switch the context is one word; elsewhere it is
+   whatever the platform's own facility needs. */
 void *zyxrt_ctx_thread(void);
 void *zyxrt_ctx_new(void *stack, size_t size, void (*entry)(void));
 void zyxrt_ctx_switch(void *from, void *to);

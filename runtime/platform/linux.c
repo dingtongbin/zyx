@@ -1,3 +1,11 @@
-/* Platform context layer: Linux uses the portable ucontext switch. */
+/* Platform context layer: linux uses the hand-written x86-64 stack switch, and the portable context routines elsewhere. */
 
+#include "zyxrt_internal.h"
+
+#if defined(__x86_64__)
+#include "switch_ctx.h"
+#else
 #include "posix_ctx.h"
+#endif
+
+void zyxrt_platform_init(void) {}

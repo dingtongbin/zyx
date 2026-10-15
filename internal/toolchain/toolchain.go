@@ -190,15 +190,37 @@ func (t *Toolchain) Sources(target Target) []string {
 	if _, err := os.Stat(platform); err != nil {
 		platform = filepath.Join(t.Runtime, "platform", "linux.c")
 	}
-	return []string{
+	sources := []string{
 		filepath.Join(t.Runtime, "core", "start.c"),
 		filepath.Join(t.Runtime, "core", "panic.c"),
 		filepath.Join(t.Runtime, "core", "abi.c"),
 		filepath.Join(t.Runtime, "mem", "region.c"),
 		filepath.Join(t.Runtime, "sched", "sched.c"),
 		filepath.Join(t.Runtime, "chan", "chan.c"),
-		platform,
 	}
+	// A hand-written stack switch replaces the portable context routines on
+	// the architectures that have one.
+	if asm := t.switchSource(target); asm != "" {
+		sources = append(sources, asm)
+	}
+	return append(sources, platform)
+}
+
+// switchSource returns the assembly unit that switches coroutine stacks, or
+// the empty string when the target falls back to the portable routines.
+func (t *Toolchain) switchSource(target Target) string {
+	if target.Arch != "amd64" {
+		return ""
+	}
+	name := "switch_x86_64_sysv.S"
+	if target.OS == "windows" {
+		name = "switch_x86_64_win.S"
+	}
+	path := filepath.Join(t.Runtime, "platform", name)
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	return path
 }
 
 // IncludeFlags returns the preprocessor search paths the runtime sources
@@ -284,9 +306,12 @@ func (t *Toolchain) CompileAsm(ir []byte, out string, opts CompileOptions) error
 	return t.run(t.LLC, args)
 }
 
-// CompileC turns a C source file into an object file.
+// CompileC turns a C or assembly source file into an object file.
 func (t *Toolchain) CompileC(src, out string, opts CompileOptions) error {
-	args := []string{"-std=c11", "-c", "-o", out, src}
+	args := []string{"-c", "-o", out, src}
+	if !strings.HasSuffix(src, ".S") {
+		args = append(args, "-std=c11")
+	}
 	args = append(args, t.IncludeFlags()...)
 	args = append(args, levelFlag(opts.Level)...)
 	if opts.Debug {
