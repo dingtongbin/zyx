@@ -60,15 +60,14 @@ func (g *generator) wrapped(n *zyxc.Node, label string) *zyxc.Node {
 	return g.sole(n.First(label))
 }
 
-// initChild returns the initializer of a binding, which is the child that
-// is not a type annotation.
+// initChild returns the initializer of a binding. The format names it, so
+// the backend never has to work out which child carries it.
 func (g *generator) initChild(n *zyxc.Node) *zyxc.Node {
-	for _, child := range n.Children {
-		switch child.Kind {
-		case "type", "result":
-			continue
-		}
-		return child
+	if init := n.First("init"); init != nil {
+		return g.sole(init)
+	}
+	if value := n.First("value"); value != nil {
+		return g.sole(value)
 	}
 	return nil
 }

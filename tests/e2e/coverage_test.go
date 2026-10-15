@@ -18,7 +18,7 @@ var coveredKinds = []string{
 	"default-arm", "defer", "dur", "elem", "else", "entry", "enum", "expr-stmt",
 	"extern-struct", "extern-union", "field", "field-decl", "field-init", "for",
 	"for-in", "func", "func-ref", "hi", "idx", "if", "impl", "import", "import-c",
-	"index", "interface", "is", "iter", "key", "lambda", "lhs", "lit", "lo",
+	"index", "init", "interface", "is", "iter", "key", "lambda", "lhs", "lit", "lo",
 	"map-lit", "match", "mcall", "method-value", "msg", "name", "new", "operand",
 	"panic", "param", "part-expr", "part-text", "pat", "pat-bind", "pat-variant",
 	"qual", "range", "receiver", "recv", "recv-arm", "region", "result",

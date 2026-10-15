@@ -197,7 +197,7 @@ func (b *builder) decl(decl ast.Decl) *Node {
 			n.Child(New("type", b.typeText(b.cpkg.Nodes[d.Type])))
 		}
 		if d.Value != nil {
-			n.Child(b.expr(d.Value))
+			n.Child(b.wrap("value", b.expr(d.Value)))
 		}
 		return b.at(n, d.Sp)
 	case *ast.VarDecl:
@@ -209,7 +209,7 @@ func (b *builder) decl(decl ast.Decl) *Node {
 			n.Child(New("type", b.typeText(b.cpkg.Nodes[d.Type])))
 		}
 		if d.Value != nil {
-			n.Child(b.expr(d.Value))
+			n.Child(b.wrap("value", b.expr(d.Value)))
 		}
 		return b.at(n, d.Sp)
 	case *ast.TypeAlias:
@@ -543,7 +543,7 @@ func (b *builder) stmt(s ast.Stmt) *Node {
 			n.Child(child)
 		}
 		if v.Value != nil {
-			n.Child(b.expr(v.Value))
+			n.Child(b.wrap("init", b.expr(v.Value)))
 		}
 		return b.at(n, v.Sp)
 	case *ast.ConstDecl:
@@ -552,7 +552,7 @@ func (b *builder) stmt(s ast.Stmt) *Node {
 			n.Child(child)
 		}
 		if v.Value != nil {
-			n.Child(b.expr(v.Value))
+			n.Child(b.wrap("value", b.expr(v.Value)))
 		}
 		return b.at(n, v.Sp)
 	case *ast.IfStmt:
@@ -1251,7 +1251,7 @@ func (b *builder) aggregate(v *ast.AggregateLitExpr) *Node {
 				name = id.Name
 			}
 			e := New("field-init", name)
-			e.Child(b.expr(entry.Value))
+			e.Child(b.wrap("value", b.expr(entry.Value)))
 			n.Child(e)
 		}
 	}
