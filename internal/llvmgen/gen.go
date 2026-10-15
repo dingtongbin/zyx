@@ -65,6 +65,10 @@ type funcState struct {
 	resultSlot string
 	// terminated marks a block that already ends in a terminator.
 	terminated bool
+	// regions maps the name a region carries, such as r0 or r1, onto the
+	// local that holds its handle. An object is created in the region the
+	// analysis settled as its home.
+	regions map[string]string
 	// pending holds the objects the current statement has finished with,
 	// which are released when the statement ends. It belongs to the
 	// function, because a release must land in the function that made the

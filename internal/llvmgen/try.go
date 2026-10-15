@@ -56,7 +56,7 @@ func (g *generator) tryCall(module string, n *zyxc.Node) *value {
 	if raised == nil {
 		return nil
 	}
-	obj := g.buildVariant(result, "Err", []*value{raised})
+	obj := g.buildVariant(n, result, "Err", []*value{raised})
 	if obj == "" {
 		return nil
 	}

@@ -30,17 +30,74 @@ func (g *generator) closeRegion(slot string) {
 	g.emit("  call void @zyxrt_defer_run(ptr %s)", reg)
 }
 
-// regionStmt lowers a region block. The block is a memory region of its own,
-// and the deferred calls it holds run when it leaves.
+// regionStmt lowers a region block. The block owns a region of its own, so
+// every object created inside it is released when it leaves. The order is the
+// one the language fixes: wait for the coroutines the block started, run its
+// deferred calls, then release the memory.
 func (g *generator) regionStmt(module string, n *zyxc.Node) {
 	body := g.wrapped(n, "body")
-	if !hasMark(n, "defers") {
-		g.stmt(module, body)
-		return
+	region := g.newReg()
+	g.declareRuntime("zyxrt_region_new", "ptr")
+	g.emit("  %s = call ptr @zyxrt_region_new()", region)
+	slot := g.alloca(types.Raw)
+	g.emit("  store ptr %s, ptr %s", region, slot)
+	g.declareRuntime("zyxrt_region_enter", "void", "ptr")
+	g.emit("  call void @zyxrt_region_enter(ptr %s)", region)
+	if name := regionName(n); name != "" {
+		g.nameRegion(name, slot)
 	}
-	slot := g.openRegion()
+
+	deferSlot := ""
+	if hasMark(n, "defers") {
+		deferSlot = g.openRegion()
+	}
 	g.stmt(module, body)
-	g.closeRegion(slot)
+
+	g.declareRuntime("zyxrt_region_wait", "void", "ptr")
+	g.emit("  call void @zyxrt_region_wait(ptr %s)", region)
+	if deferSlot != "" {
+		g.closeRegion(deferSlot)
+	}
+	g.declareRuntime("zyxrt_region_leave", "void")
+	g.emit("  call void @zyxrt_region_leave()")
+	g.declareRuntime("zyxrt_region_free", "void", "ptr")
+	g.emit("  call void @zyxrt_region_free(ptr %s)", region)
+}
+
+// regionName returns the name a region block carries, such as r1, which its
+// enter mark writes.
+func regionName(n *zyxc.Node) string {
+	for _, m := range n.Marks {
+		if m.Name == "region:enter" {
+			return m.Arg
+		}
+	}
+	return ""
+}
+
+// nameRegion records the local that holds a region's handle.
+func (g *generator) nameRegion(name, slot string) {
+	if g.fn.regions == nil {
+		g.fn.regions = map[string]string{}
+	}
+	g.fn.regions[name] = slot
+}
+
+// regionSlot returns the local that holds the handle of a named region, or
+// the empty string when the name is not one this function entered.
+func (g *generator) regionSlot(name string) string {
+	return g.fn.regions[name]
+}
+
+// openHome records the region the function itself runs in, which is the home
+// of an object that outlives a nested block.
+func (g *generator) openHome() {
+	g.declareRuntime("zyxrt_region_current", "ptr")
+	reg := g.newReg()
+	g.emit("  %s = call ptr @zyxrt_region_current()", reg)
+	slot := g.alloca(types.Raw)
+	g.emit("  store ptr %s, ptr %s", reg, slot)
+	g.nameRegion("r0", slot)
 }
 
 // deferStmt lowers a deferred call. The arguments are evaluated where the
@@ -164,6 +221,38 @@ func (g *generator) release(typ *types.Type, slot string) {
 	g.emit("  %s = call ptr @zyxrt_region_current()", region)
 	g.emit("  call void @zyxrt_region_release(ptr %s, ptr %s, %s %d)",
 		region, addr, g.ptrInt(), size)
+}
+
+// allocateIn creates an object of a type in the region the analysis settled
+// as its home and returns its address. An object whose home is the function's
+// own region outlives a nested block, so it must not be created in the block.
+func (g *generator) allocateIn(n *zyxc.Node, typ *types.Type) string {
+	name := ""
+	for _, m := range n.Marks {
+		if m.Name == "home" {
+			name = m.Arg
+		}
+	}
+	if slot := g.regionSlot(name); slot != "" {
+		size, err := layout.Size(typ, g.tab, g.target.Layout())
+		if err != nil {
+			g.fail(fmt.Errorf("llvmgen: the size of %s: %w", typ, err))
+			return ""
+		}
+		align, err := layout.Align(typ, g.tab, g.target.Layout())
+		if err != nil {
+			g.fail(fmt.Errorf("llvmgen: the alignment of %s: %w", typ, err))
+			return ""
+		}
+		g.declareRuntime("zyxrt_region_alloc", "ptr", "ptr", g.ptrInt(), g.ptrInt())
+		region := g.newReg()
+		g.emit("  %s = load ptr, ptr %s", region, slot)
+		reg := g.newReg()
+		g.emit("  %s = call ptr @zyxrt_region_alloc(ptr %s, %s %d, %s %d)",
+			reg, region, g.ptrInt(), size, g.ptrInt(), align)
+		return reg
+	}
+	return g.allocate(typ)
 }
 
 // allocate creates an object of a type in the region of the running

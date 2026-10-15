@@ -128,7 +128,7 @@ func (g *generator) variantLit(module string, n *zyxc.Node) *value {
 		}
 		values = append(values, v)
 	}
-	base := g.buildVariant(typ, name, values)
+	base := g.buildVariant(n, typ, name, values)
 	if base == "" {
 		return nil
 	}
@@ -138,13 +138,13 @@ func (g *generator) variantLit(module string, n *zyxc.Node) *value {
 // buildVariant creates an enum object for one variant and returns its address.
 // The tag is written first and the payload elements follow it, each stored the
 // way a struct field is: an object of a reference type lies inline.
-func (g *generator) buildVariant(typ *types.Type, name string, args []*value) string {
+func (g *generator) buildVariant(n *zyxc.Node, typ *types.Type, name string, args []*value) string {
 	index, payload, ok := g.variantOf(typ, name)
 	if !ok {
 		g.fail(fmt.Errorf("llvmgen: %s has no variant %s", typ, name))
 		return ""
 	}
-	base := g.allocate(typ)
+	base := g.allocateIn(n, typ)
 	g.emit("  store %s %d, ptr %s", g.tagType(g.tagSize(typ)), index, base)
 	for i, pt := range payload {
 		if i >= len(args) {

@@ -778,7 +778,7 @@ func (g *generator) structLit(module string, n *zyxc.Node) *value {
 		g.fail(err)
 		return nil
 	}
-	base := g.allocate(typ)
+	base := g.allocateIn(n, typ)
 	placed, err := layout.Fields(typ, g.tab, g.target.Layout())
 	if err != nil {
 		g.fail(fmt.Errorf("llvmgen: the layout of %s: %w", typ, err))

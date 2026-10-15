@@ -142,14 +142,21 @@ void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg) {
   if (!c->stack) zyxrt_panic("out of memory", 13);
   zyxrt_stack_warm(c->stack, c->stack_size);
   c->ctx = zyxrt_ctx_new(c->stack, c->stack_size);
+  /* The region the spawner is running in waits for this coroutine before it
+     releases its memory, so the coroutine never reads freed storage. */
+  zyxrt_region_adopt(zyxrt_region_current(), c);
   zyxrt_sched_ready(c);
   return c;
 }
 
 /* free_coro releases a finished coroutine. */
 static void free_coro(zyxrt_coro *c) {
+  /* The region that was waiting for this coroutine must not wait for it
+     again. */
+  zyxrt_region_detach(c->owner_region, c);
   if (c->ctx) zyxrt_ctx_free(c->ctx);
   if (c->stack) zyxrt_stack_unmap(c->stack, c->stack_size);
+  free(c->regions);
   free(c);
 }
 
@@ -186,6 +193,29 @@ int zyxrt_coro_try_join(void *handle, void **result, void **panic) {
 
 void zyxrt_coro_set_result(void *result) {
   if (current) current->result = result;
+}
+
+/* zyxrt_region_wait blocks the running coroutine until every coroutine
+   started in the region has finished. A region releases its memory after
+   this, so nothing it owns is read once it is gone. */
+void zyxrt_region_wait(void *region) {
+  zyxrt_coro *self = current;
+  if (self == NULL) {
+    return;
+  }
+  for (;;) {
+    zyxrt_coro *child = (zyxrt_coro *)zyxrt_region_take_child(region);
+    if (child == NULL) {
+      return;
+    }
+    while (!child->done) {
+      /* The joiner blocks on the child and is woken when it finishes. */
+      self->wait_next = child->waiters;
+      child->waiters = self;
+      zyxrt_sched_suspend(self);
+    }
+    free_coro(child);
+  }
 }
 
 void zyxrt_sched_wake(zyxrt_coro **list) {

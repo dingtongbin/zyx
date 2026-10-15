@@ -16,6 +16,12 @@ void *zyxrt_region_current(void);
 /* zyxrt_region_alloc_current creates an object in the region of the running
    coroutine. */
 void *zyxrt_region_alloc_current(size_t size, size_t align);
+/* An explicit region block makes its own region the one new objects belong
+   to, and waits for the coroutines started in it before it releases them. */
+void zyxrt_region_enter(void *region);
+void zyxrt_region_leave(void);
+void zyxrt_region_wait(void *region);
+
 /* zyxrt_region_release returns one object to its region before the region
    exits, which is what a static release point does. The size names the size
    class, so no object carries a header. */

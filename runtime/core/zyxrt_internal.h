@@ -54,6 +54,16 @@ typedef struct zyxrt_coro {
   /* wake_at is the monotonic deadline a sleeping coroutine waits for, in
      nanoseconds. It is meaningful only while the coroutine is asleep. */
   uint64_t wake_at;
+  /* regions holds the regions an explicit region block entered, innermost
+     last. Leaving a block restores the one before it. */
+  void **regions;
+  size_t region_depth;
+  size_t region_cap;
+  /* region_next links a coroutine into the child list of the region it was
+     started in, so that region can wait for it. owner_region is that
+     region, which the coroutine leaves when it is released. */
+  struct zyxrt_coro *region_next;
+  void *owner_region;
 } zyxrt_coro;
 
 /* The platform context layer. A context runs entry on a stack of the given
@@ -96,6 +106,12 @@ void zyxrt_sched_yield(void);
    reports how long the scheduler should wait for the next one, or -1 when
    none is asleep. */
 void zyxrt_sched_sleep(uint64_t ns);
+/* A region records the coroutines started in it, so it can wait for them
+   before it releases its memory. */
+void zyxrt_region_adopt(void *region, void *coro);
+void zyxrt_region_detach(void *region, void *coro);
+void *zyxrt_region_take_child(void *region);
+void zyxrt_region_wait(void *region);
 int64_t zyxrt_sched_wait(void);
 /* The clock. zyxrt_now is the monotonic time in nanoseconds, zyxrt_sleep
    waits on the scheduler's thread, and zyxrt_timer_init prepares the clock. */

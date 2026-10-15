@@ -342,6 +342,10 @@ func (g *generator) function(module string, n *zyxc.Node) {
 		g.fn.vars[fmt.Sprintf("%s#%d", sym, i+1)] = &varSlot{alloca: slot, typ: p.typ}
 	}
 
+	// The region the function runs in is the home of every object that
+	// outlives a nested block, so its handle is taken before the body runs.
+	g.openHome()
+
 	// A function body is a region of its own, so the deferred calls it
 	// records run before it returns, whichever path it leaves by.
 	deferSlot := ""
