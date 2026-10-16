@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"zyx/internal/cache"
@@ -444,6 +445,16 @@ func TestReplacementResolvesToADirectory(t *testing.T) {
 	}
 }
 
+// testCache returns a cache the tests that compile share, so the runtime
+// library is built once rather than once per test.
+var testCache = sync.OnceValue(func() string {
+	dir, err := os.MkdirTemp("", "zyx-build-test-")
+	if err != nil {
+		panic(err)
+	}
+	return filepath.Join(dir, ".zyx-cache")
+})
+
 func TestEachPackageBecomesItsOwnModule(t *testing.T) {
 	tc, err := toolchain.Locate()
 	if err != nil {
@@ -491,7 +502,7 @@ func TestEachPackageBecomesItsOwnModule(t *testing.T) {
 		}
 		objects = append(objects, out)
 	}
-	lib, err := tc.RuntimeLibrary(s.Loader.Target, copts, nil, dir)
+	lib, err := tc.RuntimeLibrary(s.Loader.Target, copts, nil, filepath.Join(testCache(), "rt"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,7 +550,7 @@ func TestAnUnchangedPackageIsCompiledOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := cache.Open(filepath.Join(root, ".zyx-cache"))
+	c, err := cache.Open(testCache())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +608,7 @@ func TestTheSameProgramLinksAlike(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts := BackendOptions{Level: "-O0", Compiler: "test", CacheDir: filepath.Join(root, ".zyx-cache")}
+	opts := BackendOptions{Level: "-O0", Compiler: "test", CacheDir: testCache()}
 	first := filepath.Join(t.TempDir(), "one")
 	opts.Output = first
 	if _, err := s.Link("example.com/app", results, opts); err != nil {
