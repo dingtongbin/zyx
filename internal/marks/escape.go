@@ -48,12 +48,20 @@ func (b *builder) finishFunction() {
 func (b *builder) classify(a *allocation) {
 	switch b.escapes[a] {
 	case escapeReturn:
+		// The object is returned, so it belongs to the caller's region. A
+		// function body runs in the region its caller was in, which is the
+		// region named r0, so the object is created there rather than in a
+		// nested block that is about to leave.
+		b.setHome(a, b.root, "why-return")
 		b.info.Add(a.Node, "transfer", "caller")
-		b.info.Add(a.Node, "why-return", "")
 		b.info.Add(a.Node, "alias", "")
 	case escapeCoroutine:
+		// The object is handed to a coroutine. Its private region c0 is
+		// created by the runtime when the coroutine starts, so the object is
+		// created in the region the spawn runs in, which the region block
+		// holds until the coroutine has finished.
+		b.setHome(a, a.Region, "why-arg")
 		b.info.Add(a.Node, "move", "c0")
-		b.info.Add(a.Node, "why-arg", "")
 		b.info.Add(a.Node, "alias", "")
 	case escapeStore:
 		// The object is truly shared, so it binds to the region that
@@ -65,6 +73,20 @@ func (b *builder) classify(a *allocation) {
 	}
 }
 
+// setHome records the region an object belongs to, which is the region the
+// backend creates it in. The region is settled after the whole function has
+// been walked, because a use in a region the allocation site is not in moves
+// the object, and a region releases everything it holds when it exits: an
+// object created in a region that leaves before its last use would be read
+// after it was returned to the pool.
+func (b *builder) setHome(a *allocation, home *Region, reason string) {
+	if home == nil {
+		home = a.Region
+	}
+	b.info.Add(a.Node, "home", home.Name)
+	b.info.Add(a.Node, reason, "")
+}
+
 // sharedBind binds an object more than one region uses to the innermost
 // region that contains every use. The object is created there, so no use
 // outlives the region that holds it.
@@ -74,8 +96,8 @@ func (b *builder) sharedBind(a *allocation) {
 	if home == nil {
 		home = a.Region
 	}
+	b.setHome(a, home, "why-shared")
 	b.info.Add(a.Node, "shared-bind", home.Name)
-	b.info.Add(a.Node, "why-shared", "")
 }
 
 // homeAndRelease settles the home region of an object that stays inside the
@@ -86,9 +108,10 @@ func (b *builder) homeAndRelease(a *allocation) {
 	regions := append([]*Region{a.Region}, b.uses[a]...)
 	home := commonAll(regions)
 	if home == nil || home == a.Region {
+		b.setHome(a, a.Region, "why-new")
 		b.release(a)
 		return
 	}
+	b.setHome(a, home, "why-last-use")
 	b.info.Add(a.Node, "move", home.Name)
-	b.info.Add(a.Node, "why-last-use", "")
 }

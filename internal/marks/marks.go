@@ -116,6 +116,10 @@ type builder struct {
 	fn      *ast.FuncDecl
 	regions *regionBuilder
 	region  *Region
+	// root is the function body region, which is the outermost region the
+	// function can name and the one a value that outlives a nested region
+	// belongs to.
+	root *Region
 	// allocsByNode maps an allocating expression to its record.
 	allocsByNode map[ast.Expr]*allocation
 	// allocsBySym maps a local symbol to the allocation it holds.
@@ -126,6 +130,13 @@ type builder struct {
 	lastUse map[*allocation]ast.Node
 	// escapes records how each allocation leaves the function.
 	escapes map[*allocation]escapeKind
+	// borrows holds the views of a container's buffer that are live at the
+	// point the walk has reached, so a structural modification of the
+	// container can be reported while one is.
+	borrows []viewBorrow
+	// scopes holds one entry per block the walk is inside, which is how many
+	// borrows were live when the block opened.
+	scopes []int
 }
 
 // run walks every declaration of the package.
@@ -178,12 +189,15 @@ func (b *builder) funcDecl(f *ast.FuncDecl) {
 	b.fn = f
 	b.regions = newRegionBuilder(f)
 	b.region = b.regions.root()
+	b.root = b.region
 	b.info.Regions = append(b.info.Regions, b.region)
 	b.uses = map[*allocation][]*Region{}
 	b.lastUse = map[*allocation]ast.Node{}
 	b.allocsByNode = map[ast.Expr]*allocation{}
 	b.allocsBySym = map[string]*allocation{}
 	b.escapes = map[*allocation]escapeKind{}
+	b.borrows = nil
+	b.scopes = nil
 
 	b.stmt(f.Body)
 	b.expr(f.BodyExpr)
@@ -205,14 +219,19 @@ func (b *builder) stmt(s ast.Stmt) {
 		if v == nil {
 			return
 		}
+		// A block bounds the views its bindings hold, so the borrows of the
+		// block leave with it.
+		b.openScope()
 		for _, x := range v.Stmts {
 			b.stmt(x)
 		}
+		b.closeScope()
 	case *ast.ExprStmt:
 		b.expr(v.X)
 	case *ast.VarDecl:
 		b.expr(v.Value)
 		b.bind(v.Names, v.Value)
+		b.noteViewBinding(v)
 	case *ast.ConstDecl:
 		b.expr(v.Value)
 		b.bind([]*ast.Ident{v.Name}, v.Value)
@@ -227,7 +246,14 @@ func (b *builder) stmt(s ast.Stmt) {
 		if len(v.Bindings) > 0 {
 			b.guardLoop(v)
 		}
+		// A loop over a container holds a view of it for as long as the body
+		// runs, because an element is reached through the container's buffer.
+		b.openScope()
+		if len(v.Bindings) > 0 {
+			b.noteLoopBorrow(v)
+		}
 		b.stmt(v.Body)
+		b.closeScope()
 	case *ast.ReturnStmt:
 		for _, e := range v.Values {
 			b.expr(e)
@@ -289,12 +315,14 @@ func (b *builder) assign(v *ast.AssignStmt) {
 	if sel, ok := v.Target.(*ast.SelectorExpr); ok {
 		b.expr(v.Value)
 		b.share(v.Value, v)
+		b.noteStore(v.Value, sel.X)
 		b.expr(sel.X)
 		return
 	}
 	if idx, ok := v.Target.(*ast.IndexExpr); ok {
 		b.expr(v.Value)
 		b.share(v.Value, v)
+		b.noteStore(v.Value, idx.X)
 		b.expr(idx.X)
 		b.expr(idx.Index)
 		return
@@ -482,6 +510,16 @@ func (b *builder) call(v *ast.CallExpr) {
 		if b.isChannelCall(sel) {
 			b.info.Add(v, "chan:"+channelVerb(sel.Name.Name), "")
 		}
+		if b.isStructuralMod(sel) {
+			b.checkBorrowModification(sel.X, v)
+		}
+		if b.storesIntoReceiver(sel) {
+			// A method that keeps its argument hands the value to the
+			// container, so the value must outlive the container's region.
+			for _, a := range v.Args {
+				b.noteStore(a, sel.X)
+			}
+		}
 		return
 	}
 	b.expr(v.Fn)
@@ -574,12 +612,12 @@ func (b *builder) bind(names []*ast.Ident, value ast.Expr) {
 	b.allocsBySym[sym.ID] = a
 }
 
-// alloc records an allocation site and gives it a provisional home.
+// alloc records an allocation site. The region it belongs to is settled once
+// the whole function is walked, because a use in a region the site is not in
+// moves the object, and the move decides where it is created.
 func (b *builder) alloc(node ast.Node, value ast.Expr) {
 	a := &allocation{Node: value, Region: b.region}
 	b.allocsByNode[value] = a
-	b.info.Add(node, "home", b.region.Name)
-	b.info.Add(node, "why-new", "")
 }
 
 // use records one use of a local name, which is also a use of the object the

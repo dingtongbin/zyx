@@ -30,8 +30,6 @@ const (
 	CodeNestedFString Code = "E1009"
 	// CodeEmptyInterpolation reports an interpolation with no expression.
 	CodeEmptyInterpolation Code = "E1010"
-	// CodeUnformatted reports a file that is not in canonical form.
-	CodeUnformatted Code = "E1011"
 )
 
 // Syntax diagnostics occupy the E2001-E2099 range.
@@ -243,6 +241,10 @@ const (
 	// CodeBorrowMoved reports an address taken into a container held across
 	// a call, which may move the buffer the address lies in.
 	CodeBorrowMoved Code = "E5002"
+	// CodeBorrowModified reports a structural modification of a container
+	// while a view of its buffer is live, which may leave the view naming
+	// storage the container no longer holds.
+	CodeBorrowModified Code = "E5003"
 )
 
 // Concurrency diagnostics occupy the E6001-E6099 range.

@@ -79,6 +79,16 @@ func wantClean(t *testing.T, diags []diag.Diagnostic) {
 	}
 }
 
+// hasCode reports whether the pass reported a diagnostic with that code.
+func hasCode(diags []diag.Diagnostic, code diag.Code) bool {
+	for _, d := range diags {
+		if d.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRegionMarks(t *testing.T) {
 	src := `package server
 
@@ -338,6 +348,113 @@ func Work(xs: Array<u8>) -> u8 {
 	info, diags := marksOf(t, src)
 	wantClean(t, diags)
 	wantMark(t, info, "view-borrow")
+}
+
+// TestMoveOutOfRegionMovesTheHome checks that an object created inside a
+// region and used after it leaves is created in the region that holds it. A
+// region releases everything it holds when it exits, so an object left where
+// it was made would be read after it returned to the pool.
+func TestMoveOutOfRegionMovesTheHome(t *testing.T) {
+	src := `package server
+
+struct Box {
+	v: i64
+}
+
+func Work() -> i64 {
+	var held = Box { v: 1 }
+	region {
+		held = Box { v: 41 }
+	}
+	return held.v
+}
+`
+	info, diags := marksOf(t, src)
+	wantClean(t, diags)
+	wantMark(t, info, "home:r0")
+	wantMark(t, info, "move:r0")
+	wantMark(t, info, "why-last-use")
+	if hasMark(info, "home:r1") {
+		t.Errorf("an object used outside the region is still created in it: %v", allMarks(info))
+	}
+}
+
+// TestStoreIntoAnOuterContainerBindsOuter checks that a value stored into a
+// container that outlives the region belongs to the container's region: the
+// store hands the value to a destination the region does not own.
+func TestStoreIntoAnOuterContainerBindsOuter(t *testing.T) {
+	src := `package server
+
+struct Holder {
+	xs: Array<i64>
+}
+
+func Work(h: Holder) {
+	region {
+		var xs = new Array<i64>(4)
+		h.xs = xs
+	}
+}
+`
+	info, diags := marksOf(t, src)
+	wantClean(t, diags)
+	wantMark(t, info, "shared-bind:r0")
+	if hasMark(info, "shared-bind:r1") {
+		t.Errorf("a value stored into an outer container binds to the inner region: %v", allMarks(info))
+	}
+}
+
+// TestViewModifiedIsRejected checks that a container is not structurally
+// modified while a view of its buffer is live: the view names the buffer, and
+// the modification may hand the container a different one.
+func TestViewModifiedIsRejected(t *testing.T) {
+	src := `package server
+
+func Work(xs: Array<u8>) -> u8 {
+	var view = xs[0..2]
+	xs.Push(9)
+	return view[0]
+}
+`
+	_, diags := marksOf(t, src)
+	if !hasCode(diags, diag.CodeBorrowModified) {
+		t.Errorf("want a borrow modification diagnostic, got %v", diags)
+	}
+}
+
+// TestLoopModificationIsRejected checks that a loop over a container holds a
+// borrow of it for as long as the body runs.
+func TestLoopModificationIsRejected(t *testing.T) {
+	src := `package server
+
+func Work(xs: Array<u8>) {
+	for x in xs {
+		xs.Push(x)
+	}
+}
+`
+	_, diags := marksOf(t, src)
+	if !hasCode(diags, diag.CodeBorrowModified) {
+		t.Errorf("want a borrow modification diagnostic, got %v", diags)
+	}
+}
+
+// TestLoopEndsTheBorrow checks that the borrow a loop holds ends with the
+// loop: a modification after it is what the language allows.
+func TestLoopEndsTheBorrow(t *testing.T) {
+	src := `package server
+
+func Work(xs: Array<u8>) {
+	for x in xs {
+		if x == 0 {
+			break
+		}
+	}
+	xs.Push(1)
+}
+`
+	_, diags := marksOf(t, src)
+	wantClean(t, diags)
 }
 
 func TestMarkString(t *testing.T) {
