@@ -51,8 +51,8 @@ func TestTypeArgumentOfAnotherPackage(t *testing.T) {
 	b := &builder{pkg: &resolve.Package{Path: "example.com/app/server"}}
 	entry := types.Named(types.KindStruct, "example.com/app/store", "", "Entry", 0)
 	got := b.typeText(types.Result.Instantiate(types.Void, entry))
-	if got != "Result<void, store.Entry>" {
-		t.Errorf("type = %q, want Result<void, store.Entry>", got)
+	if got != "Result<void,store.Entry>" {
+		t.Errorf("type = %q, want Result<void,store.Entry>", got)
 	}
 }
 
@@ -220,8 +220,62 @@ struct Conn {
 			t.Errorf("line has trailing space: %q", line)
 		}
 	}
-	if !strings.Contains(text, "\n  field-decl host ") {
-		t.Errorf("a child must be indented two spaces:\n%s", text)
+	if !strings.Contains(text, "\n  n") {
+		t.Errorf("a child must be indented two spaces and numbered:\n%s", text)
+	}
+	if !strings.Contains(text, "field-decl host ") {
+		t.Errorf("the field must be written:\n%s", text)
+	}
+}
+
+// TestSectionsAndNumbers checks the shape of a file: the counts in the header,
+// the summary, the tree, and a number on every node in the order the format
+// writes them.
+func TestSectionsAndNumbers(t *testing.T) {
+	f := buildSource(t, `package server
+
+struct Conn {
+	host: str
+	func Close() {
+	}
+}
+`)
+	text := string(Format(f))
+	lines := strings.Split(text, "\n")
+	if !strings.HasPrefix(lines[4], "node ") {
+		t.Errorf("the header must carry the node count, got %q", lines[4])
+	}
+	if lines[5] != "summary" {
+		t.Errorf("the summary must follow the header, got %q", lines[5])
+	}
+	tree := -1
+	for i, line := range lines {
+		if line == "tree" {
+			tree = i
+		}
+	}
+	if tree < 0 {
+		t.Fatalf("the file has no tree section:\n%s", text)
+	}
+	want := 1
+	for _, line := range lines[tree+1:] {
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimLeft(line, " "), "n"+fmt.Sprint(want)+" ") {
+			t.Errorf("node %d is %q", want, line)
+		}
+		want++
+	}
+	back, err := Parse([]byte(text))
+	if err != nil {
+		t.Fatalf("parse: %v\n%s", err, text)
+	}
+	if len(back.Decls) != 1 {
+		t.Fatalf("declarations = %d, want 1", len(back.Decls))
+	}
+	if len(back.Decls[0].Children) != 2 {
+		t.Errorf("children = %d, want 2", len(back.Decls[0].Children))
 	}
 }
 

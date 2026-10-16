@@ -49,9 +49,11 @@ func (b *builder) classify(a *allocation) {
 	switch b.escapes[a] {
 	case escapeReturn:
 		b.info.Add(a.Node, "transfer", "caller")
+		b.info.Add(a.Node, "why-return", "")
 		b.info.Add(a.Node, "alias", "")
 	case escapeCoroutine:
 		b.info.Add(a.Node, "move", "c0")
+		b.info.Add(a.Node, "why-arg", "")
 		b.info.Add(a.Node, "alias", "")
 	case escapeStore:
 		// The object is truly shared, so it binds to the region that
@@ -73,6 +75,7 @@ func (b *builder) sharedBind(a *allocation) {
 		home = a.Region
 	}
 	b.info.Add(a.Node, "shared-bind", home.Name)
+	b.info.Add(a.Node, "why-shared", "")
 }
 
 // homeAndRelease settles the home region of an object that stays inside the
@@ -87,4 +90,5 @@ func (b *builder) homeAndRelease(a *allocation) {
 		return
 	}
 	b.info.Add(a.Node, "move", home.Name)
+	b.info.Add(a.Node, "why-last-use", "")
 }

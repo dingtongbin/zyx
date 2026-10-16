@@ -48,7 +48,7 @@ func testProgram() *Program {
 						Child(zyxc.New("type", "i64")).
 						Child(zyxc.New("call").
 							Child(zyxc.New("callee").Child(
-								zyxc.New("name", "twice", "example.com/app.twice").Child(zyxc.New("type", "func(i64) -> i64")),
+								zyxc.New("name", "twice", "example.com/app.twice").Child(zyxc.New("type", "func(i64)->i64")),
 							)).
 							Child(zyxc.New("arg").Child(zyxc.New("lit", "2").Child(zyxc.New("type", "i64")))).
 							Child(zyxc.New("type", "i64"))),
@@ -61,7 +61,7 @@ func testProgram() *Program {
 							Child(zyxc.New("recv").Child(
 								zyxc.New("name", "b", "example.com/app.main#2").Child(zyxc.New("type", "Box<i64>")),
 							)).
-							Child(zyxc.New("callee-type", "func(Box<i64>) -> i64")).
+							Child(zyxc.New("callee-type", "func(Box<i64>)->i64")).
 							Child(zyxc.New("type", "i64")),
 					),
 				),

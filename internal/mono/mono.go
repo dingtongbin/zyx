@@ -357,9 +357,9 @@ func (m *instantiator) reference(module string, n *zyxc.Node, id string) string 
 		// A method call on a type parameter has no symbol of its own: the
 		// parameter stands for a different type in each instance. The
 		// receiver's instantiated type names the method that instance
-		// calls, so the reference is settled here rather than left empty
-		// for the backend to trip over.
-		if id == "" && n.Kind == "mcall" {
+		// calls, so the reference is settled here rather than left for the
+		// backend to trip over.
+		if (id == "" || id == zyxc.BuiltinID) && n.Kind == "mcall" {
 			return m.paramMethodSymbol(module, n)
 		}
 		return ""

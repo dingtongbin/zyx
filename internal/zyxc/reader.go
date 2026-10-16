@@ -7,16 +7,18 @@ import (
 	"strings"
 )
 
-// Parse reads the canonical text of one file. It accepts exactly what
-// Format writes: the four-line header, then one node per line indented two
-// spaces per level.
+// Parse reads the canonical text of one file. It accepts exactly what Format
+// writes: the header lines, the summary, then the tree, one node per line
+// indented two spaces per level and opening with its number. A header line the
+// reader does not know is skipped, so the format can carry one more without a
+// reader change.
 func Parse(data []byte) (*File, error) {
 	lines := strings.Split(string(data), "\n")
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
 	if len(lines) < 4 {
-		return nil, errf("a file needs the four header lines")
+		return nil, errf("a file needs the header lines")
 	}
 	f := &File{}
 	version, ok := strings.CutPrefix(lines[0], "zyx ")
@@ -37,8 +39,15 @@ func Parse(data []byte) (*File, error) {
 		return nil, errf("the fourth line must be exports <hash>")
 	}
 
+	// The rest of the header carries counts the reader does not need, and the
+	// tree is one of the sections below it.
+	start := 4
+	for start < len(lines) && !isSectionHeader(lines[start]) {
+		start++
+	}
 	var stack []*Node
-	for i := 4; i < len(lines); i++ {
+	inTree := false
+	for i := start; i < len(lines); i++ {
 		line := lines[i]
 		if strings.TrimSpace(line) == "" {
 			return nil, errf("line %d is blank", i+1)
@@ -47,23 +56,72 @@ func Parse(data []byte) (*File, error) {
 		if err != nil {
 			return nil, errf("line %d: %v", i+1, err)
 		}
-		if depth > len(stack) {
+		if depth == 0 {
+			switch strings.TrimSpace(line) {
+			case "tree":
+				inTree = true
+			case "summary":
+				inTree = false
+			default:
+				return nil, errf("line %d: %q is not a section", i+1, strings.TrimSpace(line))
+			}
+			stack = stack[:0]
+			continue
+		}
+		if !inTree {
+			continue
+		}
+		if depth > len(stack)+1 {
 			return nil, errf("line %d indents past its parent", i+1)
 		}
-		node, err := parseLine(strings.TrimLeft(line, " "))
+		text, err := cutNodeID(strings.TrimLeft(line, " "))
 		if err != nil {
 			return nil, errf("line %d: %v", i+1, err)
 		}
-		stack = stack[:depth]
-		if depth == 0 {
+		node, err := parseLine(text)
+		if err != nil {
+			return nil, errf("line %d: %v", i+1, err)
+		}
+		stack = stack[:depth-1]
+		if depth == 1 {
 			f.Decls = append(f.Decls, node)
 		} else {
-			parent := stack[depth-1]
+			parent := stack[depth-2]
 			parent.Children = append(parent.Children, node)
 		}
 		stack = append(stack, node)
 	}
+	if !inTree {
+		return nil, errf("the file has no tree section")
+	}
 	return f, nil
+}
+
+// isSectionHeader reports whether a line opens a section, which is where the
+// header ends.
+func isSectionHeader(line string) bool {
+	switch strings.TrimSpace(line) {
+	case "summary", "tree":
+		return true
+	}
+	return false
+}
+
+// cutNodeID strips the number that opens a node line. It names the node rather
+// than describing it, so a reader that does not need it drops it here.
+func cutNodeID(text string) (string, error) {
+	if !strings.HasPrefix(text, "n") {
+		return "", errf("a node line opens with its number")
+	}
+	rest := text[1:]
+	digits := 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 || digits == len(rest) || rest[digits] != ' ' {
+		return "", errf("a node number is n followed by digits and a space")
+	}
+	return rest[digits+1:], nil
 }
 
 // depthOf returns the indentation level of a line, which must be a whole
@@ -90,6 +148,7 @@ func parseLine(line string) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	head, from := cutFrom(head)
 	tokens, err := splitTokens(head)
 	if err != nil {
 		return nil, err
@@ -97,7 +156,7 @@ func parseLine(line string) (*Node, error) {
 	if len(tokens) == 0 {
 		return nil, errf("a line needs a kind")
 	}
-	n := &Node{Kind: tokens[0], Payload: tokens[1:], Pos: pos, Marks: marks}
+	n := &Node{Kind: tokens[0], Payload: tokens[1:], Pos: pos, From: from, Marks: marks}
 	if err := checkKind(n.Kind); err != nil {
 		return nil, err
 	}
@@ -207,6 +266,15 @@ func cutPos(line string) (string, string, error) {
 		return line, "", nil
 	}
 	return line[:idx], line[idx+len(" pos "):], nil
+}
+
+// cutFrom splits the trailing `from <id>` section off a line.
+func cutFrom(line string) (string, string) {
+	idx := strings.LastIndex(line, " from ")
+	if idx < 0 {
+		return line, ""
+	}
+	return line[:idx], line[idx+len(" from "):]
 }
 
 // splitTokens splits a line into payload tokens, honoring double quotes.

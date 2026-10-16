@@ -439,6 +439,7 @@ func (b *builder) expr(e ast.Expr) {
 		b.expr(v.X)
 		if _, ok := v.Index.(*ast.RangeExpr); ok {
 			b.info.Add(v, "view-borrow", "")
+			b.info.Add(v, "why-view", "")
 		}
 		b.expr(v.Index)
 	case *ast.RangeExpr:
@@ -463,8 +464,10 @@ func (b *builder) call(v *ast.CallExpr) {
 	if b.isCCall(v) {
 		if b.cFast(v) {
 			b.info.Add(v, "c-fast", "")
+			b.info.Add(v, "why-fast", "")
 		} else {
 			b.info.Add(v, "c-blocking", "")
+			b.info.Add(v, "why-not-fast", "")
 		}
 	}
 	// A default the call leaves out is evaluated here, so it is walked here.
@@ -537,7 +540,9 @@ func (b *builder) spawn(v *ast.SpawnExpr) {
 	b.region = r
 	if call, ok := v.X.(*ast.CallExpr); ok {
 		for _, a := range call.Args {
-			b.info.Add(a, boundaryMark(b.cpkg, a), "")
+			mark, reason := boundaryMarks(b.cpkg, a)
+			b.info.Add(a, mark, "")
+			b.info.Add(a, reason, "")
 			b.info.Add(v, "coro:handoff", "")
 			b.expr(a)
 			b.escapesTo(a, escapeCoroutine)
@@ -574,6 +579,7 @@ func (b *builder) alloc(node ast.Node, value ast.Expr) {
 	a := &allocation{Node: value, Region: b.region}
 	b.allocsByNode[value] = a
 	b.info.Add(node, "home", b.region.Name)
+	b.info.Add(node, "why-new", "")
 }
 
 // use records one use of a local name, which is also a use of the object the

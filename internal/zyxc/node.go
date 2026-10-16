@@ -14,8 +14,13 @@ type Node struct {
 	Kind string
 	// Payload holds the space-separated tokens after the kind.
 	Payload []string
-	// Pos is the source position, empty for a node the compiler generated.
+	// Pos is the source position. The builder writes it where the node came
+	// from source; the writer fills it for a node the compiler generated, from
+	// the node that generated it.
 	Pos string
+	// From names the node a generated node was derived from, so a reader can
+	// walk back to the source in one step. It is empty for a source node.
+	From string
 	// Marks holds the marks of the node, sorted by name and argument.
 	Marks []Mark
 	// Children holds the child nodes in order.
@@ -137,6 +142,9 @@ func (n *Node) String() string {
 	line := n.head()
 	if n.Pos != "" {
 		line += " pos " + n.Pos
+	}
+	if n.From != "" {
+		line += " from " + n.From
 	}
 	if len(n.Marks) > 0 {
 		parts := make([]string, 0, len(n.Marks))

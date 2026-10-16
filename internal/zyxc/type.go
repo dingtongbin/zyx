@@ -45,12 +45,12 @@ func ParseTypeWith(module, text string, r Resolver, params map[string]*types.Typ
 	return t, nil
 }
 
-// TypeText renders a type the way the format writes it, giving every named
-// type that module does not declare its package qualifier. The text then
-// names its package wherever it appears, and a reader resolves it without
-// guessing.
+// TypeText renders a type the way the format writes it: the canonical spelling,
+// with every named type that module does not declare carrying its package
+// qualifier. The text then names its package wherever it appears, and a reader
+// resolves it without guessing.
 func TypeText(t *types.Type, module string) string {
-	return qualify(t, module).String()
+	return qualify(t, module).Canonical()
 }
 
 // qualify returns a copy of a type in which every named type outside module
@@ -198,8 +198,8 @@ func (p *typeParser) parseFunc() (*types.Type, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.hasPrefix(" -> ") {
-		p.i += len(" -> ")
+	if p.hasPrefix("->") {
+		p.i += len("->")
 		result, err := p.parseType()
 		if err != nil {
 			return nil, err

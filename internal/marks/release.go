@@ -12,8 +12,10 @@ func (b *builder) release(a *allocation) {
 		// release point.
 		b.info.Add(a.Node, "last-use", "")
 		b.info.Add(a.Node, "static-release", "")
+		b.info.Add(a.Node, "why-last-use", "")
 		return
 	}
 	b.info.Add(last, "last-use", "")
 	b.info.Add(last, "static-release", "")
+	b.info.Add(last, "why-last-use", "")
 }

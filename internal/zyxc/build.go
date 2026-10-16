@@ -142,7 +142,7 @@ func (b *builder) typeText(t *types.Type) string {
 	if t == nil {
 		return "invalid"
 	}
-	return b.qualified(t).String()
+	return b.qualified(t).Canonical()
 }
 
 // qualified returns a copy of a type in which every named type the current
@@ -1499,19 +1499,27 @@ func cHeaderNames(t map[string]*cheader.Table) []string {
 // memberID returns the symbol id of a member of a receiver's type. A method
 // the language builds in has no declaration, so its id stays empty and the
 // backend pairs the name with the receiver's type.
+// memberID returns the symbol id of a method the receiver's type declares, or
+// BuiltinID when the language provides the method itself: a container's
+// operations, the methods of a predeclared enum, and the built-in interfaces
+// have no declaration anywhere, so the backend pairs the name with the
+// receiver's type through the fixed table rather than through a symbol. A
+// receiver the checker did not type is a defect the builder reports rather than
+// writes as an empty id.
 func (b *builder) memberID(recv ast.Expr, name string) string {
 	t := b.cpkg.Nodes[recv]
 	if t == nil {
+		b.fail(recv, "a method call on a value the checker did not type")
 		return ""
 	}
 	d := b.cpkg.Decl(t)
 	if d == nil || d.Sym == nil {
-		return ""
+		return BuiltinID
 	}
 	if m := d.Sym.Member(name); m != nil {
 		return m.ID
 	}
-	return ""
+	return BuiltinID
 }
 
 // qualifierName returns the package name of a qualified selector.

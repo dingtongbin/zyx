@@ -197,7 +197,15 @@ func ParamOf(id, name string, constraints []*Type) *Type {
 // String returns the canonical text of the type, in the form the .zyxc
 // layer writes: `[T; 4]`, `(i64, str)`, `func(i64) -> bool`, `Array<u8>`,
 // `net.Conn`.
-func (t *Type) String() string {
+func (t *Type) String() string { return t.render(false) }
+
+// Canonical renders a type the way the intermediate form writes it: the same
+// text as String without the spaces a human reads by, so a type is one token
+// and needs no quoting.
+func (t *Type) Canonical() string { return t.render(true) }
+
+// render writes a type, compactly when the intermediate form asks for it.
+func (t *Type) render(compact bool) string {
 	if t == nil {
 		return "<nil>"
 	}
@@ -206,21 +214,25 @@ func (t *Type) String() string {
 		// or a container can carry as a type argument, so it has a name.
 		return "void"
 	}
+	comma, arrow, semi := ", ", " -> ", "; "
+	if compact {
+		comma, arrow, semi = ",", "->", ";"
+	}
 	switch t.Kind {
 	case KindTuple:
-		return "(" + joinTypes(t.Elems) + ")"
+		return "(" + joinTypes(t.Elems, comma, compact) + ")"
 	case KindArray:
-		return "[" + t.Elem.String() + "; " + strconv.FormatUint(t.Len, 10) + "]"
+		return "[" + t.Elem.render(compact) + semi + strconv.FormatUint(t.Len, 10) + "]"
 	case KindSlice:
-		return "[" + t.Elem.String() + "]"
+		return "[" + t.Elem.render(compact) + "]"
 	case KindFunc:
-		s := "func(" + joinTypes(t.Elems) + ")"
+		s := "func(" + joinTypes(t.Elems, comma, compact) + ")"
 		if t.Result != nil {
-			s += " -> " + t.Result.String()
+			s += arrow + t.Result.render(compact)
 		}
 		return s
 	case KindChan:
-		return "chan<" + t.Elem.String() + ">"
+		return "chan<" + t.Elem.render(compact) + ">"
 	case KindTypeParam:
 		return t.Name
 	}
@@ -230,7 +242,7 @@ func (t *Type) String() string {
 			s = t.Qual + "." + s
 		}
 		if len(t.Args) > 0 {
-			s += "<" + joinTypes(t.Args) + ">"
+			s += "<" + joinTypes(t.Args, comma, compact) + ">"
 		}
 		return s
 	}
@@ -240,13 +252,13 @@ func (t *Type) String() string {
 	return "invalid"
 }
 
-// joinTypes renders a type list with the separator the .zyxc layer uses.
-func joinTypes(list []*Type) string {
+// joinTypes renders a type list with the separator the caller writes.
+func joinTypes(list []*Type, sep string, compact bool) string {
 	parts := make([]string, len(list))
 	for i, t := range list {
-		parts[i] = t.String()
+		parts[i] = t.render(compact)
 	}
-	return strings.Join(parts, ", ")
+	return strings.Join(parts, sep)
 }
 
 // Identical reports whether a and b are the same type. Named types compare
