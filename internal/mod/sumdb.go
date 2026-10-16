@@ -17,6 +17,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"io"
+	"math/bits"
+	"net/http"
 	"strconv"
 	"strings"
 )
@@ -162,6 +165,215 @@ func SignNote(text string, db *SumDB, key ed25519.PrivateKey) []byte {
 	raw := append(append([]byte(nil), db.KeyHash...), signature...)
 	return []byte(text + "\n" + signatureDash + " " + db.Name + " " +
 		base64.StdEncoding.EncodeToString(raw) + "\n")
+}
+
+// logTileHeight is the height of the tiles a log serves, which the protocol
+// fixes at 8: a tile holds up to 256 hashes.
+const logTileHeight = 8
+
+// A logClient reads a transparency log over the protocol: the hashes come
+// from tiles, and a record comes from the lookup endpoint.
+type logClient struct {
+	db     *SumDB
+	client *http.Client
+	// size is the size of the log being read, which tells a proof how many
+	// hashes a level holds.
+	size int64
+	// tiles holds the tiles already read, so a proof asks for each once.
+	tiles map[string][]byte
+}
+
+// newLogClient returns a client for a database.
+func newLogClient(db *SumDB, client *http.Client) *logClient {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	return &logClient{db: db, client: client, tiles: map[string][]byte{}}
+}
+
+// get reads one protocol path of the database.
+func (l *logClient) get(suffix string) ([]byte, error) {
+	address := strings.TrimSuffix(l.db.Base, "/") + "/" + suffix
+	response, err := l.client.Get(address)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s answered %s", address, response.Status)
+	}
+	return io.ReadAll(response.Body)
+}
+
+// tile returns the hashes of one tile. A tile whose last hashes are past the
+// end of the log is asked for at the width the log has, and a server that
+// answers nothing for it is asked for the whole tile instead.
+func (l *logClient) tile(level, index, width int64) ([]byte, error) {
+	path := fmt.Sprintf("tile/%d/%d/%d", logTileHeight, level, index)
+	if width < 1<<logTileHeight {
+		path += fmt.Sprintf(".p/%d", width)
+	}
+	if data, ok := l.tiles[path]; ok {
+		return data, nil
+	}
+	data, err := l.get(path)
+	if err != nil && width < 1<<logTileHeight {
+		data, err = l.get(fmt.Sprintf("tile/%d/%d/%d", logTileHeight, level, index))
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(data)%sha256.Size != 0 {
+		return nil, fmt.Errorf("tile %s holds %d bytes, which is not a whole number of hashes", path, len(data))
+	}
+	l.tiles[path] = data
+	return data, nil
+}
+
+// nodeHash returns the hash of one node of the log: level 0 holds the record
+// hashes, and level L holds the hashes of the pairs of level L-1.
+func (l *logClient) nodeHash(level, index int64) ([]byte, error) {
+	tileIndex := index >> logTileHeight
+	offset := index & (1<<logTileHeight - 1)
+	// The last tile of a level holds only as many hashes as the level has.
+	width := int64(1) << logTileHeight
+	if level < 63 {
+		hashes := (l.size + (int64(1) << level) - 1) >> level
+		if left := hashes - tileIndex<<logTileHeight; left < width {
+			width = left
+		}
+	}
+	data, err := l.tile(level, tileIndex, width)
+	if err != nil {
+		return nil, err
+	}
+	start := offset * sha256.Size
+	if start+sha256.Size > int64(len(data)) {
+		return nil, fmt.Errorf("tile %d/%d/%d holds no hash at %d", logTileHeight, level, tileIndex, offset)
+	}
+	return data[start : start+sha256.Size], nil
+}
+
+// A logStep is one sibling on the way from a record to the root of the log.
+type logStep struct {
+	Level int64
+	Index int64
+	// Right marks a sibling that comes after the hash being folded.
+	Right bool
+}
+
+// auditPath returns the siblings that prove a record is in a log of the given
+// size. The tree is the one the log rules build: a range is split at the
+// largest power of two smaller than it, so every sibling is a whole subtree
+// and its hash is a node of the log.
+func auditPath(index, size int64) []logStep {
+	var out []logStep
+	lo, hi, at := int64(0), size, index
+	for hi-lo > 1 {
+		k := int64(1) << uint(bits.Len64(uint64(hi-lo-1))-1)
+		if at < k {
+			out = append(out, nodeOf(lo+k, hi, true))
+			hi = lo + k
+			continue
+		}
+		out = append(out, nodeOf(lo, lo+k, false))
+		lo, at = lo+k, at-k
+	}
+	return out
+}
+
+// nodeOf returns where a whole subtree's hash is stored.
+func nodeOf(lo, hi int64, right bool) logStep {
+	level := int64(bits.Len64(uint64(hi-lo)) - 1)
+	return logStep{Level: level, Index: lo >> uint(level), Right: right}
+}
+
+// root returns the root a record and its siblings fold up to, which has to be
+// the hash the signed head names.
+func (l *logClient) root(record []byte, index int64) ([]byte, error) {
+	hash := tlogLeaf(record)
+	for _, step := range auditPath(index, l.size) {
+		sibling, err := l.nodeHash(step.Level, step.Index)
+		if err != nil {
+			return nil, err
+		}
+		if step.Right {
+			hash = tlogNode(hash, sibling)
+		} else {
+			hash = tlogNode(sibling, hash)
+		}
+	}
+	return hash, nil
+}
+
+// A Lookup is what the database holds about one module version.
+type Lookup struct {
+	// Record is the text the log holds for it, which is the checksum file's
+	// lines for that module version.
+	Record string
+	// Head is the tree the record was proved to be in.
+	Head treeHead
+}
+
+// Lookup reads what the database holds about a module version and proves that
+// it is in the tree the database signed. A record that does not fold up to
+// the signed head is refused: that is the whole point of reading a log rather
+// than a database.
+func (d *SumDB) Lookup(client *http.Client, path, version string) (Lookup, error) {
+	if d == nil || d.Key == nil {
+		return Lookup{}, fmt.Errorf("checksum database: no key is known")
+	}
+	l := newLogClient(d, client)
+	body, err := l.get("lookup/" + escapePath(path) + "@" + escapePath(version))
+	if err != nil {
+		return Lookup{}, err
+	}
+	// The answer is the record number, the record, and a note whose text is
+	// the tree the record is in.
+	index, record, note, err := splitLookup(body)
+	if err != nil {
+		return Lookup{}, err
+	}
+	text, err := VerifyNote(note, d)
+	if err != nil {
+		return Lookup{}, err
+	}
+	head, err := parseTreeHead(text)
+	if err != nil {
+		return Lookup{}, err
+	}
+	l.size = head.Size
+	root, err := l.root([]byte(record), index)
+	if err != nil {
+		return Lookup{}, err
+	}
+	if !bytes.Equal(root, head.Hash) {
+		return Lookup{}, fmt.Errorf("checksum database: the record for %s %s is not in the tree the database signed", path, version)
+	}
+	return Lookup{Record: record, Head: head}, nil
+}
+
+// splitLookup reads the answer of the lookup endpoint: the record number, the
+// record, and the note that follows them.
+func splitLookup(body []byte) (index int64, record string, note []byte, err error) {
+	first := bytes.IndexByte(body, '\n')
+	if first < 0 {
+		return 0, "", nil, fmt.Errorf("checksum database: the answer names no record")
+	}
+	index, err = strconv.ParseInt(strings.TrimSpace(string(body[:first])), 10, 64)
+	if err != nil || index < 0 {
+		return 0, "", nil, fmt.Errorf("checksum database: the answer names no record number: %q", body[:first])
+	}
+	rest := body[first+1:]
+	split := bytes.Index(rest, []byte("\n\n"))
+	if split < 0 {
+		return 0, "", nil, fmt.Errorf("checksum database: the answer holds no signed tree")
+	}
+	record = string(rest[:split])
+	if !strings.HasSuffix(record, "\n") {
+		record += "\n"
+	}
+	return index, record, rest[split+2:], nil
 }
 
 // tlogLeaf returns the hash of one record of the log. A leaf is told from an

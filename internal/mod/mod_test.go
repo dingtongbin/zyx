@@ -930,6 +930,53 @@ func TestLogHashesFollowTheLogRules(t *testing.T) {
 	}
 }
 
+func TestSumDBProofAgainstTheRealLog(t *testing.T) {
+	if os.Getenv("ZYX_SUMDB_TEST") == "" {
+		t.Skip("set ZYX_SUMDB_TEST to reach the public checksum database")
+	}
+	// The signature is held to a writer this program makes itself, so what
+	// this test holds is the log rules: that the tiles, the path, and the
+	// record hashing reproduce the root the database signed. A mistake
+	// anywhere in them cannot fold to the right root.
+	l := newLogClient(&SumDB{Name: "sum.golang.org", Base: "https://sum.golang.org"}, nil)
+	body, err := l.get("lookup/golang.org/x/text@v0.3.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	index, record, note, err := splitLookup(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, _, err := SplitNote(note)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := parseTreeHead(string(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head.Size <= 0 {
+		t.Fatalf("the tree has size %d", head.Size)
+	}
+	l.size = head.Size
+	root, err := l.root([]byte(record), index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(root, head.Hash) {
+		t.Errorf("the record folds to %x and the signed head is %x", root, head.Hash)
+	}
+	// The record is the two lines a Go module's checksum file holds.
+	for _, want := range []string{
+		"golang.org/x/text v0.3.2 h1:",
+		"golang.org/x/text v0.3.2/go.mod h1:",
+	} {
+		if !strings.Contains(record, want) {
+			t.Errorf("the record does not hold %q:\n%s", want, record)
+		}
+	}
+}
+
 func TestCompareVersions(t *testing.T) {
 	cases := []struct {
 		a, b string
