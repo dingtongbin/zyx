@@ -29,7 +29,6 @@ func main() {
     fmt.Print(" ")
     fmt.PrintI64(counts[2])
     fmt.PrintNl()
-
     // An array element is a place too: the buffer is only replaced by a
     // structural modification, which the language forbids while a borrow is
     // live.
@@ -41,7 +40,6 @@ func main() {
     fmt.Print(" ")
     fmt.PrintI64(slots[1])
     fmt.PrintNl()
-
     var cells = new Array<Cell>(0)
     cells.Push(Cell { hits: 1, tag: "a" })
     cells.Push(Cell { hits: 2, tag: "b" })
@@ -53,20 +51,17 @@ func main() {
     fmt.Print(" ")
     fmt.PrintI64(i64(cells.Len()))
     fmt.PrintNl()
-
     var one = Cell { hits: 0, tag: "s" }
     bump(one)
     bump(one)
     fmt.PrintI64(one.hits)
     fmt.PrintNl()
-
     var grown = new Array<Cell>(0)
     fill(grown)
     fmt.PrintI64(i64(grown.Len()))
     fmt.Print(" ")
     fmt.Print(grown[0].tag)
     fmt.PrintNl()
-
     // A loop that writes each element where it lies.
     for i in 0 .. cells.Len() {
         cells[i].hits += 1
