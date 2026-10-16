@@ -5,26 +5,30 @@
    scheduler thread has run its coroutine and marks it once it has had long
    enough. The check itself is one atomic load, so a loop that never exceeds
    the quantum pays nothing for the mechanism beyond the load. */
-void zyxrt_preempt_stop(void);
 
 #include "zyxrt_internal.h"
 
 #include <stdatomic.h>
 
-/* One slot per scheduler thread, claimed when the thread starts. The monitor
-   walks them, so a busy thread is marked whoever else is running. */
+/* One slot per scheduler thread, named by the thread's index. The monitor
+   walks them, so a busy thread is marked whoever else is running. A thread
+   that is not a scheduler thread has no slot and is never watched. */
 
 static _Atomic(zyxrt_coro *) running[ZYXXRT_PREEMPT_SLOTS];
 
 /* running_since is the monotonic time the thread resumed its coroutine. */
 static _Atomic uint64_t running_since[ZYXXRT_PREEMPT_SLOTS];
 
-static _Atomic size_t slot_count;
-
-/* self_slot is the calling thread's slot, or ZYXXRT_PREEMPT_NONE when the
-   thread is not a scheduler thread. */
+/* self_slot answers the calling thread's slot, or
+   ZYXXRT_PREEMPT_NONE when the thread is not a scheduler thread. The answer
+   comes from the scheduler rather than from a thread-local variable, because a
+   coroutine's saved context carries the storage of the thread it was saved
+   on, and a coroutine may be resumed elsewhere. */
 #define ZYXXRT_PREEMPT_NONE ((size_t)-1)
-static _Thread_local size_t self_slot = ZYXXRT_PREEMPT_NONE;
+static size_t self_slot(void) {
+  size_t index = zyxrt_sched_thread_index();
+  return index < ZYXXRT_PREEMPT_SLOTS ? index : ZYXXRT_PREEMPT_NONE;
+}
 
 /* The quantum is how long a coroutine may hold a scheduler thread before the
    monitor asks it to let another one run. Ten milliseconds is long enough
@@ -49,8 +53,7 @@ static void monitor(void *arg) {
   atomic_fetch_add_explicit(&monitor_live, 1, memory_order_acq_rel);
   while (!atomic_load_explicit(&monitor_quitting, memory_order_acquire)) {
     zyxrt_sleep(ZYXXRT_MONITOR_NS);
-    size_t slots = atomic_load_explicit(&slot_count, memory_order_acquire);
-    for (size_t i = 0; i < slots; i++) {
+    for (size_t i = 0; i < ZYXXRT_PREEMPT_SLOTS; i++) {
       zyxrt_coro *c = atomic_load_explicit(&running[i], memory_order_acquire);
       if (c == NULL) {
         continue;
@@ -77,41 +80,31 @@ void zyxrt_preempt_init(void) {
   if (!zyxrt_threads()) {
     return;
   }
-  atomic_store_explicit(&slot_count, 0, memory_order_relaxed);
   for (size_t i = 0; i < ZYXXRT_PREEMPT_SLOTS; i++) {
     atomic_store_explicit(&running[i], NULL, memory_order_relaxed);
   }
   zyxrt_thread_start(monitor, NULL);
 }
 
-/* zyxrt_preempt_thread gives the calling scheduler thread a slot of its own. */
-void zyxrt_preempt_thread(void) {
-  if (!zyxrt_threads()) {
-    return;
-  }
-  size_t slot = atomic_fetch_add_explicit(&slot_count, 1, memory_order_acq_rel);
-  if (slot < ZYXXRT_PREEMPT_SLOTS) {
-    self_slot = slot;
-  }
-}
-
 /* zyxrt_preempt_enter records the coroutine the calling thread is about to
    run, which is the one the monitor watches. */
 void zyxrt_preempt_enter(zyxrt_coro *c) {
-  if (self_slot == ZYXXRT_PREEMPT_NONE) {
+  size_t slot = self_slot();
+  if (slot == ZYXXRT_PREEMPT_NONE) {
     return;
   }
-  atomic_store_explicit(&running_since[self_slot], zyxrt_now(), memory_order_relaxed);
-  atomic_store_explicit(&running[self_slot], c, memory_order_release);
+  atomic_store_explicit(&running_since[slot], zyxrt_now(), memory_order_relaxed);
+  atomic_store_explicit(&running[slot], c, memory_order_release);
 }
 
 /* zyxrt_preempt_leave records that the calling thread runs no coroutine, which
    is the state it is in while it chooses the next one. */
 void zyxrt_preempt_leave(void) {
-  if (self_slot == ZYXXRT_PREEMPT_NONE) {
+  size_t slot = self_slot();
+  if (slot == ZYXXRT_PREEMPT_NONE) {
     return;
   }
-  atomic_store_explicit(&running[self_slot], NULL, memory_order_release);
+  atomic_store_explicit(&running[slot], NULL, memory_order_release);
 }
 
 /* zyxrt_preempt_check is what a loop back edge calls. A marked coroutine gives

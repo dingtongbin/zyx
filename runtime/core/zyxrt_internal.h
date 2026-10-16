@@ -193,6 +193,11 @@ void zyxrt_platform_init(void);
    ZYX_THREADS names, each with a queue of its own, and a coroutine is resumed
    only on the thread that owns it. */
 void zyxrt_sched_ready(zyxrt_coro *c);
+/* zyxrt_sched_thread_index answers which scheduler thread the caller runs on,
+   or the number of them when the caller is not one. */
+size_t zyxrt_sched_thread_index(void);
+
+/* zyxrt_sched_suspend suspends the running coroutine. */
 void zyxrt_sched_suspend(zyxrt_coro *c);
 /* zyxrt_sched_run is the scheduler loop of the calling thread. zyxrt_sched_init
    makes the calling thread the first of them, so a program's own thread runs
@@ -302,7 +307,7 @@ void zyxrt_sched_park(uint64_t deadline);
 
 /* Cooperative preemption. zyxrt_preempt_init starts the monitor thread, which
    marks every coroutine that has held its scheduler thread for a whole
-   quantum; zyxrt_preempt_thread gives a scheduler thread its slot;
+   quantum; a scheduler thread is named by its index;
    zyxrt_preempt_enter and zyxrt_preempt_leave record which coroutine a thread
    is running; zyxrt_preempt_check is what a loop back edge calls. */
 /* The slots the monitor watches, one per scheduler thread. The scheduler
@@ -310,7 +315,6 @@ void zyxrt_sched_park(uint64_t deadline);
    is a thread a coroutine can hold for as long as it likes. */
 #define ZYXXRT_PREEMPT_SLOTS 256
 void zyxrt_preempt_init(void);
-void zyxrt_preempt_thread(void);
 void zyxrt_preempt_enter(zyxrt_coro *c);
 void zyxrt_preempt_leave(void);
 void zyxrt_preempt_check(void);

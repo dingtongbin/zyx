@@ -30,7 +30,22 @@ typedef struct zyxrt_thread {
 
 /* self is the thread state of the scheduler thread the caller runs on, or
    NULL for a thread that is not part of the scheduler. */
-static _Thread_local zyxrt_thread *self_thread;
+/* self_thread answers the scheduler thread the calling thread runs on, and
+   self_thread_set records it. The answer is read from the thread's own storage
+   each time rather than through a thread-local variable, because a coroutine's
+   saved context carries the thread-local base of the thread it was saved on:
+   on a target where the compiler keeps that base in a register the switch
+   preserves, a coroutine resumed on another thread would read and write the
+   storage of the thread it left. */
+#if defined(_WIN32)
+static DWORD self_thread_key = TLS_OUT_OF_INDEXES;
+static zyxrt_thread *self_thread(void) { return (zyxrt_thread *)TlsGetValue(self_thread_key); }
+static void self_thread_set(zyxrt_thread *t) { TlsSetValue(self_thread_key, (void *)t); }
+#else
+static _Thread_local zyxrt_thread *self_thread_holder;
+static zyxrt_thread *self_thread(void) { return self_thread_holder; }
+static void self_thread_set(zyxrt_thread *t) { self_thread_holder = t; }
+#endif
 
 static zyxrt_thread *threads;
 static size_t thread_count;
@@ -109,7 +124,7 @@ static zyxrt_coro *queue_pop(zyxrt_coro **head, zyxrt_coro **tail, zyxrt_lock *l
    calling thread's queue, or to the handoff queue when the caller is not a
    scheduler thread, where the first thread to take it becomes its owner. */
 static void sched_push(zyxrt_coro *c) {
-  zyxrt_thread *self = self_thread;
+  zyxrt_thread *self = self_thread();
   zyxrt_thread *target = NULL;
   if (!atomic_load_explicit(&stopping, memory_order_acquire)) {
     size_t owner = atomic_load_explicit(&c->owner, memory_order_acquire);
@@ -196,11 +211,10 @@ static zyxrt_coro *incoming_pop(void) {
 }
 
 /* take_ready returns the next coroutine this thread should run: work that
-   arrived from outside the scheduler, which no thread owns yet, and then the
-   thread's own next. A coroutine is resumed only on the thread that owns it:
-   a stack this runtime saves is continued by the thread that saved it, so
-   there is nothing to take from another thread, and a wake hands the
-   coroutine to its owner instead. */
+   arrived from outside the scheduler, which no thread owns yet, then its own
+   next, and then a share of what another thread has left, which keeps one busy
+   thread from leaving the others idle. A coroutine taken from another thread
+   is run here and belongs to this thread from then on. */
 static zyxrt_coro *take_ready(zyxrt_thread *t) {
   if (incoming_ready()) {
     zyxrt_coro *c = incoming_pop();
@@ -208,15 +222,32 @@ static zyxrt_coro *take_ready(zyxrt_thread *t) {
   }
   zyxrt_coro *c = queue_pop(&t->head, &t->tail, &t->lock);
   if (c != NULL) return c;
-  return incoming_pop();
+  c = incoming_pop();
+  if (c != NULL) return c;
+  for (size_t i = 1; i < thread_count; i++) {
+    zyxrt_thread *other = &threads[(t->index + i) % thread_count];
+    c = queue_pop(&other->head, &other->tail, &other->lock);
+    if (c != NULL) return c;
+  }
+  return NULL;
 }
 
 zyxrt_coro *zyxrt_sched_current(void) {
-  return self_thread == NULL ? NULL : self_thread->current;
+  zyxrt_thread *t = self_thread();
+  return t == NULL ? NULL : t->current;
+}
+
+/* zyxrt_sched_thread_index answers which scheduler thread the caller runs on,
+   or the count of them when the caller is not one. A thread-local variable
+   cannot be used for it, because a coroutine's saved context carries the
+   storage of the thread it was saved on. */
+size_t zyxrt_sched_thread_index(void) {
+  zyxrt_thread *t = self_thread();
+  return t == NULL ? thread_count : t->index;
 }
 
 void zyxrt_sched_suspend(zyxrt_coro *c) {
-  zyxrt_thread *t = self_thread;
+  zyxrt_thread *t = self_thread();
   if (t == NULL) return;
   zyxrt_ctx_bounds_thread();
   zyxrt_ctx_switch(c->ctx, t->ctx);
@@ -284,7 +315,7 @@ void zyxrt_sched_enter(void) {
   zyxrt_region_free(c->region);
   c->region = NULL;
   c->exit = 1;
-  zyxrt_thread *t = self_thread;
+  zyxrt_thread *t = self_thread();
   zyxrt_ctx_bounds_thread();
   zyxrt_ctx_switch(c->ctx, t->ctx);
 }
@@ -305,7 +336,7 @@ void zyxrt_sched_abandon(zyxrt_coro *c) {
     c->region = NULL;
   }
   c->exit = 1;
-  zyxrt_thread *t = self_thread;
+  zyxrt_thread *t = self_thread();
   zyxrt_ctx_bounds_thread();
   zyxrt_ctx_switch(c->ctx, t->ctx);
 }
@@ -448,7 +479,8 @@ void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, voi
   zyxrt_region_adopt(zyxrt_region_current(), c);
   /* The spawning thread runs it first, so it belongs to that thread; a spawn
      from outside the scheduler belongs to no thread yet. */
-  c->owner = self_thread == NULL ? ZYXXRT_CORO_NO_OWNER : self_thread->index;
+  zyxrt_thread *owner_thread = self_thread();
+  c->owner = owner_thread == NULL ? ZYXXRT_CORO_NO_OWNER : owner_thread->index;
   /* No thread has this one on its stack yet, so a waker may queue it at once
      rather than leave the offer for a thread to pick up. */
   atomic_store_explicit(&c->sched, ZYXXRT_CORO_PARKED, memory_order_relaxed);
@@ -555,9 +587,8 @@ static size_t scheduler_threads(void) {
 /* thread_main is where a scheduler thread begins. */
 static void thread_main(void *arg) {
   zyxrt_thread *t = (zyxrt_thread *)arg;
-  self_thread = t;
+  self_thread_set(t);
   t->ctx = zyxrt_ctx_thread();
-  zyxrt_preempt_thread();
   atomic_fetch_add_explicit(&threads_live, 1, memory_order_acq_rel);
   zyxrt_sched_run();
   atomic_fetch_sub_explicit(&threads_live, 1, memory_order_acq_rel);
@@ -567,7 +598,7 @@ static void thread_main(void *arg) {
    arrived, run what is ready, and stop when every thread has nothing left to do
    and nothing is on its way. */
 void zyxrt_sched_run(void) {
-  zyxrt_thread *t = self_thread;
+  zyxrt_thread *t = self_thread();
   for (;;) {
     zyxrt_sched_advance();
     if (run_once(t)) continue;
@@ -610,6 +641,15 @@ void zyxrt_sched_init(void) {
   atomic_store_explicit(&stopping, 0, memory_order_relaxed);
   atomic_store_explicit(&externals, 0, memory_order_relaxed);
   atomic_store_explicit(&threads_live, 0, memory_order_relaxed);
+#if defined(_WIN32)
+  /* The key the calling threads record themselves under. */
+  if (self_thread_key == TLS_OUT_OF_INDEXES) {
+    self_thread_key = TlsAlloc();
+    if (self_thread_key == TLS_OUT_OF_INDEXES) {
+      zyxrt_panic("cannot reserve thread storage", 30);
+    }
+  }
+#endif
   incoming_head = NULL;
   incoming_tail = NULL;
   /* A target without threads runs one, whatever ZYX_THREADS says. */
@@ -624,9 +664,8 @@ void zyxrt_sched_init(void) {
   }
   /* The calling thread is the first of them, so the program's own thread runs
      coroutines rather than sitting outside the scheduler. */
-  self_thread = &threads[0];
+  self_thread_set(&threads[0]);
   threads[0].ctx = zyxrt_ctx_thread();
-  zyxrt_preempt_thread();
   for (size_t i = 1; i < thread_count; i++) {
     zyxrt_thread_start(thread_main, &threads[i]);
   }
