@@ -262,11 +262,20 @@ func (g *generator) directCall(module string, n *zyxc.Node, sym string, recv *va
 // cArguments renders one argument in the form the C ABI uses: a fat pointer
 // crosses as its address and its length.
 func (g *generator) cArguments(a *value) []string {
-	v := g.load(a)
 	lls := g.abiArgs(a.typ)
 	if len(lls) == 1 {
+		if byAddress(a.typ) {
+			// A record crosses as its own bytes, so it is read out of the
+			// object that holds it.
+			addr := g.addrText(a)
+			reg := g.newReg()
+			g.emit("  %s = load %s, ptr %s", reg, lls[0], addr)
+			return []string{lls[0] + " " + reg}
+		}
+		v := g.load(a)
 		return []string{lls[0] + " " + v.text}
 	}
+	v := g.load(a)
 	parts := make([]string, 0, len(lls))
 	for i, ll := range lls {
 		reg := g.newReg()

@@ -286,15 +286,16 @@ func (g *generator) llPass(t *types.Type) string {
 func (g *generator) ptrInt() string { return g.target.PtrInt() }
 
 // byAddress reports whether a value of the type is passed and stored as the
-// address of its object rather than as the object itself. A reference
-// struct and a fixed-size array are created in a region, so a value of
-// either names an object rather than carrying one.
+// address of its object rather than as the object itself. A reference struct
+// is created in a region, so a value of one names an object rather than
+// carrying one. A C layout type is a value type: its bytes travel with the
+// value, which is what lets it cross to C.
 func byAddress(t *types.Type) bool {
 	if t == nil {
 		return false
 	}
 	switch t.Kind {
-	case types.KindStruct, types.KindExternStruct, types.KindUnion, types.KindEnum, types.KindArray:
+	case types.KindStruct, types.KindEnum, types.KindArray:
 		return true
 	}
 	return false

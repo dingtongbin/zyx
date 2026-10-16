@@ -265,7 +265,11 @@ func (g *generator) abiArgs(t *types.Type) []string {
 	case toolchain.ABIFatPointer:
 		return []string{"ptr", g.ptrInt()}
 	case toolchain.ABIAggregate:
-		return []string{"ptr"}
+		// A record crosses as its own bytes. Which registers it occupies is
+		// the target's C ABI, and the compiler that owns that ABI is the
+		// one the C side is compiled with, so the classification is left to
+		// it rather than written here.
+		return []string{g.llType(t)}
 	}
 	return []string{g.llPass(t)}
 }

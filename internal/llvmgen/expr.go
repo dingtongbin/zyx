@@ -1029,9 +1029,10 @@ func (g *generator) field(module string, n *zyxc.Node) *value {
 	if recv == nil {
 		return nil
 	}
-	recv = g.load(recv)
+	// A field is reached through the storage of its object, so a value that
+	// lies inline keeps the address it lies at.
+	base := g.addrText(recv)
 	typ := recv.typ
-	base := recv.text
 	if alias := g.tab.Alias(typ); alias != nil {
 		typ = alias
 	}
@@ -1183,7 +1184,14 @@ func (g *generator) structLit(module string, n *zyxc.Node) *value {
 		g.fail(err)
 		return nil
 	}
-	base := g.allocateIn(n, typ)
+	var base string
+	if byAddress(typ) {
+		base = g.allocateIn(n, typ)
+	} else {
+		// A value type lies in the frame rather than in a region: its bytes
+		// travel with the value, which is what lets it cross to C.
+		base = g.objectAlloca(typ)
+	}
 	placed, err := layout.Fields(typ, g.tab, g.target.Layout())
 	if err != nil {
 		g.fail(fmt.Errorf("llvmgen: the layout of %s: %w", typ, err))
@@ -1220,6 +1228,11 @@ func (g *generator) structLit(module string, n *zyxc.Node) *value {
 			return nil
 		}
 		g.storeInto(reg, fieldType, v, true)
+	}
+	// A value type lies in the frame, so the literal names that storage and
+	// a read of it loads the bytes; a reference type names its object.
+	if !byAddress(typ) {
+		return &value{text: base, ll: "ptr", typ: typ, lvalue: true, inline: true}
 	}
 	return &value{text: base, ll: "ptr", typ: typ}
 }
