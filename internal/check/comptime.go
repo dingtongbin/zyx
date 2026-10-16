@@ -360,6 +360,7 @@ func (c *checker) evalSelector(v *ast.SelectorExpr) *Value {
 		if sym := c.symOf(id); sym != nil && sym.Kind == resolve.KindType {
 			if enum := c.typeOfSymbol(sym); enum != nil && enum.Kind == types.KindEnum {
 				if d := c.declOf(enum); d != nil && d.Variant(v.Name.Name) != nil {
+					c.out.Nodes[v.Name] = enum
 					return c.evalVariant(enum, v.Name.Name, nil)
 				}
 			}
