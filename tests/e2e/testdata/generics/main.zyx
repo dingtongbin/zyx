@@ -1,6 +1,13 @@
 package main
 
 import "std/fmt"
+// Width answers the size of the type the caller supplies. A layout query
+// about a type parameter is settled when the declaration is instantiated, so
+// it can stand in a generic body.
+
+func Width<T>(v: T) -> usize {
+    return meta.size_of(T)
+}
 
 struct Pair<T> {
     first: T
@@ -52,4 +59,10 @@ func main() {
     fmt.PrintI64(wrap(9).First())
     fmt.PrintNl()
     fmt.Println(wrap("solo").Second())
+    // A layout query about a type parameter is settled when the declaration
+    // is instantiated, so it can stand in a generic body.
+    fmt.PrintU64(u64(Width(1)))
+    fmt.PrintNl()
+    fmt.PrintU64(u64(Width(1.0)))
+    fmt.PrintNl()
 }

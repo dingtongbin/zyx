@@ -55,6 +55,11 @@ func (g *generator) queryType(module string, n *zyxc.Node) (*types.Type, error) 
 // qualifier.
 func typeTextOf(n *zyxc.Node) (string, error) {
 	switch n.Kind {
+	case "type":
+		if len(n.Payload) < 1 {
+			return "", fmt.Errorf("llvmgen: a type needs a spelling")
+		}
+		return n.Payload[0], nil
 	case "name":
 		if len(n.Payload) < 1 {
 			return "", fmt.Errorf("llvmgen: a type name needs a spelling")

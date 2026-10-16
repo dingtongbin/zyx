@@ -970,7 +970,30 @@ func (g *generator) convert(module string, n *zyxc.Node) *value {
 	if src == nil {
 		return nil
 	}
+	if src.typ != nil && src.typ.Kind == types.KindEnum && dst.IsInteger() {
+		// An enum's tag is an integer, and the object the value names holds
+		// the tag first.
+		size := g.tagSize(src.typ)
+		ll := g.tagType(size)
+		reg := g.newReg()
+		g.emit("  %s = load %s, ptr %s", reg, ll, src.text)
+		src = &value{text: reg, ll: ll, typ: tagInteger(size)}
+	}
 	return g.cast(src, dst)
+}
+
+// tagInteger returns the unsigned integer type of a tag of the given size,
+// which is what an enum's tag converts as.
+func tagInteger(size uint64) *types.Type {
+	switch size {
+	case 1:
+		return types.Uint8
+	case 2:
+		return types.Uint16
+	case 4:
+		return types.Uint32
+	}
+	return types.Uint64
 }
 
 // cast converts a value to another scalar type.

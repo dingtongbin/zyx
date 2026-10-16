@@ -1144,9 +1144,21 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 			return b.at(n, v.Sp)
 		case b.namespace(sel) != "":
 			// meta.size_of(T) and dur.ms(100) are their own node kinds,
-			// because the backend settles them without a call.
+			// because the backend settles them without a call. A meta query
+			// names a type, so its argument is written as a type text, which
+			// is what monomorphization substitutes.
 			n := New(b.namespace(sel), sel.Name.Name)
-			n.Child(b.args(v.Args)...)
+			if b.namespace(sel) == "meta" {
+				for _, a := range v.Args {
+					t := b.staticType(a)
+					if t == nil {
+						continue
+					}
+					n.Child(b.wrap("arg", b.at(New("type", b.typeText(t)), a.Span())))
+				}
+			} else {
+				n.Child(b.args(v.Args)...)
+			}
 			return b.at(n, v.Sp)
 		case b.isJoin(sel):
 			n := New("join", sel.Name.Name)
@@ -1370,12 +1382,16 @@ func (b *builder) isCCall(v *ast.SelectorExpr) bool {
 // mistaken for one, and the enum is read from the variant name, which is the
 // node the checker records it on.
 func (b *builder) isVariant(v *ast.SelectorExpr) bool {
-	id := qualifierName(v)
-	if id == nil || !b.isTypeName(id) {
-		return false
-	}
 	t := b.cpkg.Nodes[v.Name]
 	if t == nil || t.Kind != types.KindEnum {
+		return false
+	}
+	// The receiver must name the enum itself: a bare type name, or a package
+	// qualified one. A field read names a value rather than a type, so a
+	// receiver that has a value type rules the reading out.
+	if id := qualifierName(v); id != nil && b.isTypeName(id) {
+		// The type is written directly, as `Type.Variant`.
+	} else if recv := b.staticType(v.X); recv != nil && recv.Kind != types.KindTypeValue {
 		return false
 	}
 	d := b.cpkg.Decl(t)

@@ -219,7 +219,6 @@ void zyxrt_mutex_unlock(void *mutex);
 void zyxrt_mutex_wait(void *mutex);
 void zyxrt_mutex_notify_one(void *mutex);
 void zyxrt_mutex_notify_all(void *mutex);
-
 /* Channels. A channel carries values of one size, up to a fixed capacity. */
 void *zyxrt_chan_new(size_t elem, size_t cap);
 void zyxrt_chan_send(void *ch, const void *value);

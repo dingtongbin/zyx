@@ -6,6 +6,7 @@ package check
 import (
 	"zyx/internal/ast"
 	"zyx/internal/diag"
+	"zyx/internal/resolve"
 	"zyx/internal/token"
 	"zyx/internal/types"
 )
@@ -78,9 +79,11 @@ func (c *checker) unknownNamespaceName(v *ast.SelectorExpr, ns string) {
 }
 
 // checkNamespaceCall checks a call into the meta or dur namespace, which is
-// only available at compile time.
+// only available at compile time. A query about a type parameter is the
+// exception: the answer is settled when the declaration that asks is
+// instantiated, so the call is left where it stands.
 func (c *checker) checkNamespaceCall(sel *ast.SelectorExpr, v *ast.CallExpr, ns string) *types.Type {
-	if !c.inComptime {
+	if !c.inComptime && !c.mentionsTypeParam(v) {
 		c.errorHelp(diag.CodeComptimeOnly, sel.Sp,
 			"move the call into a comptime context, such as a comptime func or a constant initializer",
 			"%s.%s is only available at compile time", ns, sel.Name.Name)
@@ -90,6 +93,21 @@ func (c *checker) checkNamespaceCall(sel *ast.SelectorExpr, v *ast.CallExpr, ns 
 		return c.checkDurCall(sel, v)
 	}
 	return c.checkMetaCall(sel, v)
+}
+
+// mentionsTypeParam reports whether an argument names a type parameter, which
+// is what a layout query inside a generic body asks about.
+func (c *checker) mentionsTypeParam(v *ast.CallExpr) bool {
+	for _, a := range v.Args {
+		id, ok := a.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		if sym := c.symOf(id); sym != nil && sym.Kind == resolve.KindTypeParam {
+			return true
+		}
+	}
+	return false
 }
 
 // checkDurCall checks the compile-time duration constructors.

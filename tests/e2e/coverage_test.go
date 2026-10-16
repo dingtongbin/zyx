@@ -394,7 +394,6 @@ var deferredRunning = map[string]string{
 	// machine code carries it by nature.
 	"alias":      compileOnly,
 	"bind-const": compileOnly,
-	"meta":       compileOnly,
 }
 
 // inImported is the reason a kind is deferred from this measurement: its only

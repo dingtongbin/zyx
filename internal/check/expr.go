@@ -443,6 +443,17 @@ func (c *checker) isType(v *ast.IsExpr) *types.Type {
 // selectorType checks `p.x`, `ctx.Handle`, and `net.Listen` in value
 // position.
 func (c *checker) selectorType(v *ast.SelectorExpr) *types.Type {
+	if inner, ok := v.X.(*ast.SelectorExpr); ok {
+		// A variant of an enum another package declares carries both
+		// qualifiers: the package, then the enum.
+		if id, ok := inner.X.(*ast.Ident); ok {
+			if pkg := c.symOf(id); pkg != nil && pkg.Kind == resolve.KindPackage {
+				if t := c.importedType(pkg, inner.Name.Name); t != nil {
+					return c.variantOf(v, t)
+				}
+			}
+		}
+	}
 	if id, ok := v.X.(*ast.Ident); ok {
 		if isNamespaceName(id.Name) {
 			return c.namespaceValue(v, id.Name)
@@ -598,10 +609,15 @@ func cTypeOf(table *cheader.Table, name string) *types.Type {
 	return nil
 }
 
-// variantValue returns the type of `Type.Name` in value position: a variant
-// without a payload, or a constant the type body declares.
+// variantValue returns the type of `Type.Name` in value position for a type
+// the package declares.
 func (c *checker) variantValue(v *ast.SelectorExpr, sym *resolve.Symbol) *types.Type {
-	typ := c.typeOfSymbol(sym)
+	return c.variantOf(v, c.typeOfSymbol(sym))
+}
+
+// variantOf returns the type of `Type.Name` in value position: a variant
+// without a payload, or a constant the type body declares.
+func (c *checker) variantOf(v *ast.SelectorExpr, typ *types.Type) *types.Type {
 	if typ == nil {
 		return nil
 	}

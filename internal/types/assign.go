@@ -59,13 +59,25 @@ func NeedsImplementation(dst, src *Type) bool {
 }
 
 // Convertible reports whether the explicit conversion dst(src) is allowed.
-// The language permits only numeric conversions, char with u32, and raw
-// with usize; bool never converts.
+// The language permits numeric conversions, char with u32, raw with usize, an
+// enum with an integer, which is its tag, and a type parameter with an
+// integer or an address; bool never converts.
+//
+// A type parameter converts because what it is stays unknown until the
+// declaration is instantiated, so the constraint is what makes the
+// conversion sound: a parameter whose constraint is an integer or an address
+// converts, and one that is not is refused where the instance is settled.
 func Convertible(dst, src *Type) bool {
 	if dst == nil || src == nil {
 		return false
 	}
 	if dst.IsNumeric() && src.IsNumeric() {
+		return true
+	}
+	if dst.Kind == KindTypeParam || src.Kind == KindTypeParam {
+		return dst.IsInteger() || src.IsInteger() || dst.Kind == KindRaw || src.Kind == KindRaw
+	}
+	if src.Kind == KindEnum && dst.IsInteger() {
 		return true
 	}
 	switch {

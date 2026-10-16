@@ -1,9 +1,7 @@
-/* Atomics, fences, and sync primitive support. A primitive that must wait
-   parks the calling coroutine on its own wait list, so waiting costs no
-   scheduler thread. */
+/* Sync primitives. A primitive that must wait parks the calling coroutine on
+   its own wait list, so waiting costs no scheduler thread. */
 
 #include "zyxrt_internal.h"
-
 
 /* A wait group counts the coroutines a waiter waits for. */
 typedef struct zyxrt_wg {

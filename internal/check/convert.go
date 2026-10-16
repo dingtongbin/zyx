@@ -26,7 +26,7 @@ func (c *checker) checkConvert(dst *types.Type, src ast.Expr, sp source.Span) *t
 	}
 	if !types.Convertible(dst, from) {
 		c.errorHelp(diag.CodeNoConversion, sp,
-			"convert between numeric types, char and u32, or raw and usize",
+			"convert between numeric types, char and u32, raw and usize, or an enum and an integer",
 			"cannot convert %s to %s", from, dst)
 	}
 	return dst

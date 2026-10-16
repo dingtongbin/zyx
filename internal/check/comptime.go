@@ -354,6 +354,17 @@ func (c *checker) evalTypeConst(v *ast.SelectorExpr) *Value {
 
 // evalSelector evaluates a field access on a constant struct.
 func (c *checker) evalSelector(v *ast.SelectorExpr) *Value {
+	// A variant with no payload is a value of its enum, which is what makes
+	// `Order.SeqCst` usable where a constant is required.
+	if id, ok := v.X.(*ast.Ident); ok {
+		if sym := c.symOf(id); sym != nil && sym.Kind == resolve.KindType {
+			if enum := c.typeOfSymbol(sym); enum != nil && enum.Kind == types.KindEnum {
+				if d := c.declOf(enum); d != nil && d.Variant(v.Name.Name) != nil {
+					return c.evalVariant(enum, v.Name.Name, nil)
+				}
+			}
+		}
+	}
 	recv := c.eval(v.X)
 	if recv == nil {
 		return nil
