@@ -92,6 +92,7 @@ func (l *Loader) Load(importPath string) (*Graph, error) {
 			return err
 		}
 		for _, dep := range pkg.Imports {
+			l.checkImport(pkg, dep)
 			if err := visit(dep, append(stack, p)); err != nil {
 				return err
 			}
@@ -270,6 +271,52 @@ func Importable(fromDir, toPath string) bool {
 		return true
 	}
 	return from == prefix || strings.HasPrefix(from, prefix+"/")
+}
+
+// checkImport reports an import a package may not make. The internal rule is
+// the one that can fail: the import is not there for the checker to see,
+// because the loader refuses to reach the package at all.
+func (l *Loader) checkImport(pkg *Package, dep string) {
+	if Importable(pkg.ImportPath, dep) {
+		return
+	}
+	at := pkg.ImportSpan(dep)
+	pkg.Diags = append(pkg.Diags, diag.New(diag.CodeImportInvalid, at,
+		"%s is internal to %s", dep, internalRoot(dep)).
+		WithHelp("move the import inside that subtree, or move the package out of it"))
+}
+
+// ImportSpan returns where a package writes an import of a path, so a
+// diagnostic about it points at the line the program wrote.
+func (p *Package) ImportSpan(path string) source.Span {
+	for _, file := range p.Syntax {
+		if file == nil {
+			continue
+		}
+		for _, imp := range file.Imports {
+			if !imp.CHeader && imp.Path == path {
+				return imp.Span()
+			}
+		}
+	}
+	for _, file := range p.Syntax {
+		if file != nil && file.Package != nil && file.Package.Name != nil {
+			return file.Package.Name.Sp
+		}
+	}
+	return source.Span{}
+}
+
+// internalRoot returns the subtree a path with an internal segment belongs
+// to, which is the part before the segment.
+func internalRoot(path string) string {
+	segments := strings.Split(path, "/")
+	for i, seg := range segments {
+		if seg == "internal" {
+			return strings.Join(segments[:i], "/")
+		}
+	}
+	return path
 }
 
 // A Result is the front-end result of one package.

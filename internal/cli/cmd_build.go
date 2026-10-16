@@ -50,13 +50,19 @@ func (s *Session) build(args []string) int {
 	if err != nil {
 		return s.usageError(err)
 	}
+	if !s.checkLang(m) {
+		return exitError
+	}
 	paths, err := s.targets(m, o)
 	if err != nil {
 		return s.usageError(err)
 	}
 	session := &build.Session{Loader: s.loader(m, o)}
 	reported := map[string]bool{}
-	built := 0
+	// The front end runs before any output is chosen, because where an
+	// executable goes depends on how many main packages the targets hold.
+	var mains []string
+	front := map[string][]*build.Result{}
 	for _, path := range paths {
 		results, err := session.FrontEnd(path)
 		if err != nil {
@@ -66,26 +72,28 @@ func (s *Session) build(args []string) int {
 		if s.reportOnce(results, reported) {
 			return exitError
 		}
-		last := results[len(results)-1]
-		if last.Package.Name != "main" {
+		if results[len(results)-1].Package.Name != "main" {
 			continue
 		}
-		out := o.output
-		if out == "" {
-			out = build.ExecutablePath(m.Root, path)
-		}
-		if _, err := session.Link(path, results, s.backendOptions(o, out, m.Root)); err != nil {
+		mains = append(mains, path)
+		front[path] = results
+	}
+	if len(mains) == 0 {
+		fmt.Fprintln(s.Stderr, "zyx: no package among the targets is a main package")
+		return exitError
+	}
+	outs, err := build.OutputPaths(m.Root, mains, o.output, o.target)
+	if err != nil {
+		return s.usageError(err)
+	}
+	for i, path := range mains {
+		if _, err := session.Link(path, front[path], s.backendOptions(o, outs[i], m.Root)); err != nil {
 			fmt.Fprintln(s.Stderr, "zyx:", err)
 			return exitError
 		}
-		built++
 		if o.verbose {
-			fmt.Fprintf(s.Stdout, "built %s\n", out)
+			fmt.Fprintf(s.Stdout, "built %s\n", outs[i])
 		}
-	}
-	if built == 0 {
-		fmt.Fprintln(s.Stderr, "zyx: no package among the targets is a main package")
-		return exitError
 	}
 	return exitOK
 }
@@ -106,6 +114,9 @@ func (s *Session) run(args []string) int {
 	if err != nil {
 		return s.usageError(err)
 	}
+	if !s.checkLang(m) {
+		return exitError
+	}
 	paths, err := s.targets(m, o)
 	if err != nil {
 		return s.usageError(err)
@@ -124,7 +135,7 @@ func (s *Session) run(args []string) int {
 		if results[len(results)-1].Package.Name != "main" {
 			continue
 		}
-		out := build.ExecutablePath(m.Root, path)
+		out := build.ExecutablePath(m.Root, path, o.target)
 		if _, err := session.Link(path, results, s.backendOptions(o, out, m.Root)); err != nil {
 			fmt.Fprintln(s.Stderr, "zyx:", err)
 			return exitError
@@ -160,6 +171,9 @@ func (s *Session) emitBackend(command string, args []string) int {
 	m, err := s.findModule(s.Dir)
 	if err != nil {
 		return s.usageError(err)
+	}
+	if !s.checkLang(m) {
+		return exitError
 	}
 	paths, err := s.targets(m, o)
 	if err != nil {

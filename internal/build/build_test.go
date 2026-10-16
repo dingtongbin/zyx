@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"zyx/internal/diag"
 	"zyx/internal/toolchain"
 )
 
@@ -219,6 +220,89 @@ func TestResolveRejectsUnknownAndRelativePaths(t *testing.T) {
 		if _, err := l.Resolve(path); err == nil {
 			t.Errorf("%q must not resolve", path)
 		}
+	}
+}
+
+func TestInternalImportIsRefused(t *testing.T) {
+	// A path with an internal segment is only importable from inside the
+	// subtree that holds it, so the loader reports the import rather than
+	// reaching the package.
+	l := loader(t, map[string]string{
+		"main.zyx":                   "package main\n\nimport \"example.com/app/sub/internal/util\"\n\nfunc Main() {\n}\n",
+		"sub/internal/util/util.zyx": "package util\n\nfunc Use() {\n}\n",
+	})
+	g, err := l.Load("example.com/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := g.Order[len(g.Order)-1]
+	if len(entry.Diags) == 0 {
+		t.Fatal("an import from outside the subtree was accepted")
+	}
+	if entry.Diags[0].Code != diag.CodeImportInvalid {
+		t.Errorf("code = %s, want %s", entry.Diags[0].Code, diag.CodeImportInvalid)
+	}
+}
+
+func TestInternalImportFromInsideIsAccepted(t *testing.T) {
+	l := loader(t, map[string]string{
+		"main.zyx":                   "package main\n\nimport \"example.com/app/sub/server\"\n\nfunc Main() {\n}\n",
+		"sub/server/server.zyx":      "package server\n\nimport \"example.com/app/sub/internal/util\"\n\nfunc Listen() {\n}\n",
+		"sub/internal/util/util.zyx": "package util\n\nfunc Use() {\n}\n",
+	})
+	g, err := l.Load("example.com/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pkg := range g.Order {
+		if len(pkg.Diags) != 0 {
+			t.Errorf("%s reported %v", pkg.ImportPath, pkg.Diags)
+		}
+	}
+}
+
+func TestOutputPaths(t *testing.T) {
+	linux := linuxAMD64()
+	root := t.TempDir()
+	paths, err := OutputPaths(root, []string{"example.com/app"}, "", linux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root, "build", "app"); paths[0] != want {
+		t.Errorf("path = %q, want %q", paths[0], want)
+	}
+
+	// The target decides the extension an executable carries.
+	if windows, err := toolchain.ParseTarget("amd64-pc-windows-gnu"); err == nil {
+		paths, err := OutputPaths(root, []string{"example.com/app"}, "", windows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(root, "build", "app.exe"); paths[0] != want {
+			t.Errorf("windows path = %q, want %q", paths[0], want)
+		}
+	}
+
+	// Two main packages whose directories share a name cannot share the
+	// default directory.
+	if _, err := OutputPaths(root, []string{"example.com/app/tool", "example.com/lib/tool"}, "", linux); err == nil {
+		t.Error("two packages with the same directory name were accepted")
+	}
+
+	// A file holds one executable only.
+	if _, err := OutputPaths(root, []string{"example.com/app", "example.com/other"}, "out", linux); err == nil {
+		t.Error("two main packages were accepted with a file output")
+	}
+
+	// A directory holds one executable per main package, named after its
+	// directory.
+	dir := filepath.Join(root, "bin") + string(filepath.Separator)
+	paths, err = OutputPaths(root, []string{"example.com/app", "example.com/other"}, dir, linux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paths[0] != filepath.Join(root, "bin", "app") || paths[1] != filepath.Join(root, "bin", "other") {
+		t.Errorf("directory paths = %v", paths)
 	}
 }
 

@@ -237,6 +237,59 @@ func parseRetraction(fields []string) (Retraction, error) {
 // Format renders the manifest in canonical form: one directive per line,
 // requirements, exclusions, and replacements sorted by path, and no
 // trailing space.
+// CheckLang reports whether a manifest asks for a language version this
+// compiler provides. The zyx directive declares the version a module is
+// written for, so a manifest that asks for a newer one cannot be built.
+func CheckLang(f *File, compiler string) error {
+	if f == nil || f.Lang == "" {
+		return nil
+	}
+	need, ok := versionParts(f.Lang)
+	if !ok {
+		return fmt.Errorf("the zyx directive of zyx.mod is %q, which is not a version", f.Lang)
+	}
+	have, ok := versionParts(compiler)
+	if !ok {
+		return nil
+	}
+	if need[0] != have[0] {
+		if need[0] > have[0] {
+			return langError(f.Lang, compiler)
+		}
+		return nil
+	}
+	if need[1] > have[1] {
+		return langError(f.Lang, compiler)
+	}
+	return nil
+}
+
+// langError reports a manifest this compiler cannot serve.
+func langError(need, have string) error {
+	return fmt.Errorf("zyx.mod requires language version %s, and this compiler provides %s", need, have)
+}
+
+// versionParts reads the major and minor components of a version. A
+// component that is not a number makes the version unreadable, which leaves
+// the check to whatever the caller does with a version it cannot compare.
+func versionParts(v string) ([2]int, bool) {
+	var out [2]int
+	fields := strings.Split(v, ".")
+	if len(fields) < 2 {
+		return out, false
+	}
+	for i := 0; i < 2; i++ {
+		n, err := strconv.Atoi(strings.TrimSpace(fields[i]))
+		if err != nil {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
+}
+
+// Format returns the manifest text, with one directive per line and the
+// entries of each list in byte order, so a rewrite is deterministic.
 func (f *File) Format() []byte {
 	var b strings.Builder
 	if f.Module != "" {

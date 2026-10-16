@@ -69,29 +69,38 @@ func (s *Session) modTidy(args []string) int {
 	if err != nil {
 		return s.usageError(err)
 	}
-	loader := s.loader(m, o)
-	all, err := loader.All("")
-	if err != nil {
-		return s.usageError(err)
+	if !s.checkLang(m) {
+		return exitError
 	}
+	loader := s.loader(m, o)
 	needed := map[string]bool{}
-	for _, path := range all {
-		pkg, err := loader.LoadPackage(path)
+	// The reachable graph is the build graph together with the test graph, so
+	// a requirement only the tests need is kept as well.
+	for _, testing := range []bool{false, true} {
+		load := *loader
+		load.Testing = testing
+		all, err := load.All("")
 		if err != nil {
-			fmt.Fprintln(s.Stderr, "zyx:", err)
-			return exitError
+			return s.usageError(err)
 		}
-		if s.report(pkg.Diags) {
-			return exitError
-		}
-		for _, imp := range pkg.Imports {
-			if strings.HasPrefix(imp, "std/") || imp == "std" {
-				continue
+		for _, path := range all {
+			pkg, err := load.LoadPackage(path)
+			if err != nil {
+				fmt.Fprintln(s.Stderr, "zyx:", err)
+				return exitError
 			}
-			if imp == m.File.Module || strings.HasPrefix(imp, m.File.Module+"/") {
-				continue
+			if s.report(pkg.Diags) {
+				return exitError
 			}
-			needed[imp] = true
+			for _, imp := range pkg.Imports {
+				if strings.HasPrefix(imp, "std/") || imp == "std" {
+					continue
+				}
+				if imp == m.File.Module || strings.HasPrefix(imp, m.File.Module+"/") {
+					continue
+				}
+				needed[imp] = true
+			}
 		}
 	}
 
@@ -127,11 +136,47 @@ func (s *Session) modTidy(args []string) int {
 		}
 	}
 	m.File.Require = final
-	if err := os.WriteFile(filepath.Join(m.Root, "zyx.mod"), m.File.Format(), 0o644); err != nil {
+	if err := writeManifest(filepath.Join(m.Root, "zyx.mod"), m.File.Format()); err != nil {
 		fmt.Fprintln(s.Stderr, "zyx:", err)
 		return exitError
 	}
 	return exitOK
+}
+
+// writeManifest replaces a manifest atomically: a reader sees the whole old
+// file or the whole new one, never a half-written one, and a failure leaves
+// the file as it was.
+func writeManifest(path string, data []byte) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), ".zyx.mod-")
+	if err != nil {
+		return err
+	}
+	name := temp.Name()
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		os.Remove(name)
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		os.Remove(name)
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		os.Remove(name)
+		return err
+	}
+	return nil
+}
+
+// checkLang reports a manifest this compiler cannot serve, which is a build
+// error rather than a usage error: the module is well formed, the compiler is
+// too old for it.
+func (s *Session) checkLang(m *module) bool {
+	if err := mod.CheckLang(m.File, Version); err != nil {
+		fmt.Fprintln(s.Stderr, "zyx:", err)
+		return false
+	}
+	return true
 }
 
 // containsRequirement reports whether a requirement list holds a path.

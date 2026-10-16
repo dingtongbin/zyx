@@ -110,6 +110,31 @@ retract v1.0.0
 	}
 }
 
+func TestCheckLang(t *testing.T) {
+	cases := []struct {
+		need    string
+		wantErr bool
+	}{
+		{"0.1", false},
+		{"0.0", false},
+		{"0.1.0", false},
+		{"1.0", true},
+		{"0.2", true},
+	}
+	for _, c := range cases {
+		err := CheckLang(&File{Lang: c.need}, "0.1.0")
+		if (err != nil) != c.wantErr {
+			t.Errorf("CheckLang(%q) error = %v, want error %v", c.need, err, c.wantErr)
+		}
+	}
+	if err := CheckLang(&File{}, "0.1.0"); err != nil {
+		t.Errorf("a manifest with no zyx directive was refused: %v", err)
+	}
+	if err := CheckLang(&File{Lang: "latest"}, "0.1.0"); err == nil {
+		t.Error("a manifest with an unreadable version was accepted")
+	}
+}
+
 func TestCompareVersions(t *testing.T) {
 	cases := []struct {
 		a, b string
