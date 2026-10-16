@@ -267,6 +267,9 @@ type module struct {
 	// Build is the module list a build reads, settled by version selection
 	// over the whole dependency graph.
 	Build []mod.Module
+	// Vendored marks a module whose build reads a vendor directory rather
+	// than the module cache.
+	Vendored bool
 }
 
 // findModule walks up from a directory to the module root.
@@ -311,7 +314,10 @@ func (s *Session) loader(m *module, o *options) *build.Loader {
 		}
 		l.Requires[dep.Path] = dep.Version
 	}
-	l.Modules = s.moduleCache(m)
+	l.Modules = nil
+	if !m.Vendored {
+		l.Modules = s.moduleCache(m)
+	}
 	if vendor := filepath.Join(m.Root, "vendor"); isDirectory(vendor) {
 		l.Vendor = vendor
 	}

@@ -671,6 +671,49 @@ func TestMatchPatterns(t *testing.T) {
 	}
 }
 
+func TestModulesTxtRoundTrips(t *testing.T) {
+	modules := []VendoredModule{
+		{Module: Module{Path: "example.com/dep", Version: "v1.0.0"}, Explicit: true, Lang: "0.1",
+			Packages: []string{"example.com/dep/util", "example.com/dep/util/sub"}},
+		{Module: Module{Path: "example.com/other", Version: "v2.0.0"}},
+	}
+	text := string(FormatModulesTxt(modules))
+	want := "# example.com/dep v1.0.0\n## explicit; zyx 0.1\nexample.com/dep/util\nexample.com/dep/util/sub\n" +
+		"# example.com/other v2.0.0\n"
+	if text != want {
+		t.Fatalf("modules.txt =\n%s\nwant\n%s", text, want)
+	}
+	parsed, err := ParseModulesTxt([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed) != 2 {
+		t.Fatalf("parsed %d modules, want 2", len(parsed))
+	}
+	if !parsed[0].Explicit || parsed[0].Lang != "0.1" || len(parsed[0].Packages) != 2 {
+		t.Errorf("first module = %+v", parsed[0])
+	}
+	if parsed[1].Explicit || parsed[1].Version != "v2.0.0" || len(parsed[1].Packages) != 0 {
+		t.Errorf("second module = %+v", parsed[1])
+	}
+	// The text is stable, so a mirror can be written again without a diff.
+	if again := string(FormatModulesTxt(parsed)); again != text {
+		t.Errorf("a second format =\n%s\nwant\n%s", again, text)
+	}
+}
+
+func TestParseModulesTxtRejectsMalformedText(t *testing.T) {
+	for _, text := range []string{
+		"## explicit\n",
+		"example.com/dep/util\n",
+		"# example.com/dep\n",
+	} {
+		if _, err := ParseModulesTxt([]byte(text)); err == nil {
+			t.Errorf("modules.txt holding %q was accepted", text)
+		}
+	}
+}
+
 func TestCompareVersions(t *testing.T) {
 	cases := []struct {
 		a, b string

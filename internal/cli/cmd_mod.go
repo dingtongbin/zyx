@@ -4,6 +4,7 @@ package cli
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,8 @@ func (s *Session) mod(args []string) int {
 		return s.modInit(args[1:])
 	case "tidy":
 		return s.modTidy(args[1:])
+	case "vendor":
+		return s.modVendor(args[1:])
 	}
 	return s.usageError(fmt.Errorf("unknown mod subcommand %q", args[0]))
 }
@@ -227,6 +230,13 @@ func (s *Session) prepareModule(m *module) bool {
 		fmt.Fprintln(s.Stderr, "zyx:", err)
 		return false
 	}
+	// A vendor directory describes what the build reads, so a module with one
+	// needs neither the cache nor the network.
+	if held, ok := s.vendoredModules(m); ok {
+		m.Vendored = true
+		m.Build = held
+		return true
+	}
 	list, err := mod.BuildList(m.File, s.moduleCache(m), s.moduleFetch(m))
 	if err != nil {
 		fmt.Fprintln(s.Stderr, "zyx:", err)
@@ -234,6 +244,24 @@ func (s *Session) prepareModule(m *module) bool {
 	}
 	m.Build = list
 	return true
+}
+
+// vendoredModules returns the modules a vendor directory holds, and whether
+// the module has one that describes them.
+func (s *Session) vendoredModules(m *module) ([]mod.Module, bool) {
+	data, err := os.ReadFile(filepath.Join(m.Root, "vendor", "modules.txt"))
+	if err != nil {
+		return nil, false
+	}
+	held, err := mod.ParseModulesTxt(data)
+	if err != nil {
+		return nil, false
+	}
+	list := make([]mod.Module, 0, len(held))
+	for _, v := range held {
+		list = append(list, v.Module)
+	}
+	return list, true
 }
 
 // readSum returns the checksum file of a module, or nil when it has none.
@@ -410,6 +438,164 @@ func setRequirement(f *mod.File, path, version string) {
 		}
 	}
 	f.Require = append(f.Require, mod.Requirement{Path: path, Version: version})
+}
+
+// modVendor mirrors the modules a build reads into the module's vendor
+// directory, so a build with one runs without the module cache and without
+// the network. Only the modules the build and its tests reach are mirrored,
+// which is the judgement tidy makes, and the mirror is written afresh so a
+// module that is no longer read disappears with the directory that held it.
+func (s *Session) modVendor(args []string) int {
+	o, err := s.parseOptions(args)
+	if err != nil {
+		return s.usageError(err)
+	}
+	m, err := s.findModule(s.Dir)
+	if err != nil {
+		return s.usageError(err)
+	}
+	if !s.prepareModule(m) {
+		return exitError
+	}
+	loader := s.loader(m, o)
+	// The packages the build reads from each module, over the build graph and
+	// the test graph together.
+	used := map[string][]string{}
+	seen := map[string]bool{}
+	for _, testing := range []bool{false, true} {
+		load := *loader
+		load.Testing = testing
+		all, err := load.All("")
+		if err != nil {
+			return s.usageError(err)
+		}
+		for _, path := range all {
+			graph, err := load.Load(path)
+			if err != nil {
+				fmt.Fprintln(s.Stderr, "zyx:", err)
+				return exitError
+			}
+			for _, pkg := range graph.Order {
+				if s.report(pkg.Diags) {
+					return exitError
+				}
+				if pkg.ImportPath == m.File.Module || strings.HasPrefix(pkg.ImportPath, m.File.Module+"/") {
+					continue
+				}
+				if pkg.ImportPath == "std" || strings.HasPrefix(pkg.ImportPath, "std/") {
+					continue
+				}
+				dep, ok := mod.ModuleOf(m.Build, pkg.ImportPath)
+				if !ok {
+					fmt.Fprintf(s.Stderr, "zyx: %s is imported but no module provides it; run `zyx get`\n", pkg.ImportPath)
+					return exitError
+				}
+				if !seen[pkg.ImportPath] {
+					seen[pkg.ImportPath] = true
+					used[dep.Path] = append(used[dep.Path], pkg.ImportPath)
+				}
+			}
+		}
+	}
+
+	explicit := map[string]bool{}
+	for _, req := range m.File.Require {
+		explicit[req.Path] = true
+	}
+	vendor := filepath.Join(m.Root, "vendor")
+	if err := os.RemoveAll(vendor); err != nil {
+		fmt.Fprintln(s.Stderr, "zyx:", err)
+		return exitError
+	}
+	var modules []mod.VendoredModule
+	for _, dep := range m.Build {
+		packages := used[dep.Path]
+		if len(packages) == 0 {
+			// A module the build reads nothing from is not mirrored.
+			continue
+		}
+		entry := mod.VendoredModule{Module: dep, Explicit: explicit[dep.Path], Packages: packages}
+		if manifest, err := s.moduleManifest(m, dep); err == nil {
+			entry.Lang = manifest.Lang
+		}
+		from, err := s.moduleDir(m, dep)
+		if err != nil {
+			fmt.Fprintln(s.Stderr, "zyx:", err)
+			return exitError
+		}
+		if err := copyTree(from, filepath.Join(vendor, filepath.FromSlash(dep.Path))); err != nil {
+			fmt.Fprintln(s.Stderr, "zyx:", err)
+			return exitError
+		}
+		modules = append(modules, entry)
+	}
+	if err := os.MkdirAll(vendor, 0o755); err != nil {
+		fmt.Fprintln(s.Stderr, "zyx:", err)
+		return exitError
+	}
+	if err := os.WriteFile(filepath.Join(vendor, "modules.txt"), mod.FormatModulesTxt(modules), 0o644); err != nil {
+		fmt.Fprintln(s.Stderr, "zyx:", err)
+		return exitError
+	}
+	return exitOK
+}
+
+// moduleDir returns the directory a module's tree is in: the one a
+// replacement points at, or the one the cache holds.
+func (s *Session) moduleDir(m *module, dep mod.Module) (string, error) {
+	if dep.Dir != "" {
+		if filepath.IsAbs(dep.Dir) {
+			return dep.Dir, nil
+		}
+		return filepath.Join(m.Root, filepath.FromSlash(dep.Dir)), nil
+	}
+	cache := s.moduleCache(m)
+	if cache == nil {
+		return "", fmt.Errorf("module %s %s is not in the cache; run `zyx get %s`", dep.Path, dep.Version, dep.Path)
+	}
+	dir := cache.Dir(dep.Path, dep.Version)
+	if !isDirectory(dir) {
+		return "", fmt.Errorf("module %s %s is not in the cache; run `zyx get %s`", dep.Path, dep.Version, dep.Path)
+	}
+	return dir, nil
+}
+
+// moduleManifest returns the manifest of a module a build reads.
+func (s *Session) moduleManifest(m *module, dep mod.Module) (*mod.File, error) {
+	dir, err := s.moduleDir(m, dep)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "zyx.mod"))
+	if err != nil {
+		return nil, err
+	}
+	return mod.Parse(data)
+}
+
+// copyTree copies a directory tree.
+func copyTree(from, to string) error {
+	return filepath.WalkDir(from, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(from, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(to, rel)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0o644)
+	})
 }
 
 // containsRequirement reports whether a requirement list holds a path.

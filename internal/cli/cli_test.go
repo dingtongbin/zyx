@@ -284,6 +284,51 @@ func TestSplitRequirement(t *testing.T) {
 	}
 }
 
+func TestVendorMirrorsAndBuildsOffline(t *testing.T) {
+	server := proxyFor(t, "example.com/dep", "v1.0.0")
+	dir := t.TempDir()
+	write(t, dir, map[string]string{
+		"zyx.mod":  "module example.com/app\n\nzyx 0.1\n",
+		"main.zyx": "package main\n\nimport \"example.com/dep/util\"\n\nfunc main() {\n    util.Use()\n}\n",
+	})
+	s, _, errBuf := session(dir)
+	s.Env = func(name string) string {
+		if name == "ZYXPROXY" {
+			return server.URL
+		}
+		return ""
+	}
+	if code := s.Run([]string{"get", "example.com/dep"}); code != 0 {
+		t.Fatalf("get failed with %d:\n%s", code, errBuf)
+	}
+	if code := s.Run([]string{"mod", "vendor"}); code != 0 {
+		t.Fatalf("vendor failed with %d:\n%s", code, errBuf)
+	}
+
+	// The mirror holds the module and the file that describes it.
+	if _, err := os.Stat(filepath.Join(dir, "vendor", "example.com", "dep", "util", "util.zyx")); err != nil {
+		t.Errorf("the module is not mirrored: %v", err)
+	}
+	text, err := os.ReadFile(filepath.Join(dir, "vendor", "modules.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# example.com/dep v1.0.0", "## explicit; zyx 0.1", "example.com/dep/util"} {
+		if !strings.Contains(string(text), want) {
+			t.Errorf("modules.txt does not hold %q:\n%s", want, text)
+		}
+	}
+
+	// With the module cache gone the build reads the mirror, which is what
+	// makes a vendored module build offline.
+	if err := os.RemoveAll(filepath.Join(dir, ".zyx-mod")); err != nil {
+		t.Fatal(err)
+	}
+	if code := s.Run([]string{"check", "./..."}); code != 0 {
+		t.Fatalf("check failed with a mirror and no cache: %d\n%s", code, errBuf)
+	}
+}
+
 func TestModInitWritesAManifest(t *testing.T) {
 	dir := t.TempDir()
 	s, _, errBuf := session(dir)
