@@ -222,12 +222,6 @@ func (c *checker) checkCCall(sel *ast.SelectorExpr, v *ast.CallExpr) *types.Type
 			at += width
 			continue
 		}
-		if cByValue(t) && !c.target.RecordPlacementKnown() {
-			c.errorHelp(diag.CodeTypeMismatch, a.Span(),
-				"pass a scalar, an address, or a text",
-				"a %s crosses to C by value, which this target's placement of a record does not lower yet", t)
-			return nil
-		}
 		if !cArgFits(t, fn.Params[at:at+width]) {
 			c.errorHelp(diag.CodeTypeMismatch, a.Span(),
 				"pass a value of the declared type",
@@ -257,23 +251,6 @@ func (c *checker) cFunction(name string) (*cheader.Func, bool) {
 		}
 	}
 	return nil, false
-}
-
-// cByValue reports whether a value crosses to C as the bytes of a record or
-// an array rather than as a scalar or an address.
-//
-// A C compiler places such a value by rules of its own: on Windows a record
-// of one, two, four, or eight bytes is passed as an integer of that width and
-// every other one through a copy, and on the System V targets it is placed by
-// the class of each eightbyte. The backend lowers an aggregate by LLVM's own
-// classification, which is not the same placement, so such an argument is
-// refused rather than passed wrongly.
-func cByValue(t *types.Type) bool {
-	switch t.Kind {
-	case types.KindExternStruct, types.KindUnion, types.KindArray:
-		return true
-	}
-	return false
 }
 
 // cArgFits reports whether a language value fits the C parameters its

@@ -271,55 +271,102 @@ func (g *generator) abiArgs(t *types.Type) []string {
 	return []string{g.llPass(t)}
 }
 
-// recordArgs returns the register type a record crosses the C boundary as. A
+// recordArgs returns the register types a record crosses the C boundary as. A
 // C compiler places a record by rules of its own, which the target table
 // owns; this spells the placement in LLVM types.
 func (g *generator) recordArgs(t *types.Type) []string {
-	placement, width, ok := g.recordPlacement(t)
+	args, ok := g.recordPlacement(t)
 	if !ok {
 		return []string{"ptr"}
 	}
-	switch placement {
-	case toolchain.PlaceInteger:
-		return []string{fmt.Sprintf("i%d", width*8)}
-	case toolchain.PlaceCopy:
-		return []string{"ptr"}
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		switch a.Class {
+		case toolchain.RecordInteger:
+			out = append(out, fmt.Sprintf("i%d", a.Width))
+		case toolchain.RecordFloat:
+			out = append(out, "double")
+		default:
+			out = append(out, "ptr")
+		}
 	}
-	g.fail(fmt.Errorf("llvmgen: a %s crosses to C by value, and this target's placement of a record is not lowered yet", t))
-	return []string{"ptr"}
+	return out
 }
 
-// recordPlacement returns how the target places a record, and the width of
-// the integer when the placement is PlaceInteger.
-func (g *generator) recordPlacement(t *types.Type) (toolchain.RecordPlacement, uint64, bool) {
-	size, err := layout.Size(t, g.tab, g.target.Layout())
+// recordPlacement returns how the target places a record, which is what both
+// the declaration of a C function and the call to it spell.
+func (g *generator) recordPlacement(t *types.Type) ([]toolchain.RecordArg, bool) {
+	shape, ok := g.recordShape(t)
+	if !ok {
+		return nil, false
+	}
+	return g.target.RecordArgument(shape), true
+}
+
+// recordShape describes a record to the target's placement rules: the size,
+// the alignment, and every field flattened to the offset it lands at, so a
+// nested record contributes its own fields.
+func (g *generator) recordShape(t *types.Type) (toolchain.RecordShape, bool) {
+	l := g.target.Layout()
+	size, err := layout.Size(t, g.tab, l)
 	if err != nil {
 		g.fail(fmt.Errorf("llvmgen: the size of %s: %w", t, err))
-		return toolchain.PlaceCopy, 0, false
+		return toolchain.RecordShape{}, false
 	}
-	placement, width := g.target.RecordArgument(size)
-	if placement == toolchain.PlaceClassified {
-		g.fail(fmt.Errorf("llvmgen: a %s crosses to C by value, and this target's placement of a record is not lowered yet", t))
-		return placement, 0, false
+	align, err := layout.Align(t, g.tab, l)
+	if err != nil {
+		g.fail(fmt.Errorf("llvmgen: the alignment of %s: %w", t, err))
+		return toolchain.RecordShape{}, false
 	}
-	return placement, width, true
+	shape := toolchain.RecordShape{Size: size, Align: align}
+	shape.Fields = g.recordFields(t, 0, shape.Fields)
+	return shape, true
+}
+
+// recordFields appends the fields of a record, at the offsets they land at.
+func (g *generator) recordFields(t *types.Type, base uint64, out []toolchain.RecordField) []toolchain.RecordField {
+	placed, err := layout.Fields(t, g.tab, g.target.Layout())
+	if err != nil {
+		g.fail(fmt.Errorf("llvmgen: the fields of %s: %w", t, err))
+		return out
+	}
+	for _, f := range placed {
+		ft := f.Type
+		if ft == nil {
+			continue
+		}
+		if alias := g.tab.Alias(ft); alias != nil {
+			ft = alias
+		}
+		switch {
+		case ft.IsFloat():
+			size, err := layout.Size(ft, g.tab, g.target.Layout())
+			if err != nil {
+				continue
+			}
+			out = append(out, toolchain.RecordField{Offset: base + f.Offset, Size: size, Float: true})
+		case ft.Kind == types.KindExternStruct || ft.Kind == types.KindUnion:
+			out = g.recordFields(ft, base+f.Offset, out)
+		default:
+			size, err := layout.Size(ft, g.tab, g.target.Layout())
+			if err != nil {
+				continue
+			}
+			out = append(out, toolchain.RecordField{Offset: base + f.Offset, Size: size})
+		}
+	}
+	return out
 }
 
 // recordArguments returns the argument list a record contributes to a C call,
 // placed the way the target places one.
 func (g *generator) recordArguments(a *value) []string {
-	placement, width, ok := g.recordPlacement(a.typ)
+	args, ok := g.recordPlacement(a.typ)
 	if !ok {
 		return nil
 	}
 	addr := g.addrText(a)
-	switch placement {
-	case toolchain.PlaceInteger:
-		// The record travels as one integer of its own width.
-		reg := g.newReg()
-		g.emit("  %s = load i%d, ptr %s", reg, width*8, addr)
-		return []string{fmt.Sprintf("i%d %s", width*8, reg)}
-	case toolchain.PlaceCopy:
+	if len(args) == 1 && args[0].Class == toolchain.RecordCopy {
 		// The callee reads the record where it lies, so the value travels as
 		// the address of a copy the caller owns. The declaration marks it
 		// byval, which is what tells the callee it may keep the copy.
@@ -327,17 +374,39 @@ func (g *generator) recordArguments(a *value) []string {
 		g.copyObject(slot, addr, a.typ)
 		return []string{"ptr " + slot}
 	}
-	return nil
+	parts := make([]string, 0, len(args))
+	for _, arg := range args {
+		reg := g.newReg()
+		at := addr
+		if arg.Offset != 0 {
+			at = g.gepOffset(addr, arg.Offset)
+		}
+		switch arg.Class {
+		case toolchain.RecordInteger:
+			g.emit("  %s = load i%d, ptr %s", reg, arg.Width, at)
+			parts = append(parts, fmt.Sprintf("i%d %s", arg.Width, reg))
+		default:
+			g.emit("  %s = load double, ptr %s", reg, at)
+			parts = append(parts, "double "+reg)
+		}
+	}
+	return parts
+}
+
+// gepOffset returns the address of a byte offset inside an object.
+func (g *generator) gepOffset(addr string, offset uint64) string {
+	reg := g.newReg()
+	g.emit("  %s = getelementptr inbounds i8, ptr %s, i64 %d", reg, addr, offset)
+	return reg
 }
 
 // cDeclared returns the parameter types a C declaration writes for a value of
 // one type, which carries the attribute the placement needs.
 func (g *generator) cDeclared(t *types.Type) []string {
-	lls := g.abiArgs(t)
-	if len(lls) == 1 && g.cByval(t) {
+	if g.cByval(t) {
 		return []string{"ptr byval(" + g.llType(t) + ")"}
 	}
-	return lls
+	return g.abiArgs(t)
 }
 
 // cByval reports whether a parameter of the C ABI is the address of a copy
@@ -346,8 +415,8 @@ func (g *generator) cByval(t *types.Type) bool {
 	if t == nil || g.target.ABIKind(t) != toolchain.ABIAggregate {
 		return false
 	}
-	placement, _, ok := g.recordPlacement(t)
-	return ok && placement == toolchain.PlaceCopy
+	args, ok := g.recordPlacement(t)
+	return ok && len(args) == 1 && args[0].Class == toolchain.RecordCopy
 }
 
 // declare emits an external function declaration.
