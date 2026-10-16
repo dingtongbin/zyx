@@ -151,11 +151,15 @@ void zyxrt_print_nl(void);
 /* Coroutines. A coroutine runs on its own stack and its own region. */
 typedef void (*zyxrt_fn)(void *arg);
 void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg);
-/* zyxrt_coro_join waits for a coroutine, reports how it ended, and releases
-   it. It returns the value the coroutine recorded and writes the exception it
-   raised to *panic, or NULL when it completed. The exception is read before
-   the coroutine is released, so a caller never reaches freed memory. */
+/* zyxrt_coro_join waits for a coroutine and reports how it ended. It returns
+   the value the coroutine recorded and writes the exception it raised to
+   *panic, or NULL when it completed. The coroutine is released when the
+   region that adopted it is released, not here: a handle is a value, so a
+   copy of it is a second name for the same coroutine, and joining twice
+   answers the same way rather than reaching freed memory. */
 void *zyxrt_coro_join(void *handle, void **panic);
+/* zyxrt_coro_try_join answers the same way, and reports whether the coroutine
+   has finished. */
 int zyxrt_coro_try_join(void *handle, void **result, void **panic);
 /* zyxrt_sched_yield lets another ready coroutine run. A select uses it when
    no arm is ready and the select has no default. */

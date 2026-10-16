@@ -120,13 +120,14 @@ func (g *generator) cloneInto(v *value) *value {
 
 // join lowers Join and TryJoin on a coroutine handle. A coroutine reports
 // either the value it produced or the exception it raised, and the handle
-// turns that into a Result.
+// turns that into a Result. TryJoin answers the same Result inside an Option,
+// because the coroutine may not have finished yet.
 func (g *generator) join(module string, n *zyxc.Node) *value {
 	name := ""
 	if len(n.Payload) > 0 {
 		name = n.Payload[0]
 	}
-	if name != "Join" {
+	if name != "Join" && name != "TryJoin" {
 		g.fail(fmt.Errorf("llvmgen: %s on a coroutine handle is not lowered", name))
 		return nil
 	}
@@ -136,24 +137,81 @@ func (g *generator) join(module string, n *zyxc.Node) *value {
 	}
 	typ := g.typeOfNode(n.First("type"), module)
 	if typ == nil || typ.Kind != types.KindEnum || len(typ.Args) == 0 {
-		g.fail(fmt.Errorf("llvmgen: the result of Join is not settled"))
+		g.fail(fmt.Errorf("llvmgen: the result of %s is not settled", name))
 		return nil
 	}
-	produced := typ.Args[0]
+	// The Result the handle reports: Join answers it, TryJoin answers it
+	// inside an Option.
+	result := typ
+	if name == "TryJoin" {
+		result = typ.Args[0]
+	}
+	if result == nil || result.Kind != types.KindEnum || len(result.Args) == 0 {
+		g.fail(fmt.Errorf("llvmgen: the result of %s is not settled", name))
+		return nil
+	}
+	produced := result.Args[0]
 	if !g.crossesAsRegister(produced) {
 		g.fail(fmt.Errorf("llvmgen: a coroutine result of %s needs a boundary copy, which is not lowered", produced))
 		return nil
 	}
 	panicSlot := g.alloca(types.Raw)
-	g.declareRuntime("zyxrt_coro_join", "ptr", "ptr", "ptr")
+	rawSlot := g.alloca(types.Raw)
+
+	if name == "Join" {
+		g.declareRuntime("zyxrt_coro_join", "ptr", "ptr", "ptr")
+		raw := g.newReg()
+		g.emit("  %s = call ptr @zyxrt_coro_join(ptr %s, ptr %s)", raw, handle.text, panicSlot)
+		raised := g.newReg()
+		g.emit("  %s = load ptr, ptr %s", raised, panicSlot)
+		return g.resultValue(result, raw, raised)
+	}
+
+	g.declareRuntime("zyxrt_coro_try_join", "i32", "ptr", "ptr", "ptr")
+	done := g.newReg()
+	g.emit("  %s = call i32 @zyxrt_coro_try_join(ptr %s, ptr %s, ptr %s)",
+		done, handle.text, rawSlot, panicSlot)
 	raw := g.newReg()
-	g.emit("  %s = call ptr @zyxrt_coro_join(ptr %s, ptr %s)", raw, handle.text, panicSlot)
+	g.emit("  %s = load ptr, ptr %s", raw, rawSlot)
 	raised := g.newReg()
 	g.emit("  %s = load ptr, ptr %s", raised, panicSlot)
 
-	index, _, ok := g.variantOf(typ, "Err")
+	some, _, ok := g.variantOf(typ, "Some")
+	if !ok {
+		g.fail(fmt.Errorf("llvmgen: %s has no variant Some", typ))
+		return nil
+	}
+	finished := g.boolFrom(done)
+	obj := g.allocate(typ)
+	tagType := g.tagType(g.tagSize(typ))
+	tag := g.newReg()
+	g.emit("  %s = select i1 %s, %s %d, %s 0", tag, finished.text, tagType, some, tagType)
+	g.emit("  store %s %s, ptr %s", tagType, tag, obj)
+	doneLabel := g.newLabel("tryjoin.done")
+	endLabel := g.newLabel("tryjoin.end")
+	g.terminator("  br i1 %s, label %%%s, label %%%s", finished.text, doneLabel, endLabel)
+	g.label(doneLabel)
+	inner := g.resultValue(result, raw, raised)
+	// The payload of an Option holds the Result inline, so its bytes are
+	// copied in rather than its address stored.
+	g.copyObject(g.payloadElement(obj, typ, []*types.Type{result}, 0), inner.text, result)
+	g.terminator("  br label %%%s", endLabel)
+	g.label(endLabel)
+	return &value{text: obj, ll: "ptr", typ: typ}
+}
+
+// resultValue builds the Result a coroutine handle reports from the raw value
+// the coroutine recorded and the exception it raised.
+func (g *generator) resultValue(typ *types.Type, raw, raised string) *value {
+	produced := typ.Args[0]
+	errIndex, _, ok := g.variantOf(typ, "Err")
 	if !ok {
 		g.fail(fmt.Errorf("llvmgen: %s has no variant Err", typ))
+		return nil
+	}
+	okIndex, _, ok := g.variantOf(typ, "Ok")
+	if !ok {
+		g.fail(fmt.Errorf("llvmgen: %s has no variant Ok", typ))
 		return nil
 	}
 	obj := g.allocate(typ)
@@ -161,7 +219,7 @@ func (g *generator) join(module string, n *zyxc.Node) *value {
 	isErr := g.newReg()
 	g.emit("  %s = icmp ne ptr %s, null", isErr, raised)
 	tag := g.newReg()
-	g.emit("  %s = select i1 %s, %s %d, %s 0", tag, isErr, tagType, index, tagType)
+	g.emit("  %s = select i1 %s, %s %d, %s %d", tag, isErr, tagType, errIndex, tagType, okIndex)
 	g.emit("  store %s %s, ptr %s", tagType, tag, obj)
 
 	// The union holds one payload, so the two outcomes are written on their

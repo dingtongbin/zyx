@@ -21,6 +21,22 @@ func main() {
             Ok(v) => fmt.PrintI64(v)
             Err(e) => fmt.PrintI64(- 1)
         }
+        // A handle is a value, so a copy of it names the same coroutine.
+        // Joining again answers the same way rather than reaching freed
+        // memory.
+        var again = h
+        match again.Join() {
+            Ok(v) => fmt.PrintI64(v)
+            Err(e) => fmt.PrintI64(- 1)
+        }
+        // A try after the join finds the same answer.
+        match h.TryJoin() {
+            Some(r) => match r {
+                Ok(v) => fmt.PrintI64(v)
+                Err(e) => fmt.PrintI64(- 1)
+            }
+            None => fmt.PrintI64(- 1)
+        }
     }
     fmt.PrintNl()
     region {
@@ -28,6 +44,13 @@ func main() {
         match h.Join() {
             Ok(v) => fmt.PrintI64(v)
             Err(e) => fmt.PrintI64(- 2)
+        }
+        match h.TryJoin() {
+            Some(r) => match r {
+                Ok(v) => fmt.PrintI64(v)
+                Err(e) => fmt.PrintI64(- 2)
+            }
+            None => fmt.PrintI64(- 2)
         }
     }
     fmt.PrintNl()

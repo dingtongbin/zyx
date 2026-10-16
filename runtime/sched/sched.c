@@ -189,11 +189,10 @@ void *zyxrt_coro_join(void *handle, void **panic) {
     zyxrt_wait_add(&c->waiters, &w);
     zyxrt_sched_suspend(self);
   }
-  /* The exception is read before the coroutine is released. */
-  void *result = c->result;
+  /* The coroutine stays where it is: the region that adopted it releases it,
+     so joining a second time answers the same way. */
   if (panic) *panic = c->panic;
-  free_coro(c);
-  return result;
+  return c->result;
 }
 
 int zyxrt_coro_try_join(void *handle, void **result, void **panic) {
@@ -202,7 +201,6 @@ int zyxrt_coro_try_join(void *handle, void **result, void **panic) {
   if (!c || !c->done) return 0;
   if (result) *result = c->result;
   if (panic) *panic = c->panic;
-  free_coro(c);
   return 1;
 }
 
