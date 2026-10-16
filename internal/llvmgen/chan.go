@@ -233,22 +233,26 @@ func (g *generator) selectTimeout(module string, arm *zyxc.Node, deadline, end s
 	g.label(next)
 }
 
-// selectRecv lowers a receive arm. A successful receive is the readiness
-// test, so the element is taken exactly once.
+// selectRecv lowers a receive arm. The readiness test is separate from the
+// receive itself, because a closed channel is ready and answers with the zero
+// value: taking the value is the arm body's job.
 func (g *generator) selectRecv(module string, arm *zyxc.Node, end string) {
 	ch := g.load(g.expr(module, g.wrapped(arm, "chan"), nil))
 	if ch == nil {
 		return
 	}
 	elem := ch.typ.Elem
-	slot := g.alloca(elem)
-	g.declareRuntime("zyxrt_chan_try_recv", "i32", "ptr", "ptr")
-	reg := g.newReg()
-	g.emit("  %s = call i32 @zyxrt_chan_try_recv(ptr %s, ptr %s)", reg, ch.text, slot)
+	g.declareRuntime("zyxrt_chan_recv_ready", "i32", "ptr")
+	ready := g.newReg()
+	g.emit("  %s = call i32 @zyxrt_chan_recv_ready(ptr %s)", ready, ch.text)
 	body := g.newLabel("select.arm")
 	next := g.newLabel("select.next")
-	g.terminator("  br i1 %s, label %%%s, label %%%s", g.boolFrom(reg).text, body, next)
+	g.terminator("  br i1 %s, label %%%s, label %%%s", g.boolFrom(ready).text, body, next)
 	g.label(body)
+	slot := g.alloca(elem)
+	g.declareRuntime("zyxrt_chan_recv", "i32", "ptr", "ptr")
+	reg := g.newReg()
+	g.emit("  %s = call i32 @zyxrt_chan_recv(ptr %s, ptr %s)", reg, ch.text, slot)
 	element := &value{text: slot, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true}
 	g.bindArmName(arm, 0, element)
 	g.bindArmName(arm, 1, g.boolFrom(reg))
@@ -259,8 +263,9 @@ func (g *generator) selectRecv(module string, arm *zyxc.Node, end string) {
 	g.label(next)
 }
 
-// selectSend lowers a send arm. A successful send is the readiness test, so
-// the value is sent exactly once.
+// selectSend lowers a send arm. A send that cannot proceed is the panic the
+// language defines for a closed channel, so the arm is skipped rather than
+// taken: the test asks whether the send would block.
 func (g *generator) selectSend(module string, arm *zyxc.Node, end string) {
 	ch := g.load(g.expr(module, g.wrapped(arm, "chan"), nil))
 	if ch == nil {
@@ -273,13 +278,15 @@ func (g *generator) selectSend(module string, arm *zyxc.Node, end string) {
 	}
 	slot := g.alloca(elem)
 	g.storeInto(slot, elem, arg, false)
-	g.declareRuntime("zyxrt_chan_try_send", "i32", "ptr", "ptr")
-	reg := g.newReg()
-	g.emit("  %s = call i32 @zyxrt_chan_try_send(ptr %s, ptr %s)", reg, ch.text, slot)
+	g.declareRuntime("zyxrt_chan_send_ready", "i32", "ptr")
+	ready := g.newReg()
+	g.emit("  %s = call i32 @zyxrt_chan_send_ready(ptr %s)", ready, ch.text)
 	body := g.newLabel("select.arm")
 	next := g.newLabel("select.next")
-	g.terminator("  br i1 %s, label %%%s, label %%%s", g.boolFrom(reg).text, body, next)
+	g.terminator("  br i1 %s, label %%%s, label %%%s", g.boolFrom(ready).text, body, next)
 	g.label(body)
+	g.declareRuntime("zyxrt_chan_send", "void", "ptr", "ptr")
+	g.emit("  call void @zyxrt_chan_send(ptr %s, ptr %s)", ch.text, slot)
 	g.stmt(module, g.wrapped(arm, "body"))
 	if !g.fn.terminated {
 		g.terminator("  br label %%%s", end)

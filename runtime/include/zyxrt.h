@@ -187,6 +187,13 @@ void zyxrt_chan_send(void *ch, const void *value);
 int zyxrt_chan_recv(void *ch, void *out);
 int zyxrt_chan_try_send(void *ch, const void *value);
 int zyxrt_chan_try_recv(void *ch, void *out);
+/* zyxrt_chan_recv_ready and zyxrt_chan_send_ready report whether an operation
+   would not block, which is what a select arm asks. A receive on a closed
+   channel is ready: it answers with the zero value and false. A send on one
+   is not, because a send that cannot proceed is the panic the language
+   defines, and a select arm that cannot proceed is skipped. */
+int zyxrt_chan_recv_ready(void *ch);
+int zyxrt_chan_send_ready(void *ch);
 void zyxrt_chan_close(void *ch);
 
 #endif /* ZYXRUNTIME_H */

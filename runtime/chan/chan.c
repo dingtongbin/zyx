@@ -104,6 +104,20 @@ int zyxrt_chan_try_recv(void *handle, void *out) {
   return 1;
 }
 
+int zyxrt_chan_recv_ready(void *handle) {
+  zyxrt_chan *ch = (zyxrt_chan *)handle;
+  return ch->len > 0 || ch->closed;
+}
+
+int zyxrt_chan_send_ready(void *handle) {
+  zyxrt_chan *ch = (zyxrt_chan *)handle;
+  /* A send on a closed channel cannot proceed, so the arm is not ready and
+     the select takes another one. A direct send panics instead, which is the
+     rule for the operation rather than for the arm. */
+  if (ch->closed) return 0;
+  return ch->receivers != NULL || ch->len < ch->cap;
+}
+
 void zyxrt_chan_close(void *handle) {
   zyxrt_chan *ch = (zyxrt_chan *)handle;
   if (!ch || ch->closed) return;
