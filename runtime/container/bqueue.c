@@ -21,9 +21,11 @@ typedef struct zyxrt_bqueue {
   zyxrt_less_fn less;
   unsigned char *data;
   /* waiters_full holds the coroutines waiting for room, and waiters_empty
-     those waiting for an element. */
+     those waiting for an element. The lock guards the heap and both lists: a
+     producer and a consumer may run on different scheduler threads. */
   zyxrt_waitlist waiters_full;
   zyxrt_waitlist waiters_empty;
+  zyxrt_lock lock;
 } zyxrt_bqueue;
 
 static unsigned char *slot(zyxrt_bqueue *q, size_t index) {
@@ -73,16 +75,21 @@ static void sift_down(zyxrt_bqueue *q, size_t index) {
   }
 }
 
-/* wait puts the running coroutine on a list and suspends it. A queue that
-   blocks outside a coroutine has nobody to wake it, so that is a panic. */
-static void wait(zyxrt_waitlist *list) {
+/* park lists the running coroutine on a wait list and lets another one run.
+   The caller holds the queue's lock, which this releases for the suspension
+   and takes again afterwards, so a wake on another thread cannot arrive
+   between the look at the queue and the listing. */
+static void park(zyxrt_waitlist *list, zyxrt_lock *lock) {
   zyxrt_coro *self = zyxrt_sched_current();
   if (self == NULL) {
+    zyxrt_lock_drop(lock);
     zyxrt_panic("a queue blocks outside a coroutine", 34);
   }
-  zyxrt_waiter w = {self, NULL};
+  zyxrt_waiter w = {self, NULL, 0};
   zyxrt_wait_add(list, &w);
+  zyxrt_lock_drop(lock);
   zyxrt_sched_suspend(self);
+  zyxrt_lock_hold(lock);
 }
 
 void *zyxrt_bqueue_new(size_t elem, size_t cap, void *less) {
@@ -94,17 +101,26 @@ void *zyxrt_bqueue_new(size_t elem, size_t cap, void *less) {
   q->data = (unsigned char *)zyxrt_region_alloc_current(q->cap * q->elem, 8);
   q->waiters_full.head = NULL;
   q->waiters_empty.head = NULL;
+  zyxrt_lock_init(&q->lock);
   return q;
 }
 
 size_t zyxrt_bqueue_len(void *handle) {
   zyxrt_bqueue *q = (zyxrt_bqueue *)handle;
-  return q == NULL ? 0 : q->len;
+  if (q == NULL) return 0;
+  zyxrt_lock_hold(&q->lock);
+  size_t n = q->len;
+  zyxrt_lock_drop(&q->lock);
+  return n;
 }
 
 size_t zyxrt_bqueue_cap(void *handle) {
   zyxrt_bqueue *q = (zyxrt_bqueue *)handle;
-  return q == NULL ? 0 : q->cap;
+  if (q == NULL) return 0;
+  zyxrt_lock_hold(&q->lock);
+  size_t cap = q->cap;
+  zyxrt_lock_drop(&q->lock);
+  return cap;
 }
 
 /* insert places an element and restores the heap order. */
@@ -117,28 +133,35 @@ static void insert(zyxrt_bqueue *q, const void *value) {
 void zyxrt_bqueue_push(void *handle, const void *value) {
   zyxrt_bqueue *q = (zyxrt_bqueue *)handle;
   if (q == NULL) return;
+  zyxrt_lock_hold(&q->lock);
   while (q->len == q->cap) {
-    wait(&q->waiters_full);
+    park(&q->waiters_full, &q->lock);
   }
   insert(q, value);
   zyxrt_wait_wake(&q->waiters_empty);
+  zyxrt_lock_drop(&q->lock);
 }
 
 int zyxrt_bqueue_try_push(void *handle, const void *value) {
   zyxrt_bqueue *q = (zyxrt_bqueue *)handle;
-  if (q == NULL || q->len == q->cap) {
-    return 0;
+  if (q == NULL) return 0;
+  zyxrt_lock_hold(&q->lock);
+  int pushed = 0;
+  if (q->len < q->cap) {
+    insert(q, value);
+    zyxrt_wait_wake(&q->waiters_empty);
+    pushed = 1;
   }
-  insert(q, value);
-  zyxrt_wait_wake(&q->waiters_empty);
-  return 1;
+  zyxrt_lock_drop(&q->lock);
+  return pushed;
 }
 
 void zyxrt_bqueue_pop(void *handle, void *out) {
   zyxrt_bqueue *q = (zyxrt_bqueue *)handle;
   if (q == NULL) return;
+  zyxrt_lock_hold(&q->lock);
   while (q->len == 0) {
-    wait(&q->waiters_empty);
+    park(&q->waiters_empty, &q->lock);
   }
   memcpy(out, slot(q, 0), q->elem);
   q->len--;
@@ -147,6 +170,7 @@ void zyxrt_bqueue_pop(void *handle, void *out) {
     sift_down(q, 0);
   }
   zyxrt_wait_wake(&q->waiters_full);
+  zyxrt_lock_drop(&q->lock);
 }
 
 int zyxrt_bqueue_try_pop(void *handle, void *out) {

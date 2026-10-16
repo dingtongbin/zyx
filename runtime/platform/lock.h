@@ -1,18 +1,16 @@
-/* Thread, mutex, and condition primitives. The runtime starts threads only
-   for the blocking pool and the IO poller; the scheduler itself runs on the
-   thread that started the program, and it is the only thread that ever
-   readies a coroutine. */
+/* Locks, conditions, and threads. The runtime starts threads only for the
+   scheduler, the blocking pool, the IO poller, and the preemption monitor; the
+   scheduler's own threads run coroutines, and every other thread hands work to
+   them. A wasm target has no threads, so the primitives are the
+   single-threaded no-ops the rest of the runtime compiles against. */
 
-#ifndef ZYXRUNTIME_THREAD_H
-#define ZYXRUNTIME_THREAD_H
+#ifndef ZYXRUNTIME_LOCK_H
+#define ZYXRUNTIME_LOCK_H
 
-#include "zyxrt_internal.h"
+#include <stddef.h>
 
 #if defined(__wasm__)
 
-/* A wasm target has no threads, so the runtime starts none and the
-   primitives are the single-threaded no-ops the rest of the runtime
-   compiles against. */
 typedef int zyxrt_lock;
 typedef int zyxrt_cond;
 
@@ -76,4 +74,4 @@ static inline int zyxrt_threads(void) { return 1; }
 
 #endif
 
-#endif /* ZYXRUNTIME_THREAD_H */
+#endif /* ZYXRUNTIME_LOCK_H */

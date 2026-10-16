@@ -3,6 +3,7 @@
 #define ZYXRUNTIME_INTERNAL_H
 
 #include "zyxrt.h"
+#include "lock.h"
 
 #include <stdatomic.h>
 
@@ -85,6 +86,10 @@ typedef struct zyxrt_coro {
   void *arg;
   void *region;
   void *result;
+  /* lock guards the result, the exception, the completion flag, and the list
+     of coroutines waiting on this one: a coroutine may be started on one
+     scheduler thread and watched from another. */
+  zyxrt_lock lock;
   /* defers holds the calls the coroutine has pending, newest first. */
   struct zyxrt_defer *defers;
   /* panic holds the exception the coroutine raised, or NULL. */
@@ -96,19 +101,18 @@ typedef struct zyxrt_coro {
   /* root marks the coroutine that runs the language main function. */
   int root;
   int done;
+  /* queued marks a coroutine that is already on a ready queue. Two wait lists
+     can wake one coroutine, because a select waits on several channels, and
+     the queue holds it once; the flag is atomic because the wakers may be on
+     different threads. */
+  _Atomic int queued;
   /* preempt marks a coroutine the monitor has asked to let another one run,
      which it notices at the next loop back edge. */
   _Atomic int preempt;
-  /* queued marks a coroutine that is already on the ready queue. Two wait
-     lists can wake one coroutine, because a select waits on several
-     channels, and the queue holds it once. */
-  int queued;
   void *stack;
   size_t stack_size;
-  /* wait_next links a coroutine into the ready queue, and post_next links it
-     into the list of coroutines another thread made ready. */
+  /* wait_next links a coroutine into a ready queue. */
   struct zyxrt_coro *wait_next;
-  struct zyxrt_coro *post_next;
   /* waiters holds the waiters blocked on this one. They are woken when it
      finishes, which is what a join waits for. */
   zyxrt_waitlist waiters;
@@ -147,13 +151,19 @@ void zyxrt_stack_unmap(void *stack, size_t size);
    layer puts standard output in the mode the runtime writes in. */
 void zyxrt_platform_init(void);
 
-/* The scheduler. Coroutines run cooperatively on the calling thread: a
-   coroutine that cannot proceed suspends itself and the scheduler resumes
-   the next ready one. */
-void zyxrt_sched_init(void);
-void zyxrt_sched_shutdown(void);
+/* The scheduler. Coroutines run cooperatively, each on its own stack; a
+   coroutine that cannot proceed suspends itself and a scheduler thread
+   resumes the next ready one. The scheduler runs on as many threads as
+   ZYX_THREADS names, each with a queue of its own, and a thread with nothing
+   to run takes work from another. */
 void zyxrt_sched_ready(zyxrt_coro *c);
 void zyxrt_sched_suspend(zyxrt_coro *c);
+/* zyxrt_sched_run is the scheduler loop of the calling thread. zyxrt_sched_init
+   makes the calling thread the first of them, so a program's own thread runs
+   coroutines rather than sitting outside the scheduler. */
+void zyxrt_sched_init(void);
+void zyxrt_sched_run(void);
+void zyxrt_sched_shutdown(void);
 /* zyxrt_sched_abandon ends the running coroutine and returns to the
    scheduler. A panic uses it, because the coroutine's stack must not be
    returned into. */
@@ -164,9 +174,9 @@ void zyxrt_sched_yield(void);
    the scheduler should wait for the next one, or -1 when none is waiting. */
 void zyxrt_sched_sleep(uint64_t ns);
 /* zyxrt_sched_external records that a coroutine waits for something outside
-   the scheduler, such as a call handed to the blocking pool. The main loop
-   waits on the wakeup handle while any such wait is outstanding rather than
-   ending the program. */
+   the scheduler, such as a call handed to the blocking pool. A scheduler
+   thread waits on the wakeup handle while any such wait is outstanding rather
+   than deciding the program is over. */
 void zyxrt_sched_external(int delta);
 /* What zyxrt_sched_wait reports beyond a timeout: nothing can make progress,
    so the program ends, or a coroutine waits outside the scheduler, so the
@@ -180,18 +190,11 @@ void zyxrt_wakeup_signal(void);
 /* zyxrt_wakeup_wait waits for the handle, up to ns nanoseconds, or forever
    when ns is negative. */
 void zyxrt_wakeup_wait(int64_t ns);
-/* Coroutines another thread made ready. Only the scheduler thread readies a
-   coroutine, so a thread that finishes work posts it and the scheduler
-   drains the list; posting signals the wakeup handle, which is what tells
-   the scheduler to look. */
-void zyxrt_sched_post_init(void);
-void zyxrt_sched_post(zyxrt_coro *c);
-int zyxrt_sched_drain(void);
 
 /* The event loop. A coroutine that waits on a pollable descriptor parks, and
    a poller thread watches the descriptors and hands the ready ones to the
-   scheduler: only the scheduler thread readies a coroutine, so the poller
-   records what became ready. */
+   scheduler: the poller records what became ready, and a scheduler thread
+   turns that into ready coroutines. */
 void zyxrt_loop_start(void);
 void zyxrt_loop_drain(void);
 /* The most descriptors one backend wait reports at a time. */
@@ -256,10 +259,12 @@ void zyxrt_wait_wake(zyxrt_waitlist *list);
 void zyxrt_sched_park(uint64_t deadline);
 
 /* Cooperative preemption. zyxrt_preempt_init starts the monitor thread, which
-   marks a coroutine that has held the scheduler thread for a whole quantum;
-   zyxrt_preempt_enter and zyxrt_preempt_leave record which coroutine is
-   running; zyxrt_preempt_check is what a loop back edge calls. */
+   marks every coroutine that has held its scheduler thread for a whole
+   quantum; zyxrt_preempt_thread gives a scheduler thread its slot;
+   zyxrt_preempt_enter and zyxrt_preempt_leave record which coroutine a thread
+   is running; zyxrt_preempt_check is what a loop back edge calls. */
 void zyxrt_preempt_init(void);
+void zyxrt_preempt_thread(void);
 void zyxrt_preempt_enter(zyxrt_coro *c);
 void zyxrt_preempt_leave(void);
 void zyxrt_preempt_check(void);

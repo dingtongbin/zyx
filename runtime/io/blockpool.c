@@ -5,7 +5,6 @@
    readying it from the thread. */
 
 #include "zyxrt_internal.h"
-#include "thread.h"
 
 #include <stdlib.h>
 
@@ -77,7 +76,7 @@ static void worker(void *arg) {
 
     /* The scheduler readies the coroutine, so the thread only hands it over
        and wakes the scheduler. */
-    zyxrt_sched_post(coro);
+    zyxrt_sched_ready(coro);
   }
 }
 

@@ -34,9 +34,12 @@ static const size_t class_sizes[] = {
 /* The free slabs the pool keeps per class. */
 #define ZYXXRT_SLAB_CACHE 4u
 
-/* The free slabs, one list per class. */
+/* The free slabs, one list per class, and the lock that guards them: a
+   coroutine may run on any scheduler thread, so two of them can return slabs
+   at once. */
 static zyxrt_slab *free_slabs[ZYXXRT_CLASS_COUNT];
 static size_t free_counts[ZYXXRT_CLASS_COUNT];
+static zyxrt_lock pool_lock;
 
 /* zyxrt_pool_class returns the class that serves a size, or the class count
    when no class does. */
@@ -75,10 +78,14 @@ static zyxrt_slab *make_slab(size_t class) {
 
 /* zyxrt_pool_take returns a slab of a class, from the cache or the system. */
 zyxrt_slab *zyxrt_pool_take(size_t class) {
+  zyxrt_lock_hold(&pool_lock);
   zyxrt_slab *slab = free_slabs[class];
   if (slab != NULL) {
     free_slabs[class] = slab->next;
     free_counts[class]--;
+  }
+  zyxrt_lock_drop(&pool_lock);
+  if (slab != NULL) {
     slab->next = NULL;
     slab->used = 0;
     return slab;
@@ -89,18 +96,22 @@ zyxrt_slab *zyxrt_pool_take(size_t class) {
 /* zyxrt_pool_release returns a slab to its class, or to the system when the
    cache for that class is full. */
 void zyxrt_pool_release(size_t class, zyxrt_slab *slab) {
+  zyxrt_lock_hold(&pool_lock);
   if (free_counts[class] < ZYXXRT_SLAB_CACHE) {
     slab->next = free_slabs[class];
     free_slabs[class] = slab;
     free_counts[class]++;
+    zyxrt_lock_drop(&pool_lock);
     return;
   }
+  zyxrt_lock_drop(&pool_lock);
   free(slab);
 }
 
 /* zyxrt_pool_warm fills the cache of every class with one slab, so the first
    allocations of a program meet no allocator work. */
 void zyxrt_pool_warm(void) {
+  zyxrt_lock_init(&pool_lock);
   for (size_t class = 0; class < ZYXXRT_CLASS_COUNT; class++) {
     if (free_slabs[class] != NULL) {
       continue;

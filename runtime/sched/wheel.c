@@ -24,12 +24,19 @@ static uint64_t nonempty[ZYXXRT_WHEEL_LEVELS];
    covers [base[L] + i * span(L), base[L] + (i + 1) * span(L)). */
 static uint64_t base[ZYXXRT_WHEEL_LEVELS];
 
+/* The wheel belongs to the whole runtime rather than to one scheduler thread:
+   a coroutine may park or be woken on any of them, so every entry point takes
+   this lock. */
+static zyxrt_lock wheel_lock;
+
 /* span returns the nanoseconds one bucket of a level covers. */
 static uint64_t span(int level) {
   return ZYXXRT_WHEEL_GRAIN << (ZYXXRT_WHEEL_SHIFT * level);
 }
 
 void zyxrt_wheel_init(void) {
+  zyxrt_lock_init(&wheel_lock);
+  zyxrt_lock_hold(&wheel_lock);
   for (int level = 0; level < ZYXXRT_WHEEL_LEVELS; level++) {
     for (int slot = 0; slot < ZYXXRT_WHEEL_SLOTS; slot++) {
       buckets[level][slot] = NULL;
@@ -39,6 +46,7 @@ void zyxrt_wheel_init(void) {
        forward from now rather than from the beginning of time. */
     base[level] = zyxrt_now() / span(level) * span(level);
   }
+  zyxrt_lock_drop(&wheel_lock);
 }
 
 /* link puts a timer in a bucket. */
@@ -102,15 +110,24 @@ static void place(zyxrt_timer *t) {
 }
 
 void zyxrt_wheel_add(zyxrt_timer *t, uint64_t deadline) {
+  zyxrt_lock_hold(&wheel_lock);
   t->deadline = deadline;
   t->next = NULL;
   t->prev = NULL;
   t->level = -1;
   place(t);
+  zyxrt_lock_drop(&wheel_lock);
+  /* A scheduler thread that found nothing to run waits on the wakeup handle
+     with the distance to the next deadline, or forever when the wheel was
+     empty. A new deadline is a reason to look again, so the waiters are
+     woken rather than left waiting for a deadline none of them knew of. */
+  zyxrt_wakeup_signal();
 }
 
 void zyxrt_wheel_remove(zyxrt_timer *t) {
+  zyxrt_lock_hold(&wheel_lock);
   unlink(t);
+  zyxrt_lock_drop(&wheel_lock);
 }
 
 /* advance moves the clock forward. Every bucket the clock has passed is
@@ -119,6 +136,7 @@ void zyxrt_wheel_remove(zyxrt_timer *t) {
    firing early. The upper levels are emptied first, so a timer they hold is
    placed in a level the walk below has not reached yet. */
 void zyxrt_wheel_advance(uint64_t now) {
+  zyxrt_lock_hold(&wheel_lock);
   for (int level = ZYXXRT_WHEEL_LEVELS - 1; level >= 0; level--) {
     uint64_t size = span(level);
     for (;;) {
@@ -146,6 +164,7 @@ void zyxrt_wheel_advance(uint64_t now) {
       }
     }
   }
+  zyxrt_lock_drop(&wheel_lock);
 }
 
 /* zyxrt_wheel_next answers how long the scheduler may wait before something
@@ -155,6 +174,7 @@ void zyxrt_wheel_advance(uint64_t now) {
 int64_t zyxrt_wheel_next(uint64_t now) {
   uint64_t best = 0;
   int found = 0;
+  zyxrt_lock_hold(&wheel_lock);
   for (int level = 0; level < ZYXXRT_WHEEL_LEVELS; level++) {
     if (nonempty[level] == 0) {
       continue;
@@ -167,6 +187,7 @@ int64_t zyxrt_wheel_next(uint64_t now) {
       found = 1;
     }
   }
+  zyxrt_lock_drop(&wheel_lock);
   if (!found) {
     return -1;
   }

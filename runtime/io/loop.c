@@ -5,7 +5,6 @@
    coroutines. */
 
 #include "zyxrt_internal.h"
-#include "thread.h"
 
 #include <stdlib.h>
 
