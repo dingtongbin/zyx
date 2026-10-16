@@ -219,7 +219,7 @@ func copyFile(from, to string) error {
 		os.Remove(name)
 		return err
 	}
-	if err := os.Rename(name, to); err != nil {
+	if err := cache.ReplaceFile(name, to); err != nil {
 		os.Remove(name)
 		return err
 	}

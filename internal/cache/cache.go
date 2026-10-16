@@ -168,7 +168,7 @@ func (e *Entry) Publish() (string, bool, error) {
 		e.Discard()
 		return "", false, err
 	}
-	if err := os.Rename(e.dir, dest); err != nil {
+	if err := ReplaceFile(e.dir, dest); err != nil {
 		// Another builder reached the key first. Its entry is as good as
 		// this one, so this one is dropped.
 		e.Discard()
@@ -178,6 +178,23 @@ func (e *Entry) Publish() (string, bool, error) {
 		return "", false, err
 	}
 	return filepath.Join(dest, "out"), true, nil
+}
+
+// ReplaceFile moves src onto dst, replacing whatever is there. Windows refuses
+// a rename while the target is open, and a running program, a scanner, or an
+// indexer can hold it for a moment, so the attempt is repeated briefly before
+// the error is reported. A retry changes nothing about what is written, so the
+// determinism contract is unaffected.
+func ReplaceFile(src, dst string) error {
+	const attempts = 10
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = os.Rename(src, dst); err == nil {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return err
 }
 
 // Discard removes the scratch directory of an entry that was not published.
