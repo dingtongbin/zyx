@@ -1,6 +1,9 @@
 package mod
 
 import (
+	"archive/zip"
+	"bytes"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -132,6 +135,155 @@ func TestCheckLang(t *testing.T) {
 	}
 	if err := CheckLang(&File{Lang: "latest"}, "0.1.0"); err == nil {
 		t.Error("a manifest with an unreadable version was accepted")
+	}
+}
+
+func TestSumRoundTrips(t *testing.T) {
+	text := "example.com/one v1.0.0 h1:AAA=\nexample.com/one v1.0.0/zyx.mod h1:BBB=\n"
+	s, err := ParseSum([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Content("example.com/one", "v1.0.0"); got != "h1:AAA=" {
+		t.Errorf("content = %q, want h1:AAA=", got)
+	}
+	if got := s.Manifest("example.com/one", "v1.0.0"); got != "h1:BBB=" {
+		t.Errorf("manifest = %q, want h1:BBB=", got)
+	}
+	if got := string(s.Format()); got != text {
+		t.Errorf("format =\n%s\nwant\n%s", got, text)
+	}
+}
+
+func TestSumOrdersItsLines(t *testing.T) {
+	s, err := ParseSum([]byte("example.com/two v1.0.0 h1:B=\nexample.com/one v1.0.0 h1:A=\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "example.com/one v1.0.0 h1:A=\nexample.com/two v1.0.0 h1:B=\n"
+	if got := string(s.Format()); got != want {
+		t.Errorf("format =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestSumRejectsMalformedLines(t *testing.T) {
+	for _, text := range []string{
+		"example.com/one v1.0.0\n",
+		"example.com/one v1.0.0 md5:AAA=\n",
+		"example.com/one h1:AAA=\n",
+	} {
+		if _, err := ParseSum([]byte(text)); err == nil {
+			t.Errorf("a checksum file holding %q was accepted", text)
+		}
+	}
+	// A comment and a blank line carry nothing.
+	if _, err := ParseSum([]byte("// a note\n\n")); err != nil {
+		t.Errorf("a comment was refused: %v", err)
+	}
+}
+
+func TestSumAddRemovePrune(t *testing.T) {
+	s := &Sum{}
+	s.Add("example.com/one", "v1.0.0", "h1:AAA=", "h1:BBB=")
+	s.Add("example.com/two", "v1.2.3", "h1:CCC=", "h1:DDD=")
+	if s.Content("example.com/two", "v1.2.3") != "h1:CCC=" {
+		t.Fatal("the second module was not recorded")
+	}
+	// Recording the same module version again replaces what was there.
+	s.Add("example.com/one", "v1.0.0", "h1:EEE=", "h1:FFF=")
+	if got := s.Content("example.com/one", "v1.0.0"); got != "h1:EEE=" {
+		t.Errorf("content after a second add = %q, want h1:EEE=", got)
+	}
+	if got := s.Manifest("example.com/one", "v1.0.0"); got != "h1:FFF=" {
+		t.Errorf("manifest after a second add = %q, want h1:FFF=", got)
+	}
+
+	s.Remove("example.com/one", "v1.0.0")
+	if got := s.Content("example.com/one", "v1.0.0"); got != "" {
+		t.Errorf("the removed module is still recorded: %q", got)
+	}
+	if got := s.Paths(); len(got) != 1 || got[0] != "example.com/two" {
+		t.Errorf("paths after remove = %v, want the second module", got)
+	}
+
+	s.Remove("example.com/two", "v1.2.3")
+	if !s.Empty() {
+		t.Errorf("removing every module left %d lines", len(s.lines))
+	}
+
+	s.Add("example.com/one", "v1.0.0", "h1:AAA=", "h1:BBB=")
+	s.Add("example.com/two", "v1.2.3", "h1:CCC=", "h1:DDD=")
+	s.Prune(func(path string) bool { return path == "example.com/two" })
+	if got := s.Paths(); len(got) != 1 || got[0] != "example.com/two" {
+		t.Errorf("paths after prune = %v, want the second module", got)
+	}
+}
+
+// zipOf builds a module archive holding the named files.
+func zipOf(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		entry, err := w.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write([]byte(files[name])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestHashContent(t *testing.T) {
+	one := zipOf(t, map[string]string{"m@v1/zyx.mod": "module m\n", "m@v1/a.zyx": "package a\n"})
+	same := zipOf(t, map[string]string{"m@v1/a.zyx": "package a\n", "m@v1/zyx.mod": "module m\n"})
+	other := zipOf(t, map[string]string{"m@v1/zyx.mod": "module m\n", "m@v1/a.zyx": "package b\n"})
+
+	first, err := HashContent(one)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := HashContent(same)
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := HashContent(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Error("the order the files were added in changed the hash")
+	}
+	if first == third {
+		t.Error("a changed file did not change the hash")
+	}
+	if !strings.HasPrefix(first, "h1:") {
+		t.Errorf("hash = %q, want the h1 form", first)
+	}
+	if _, err := HashContent([]byte("not a zip")); err == nil {
+		t.Error("content that is not a zip was accepted")
+	}
+}
+
+func TestHashManifest(t *testing.T) {
+	one := HashManifest("example.com/one", "v1.0.0", []byte("module example.com/one\n"))
+	same := HashManifest("example.com/one", "v1.0.0", []byte("module example.com/one\n"))
+	other := HashManifest("example.com/two", "v1.0.0", []byte("module example.com/one\n"))
+	if one != same {
+		t.Error("the same manifest hashed differently")
+	}
+	if one == other {
+		t.Error("a different module path did not change the hash")
 	}
 }
 

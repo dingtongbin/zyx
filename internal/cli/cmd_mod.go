@@ -135,19 +135,57 @@ func (s *Session) modTidy(args []string) int {
 			final = append(final, req)
 		}
 	}
+
+	// The checksum file fixes every requirement by hash. A requirement with
+	// no recorded hash leaves the build without the information it needs,
+	// which is an error rather than a rewrite: nothing is written until the
+	// whole picture is complete.
+	sumPath := filepath.Join(m.Root, "zyx.sum")
+	checks := &mod.Sum{}
+	if data, err := os.ReadFile(sumPath); err == nil {
+		parsed, err := mod.ParseSum(data)
+		if err != nil {
+			fmt.Fprintln(s.Stderr, "zyx:", err)
+			return exitError
+		}
+		checks = parsed
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintln(s.Stderr, "zyx:", err)
+		return exitError
+	}
+	var unrecorded []string
+	for _, req := range final {
+		if checks.Content(req.Path, req.Version) == "" || checks.Manifest(req.Path, req.Version) == "" {
+			unrecorded = append(unrecorded, req.Path)
+		}
+	}
+	if len(unrecorded) != 0 {
+		for _, path := range unrecorded {
+			fmt.Fprintf(s.Stderr, "zyx: %s has no recorded hash in zyx.sum; run `zyx get %s` to fetch and record it\n", path, path)
+		}
+		return exitError
+	}
+	// A hash whose requirement is gone is dropped, so the file says exactly
+	// what the build depends on.
+	checks.Prune(func(path string) bool { return containsRequirement(final, path) })
+
 	m.File.Require = final
-	if err := writeManifest(filepath.Join(m.Root, "zyx.mod"), m.File.Format()); err != nil {
+	if err := writeAtomically(sumPath, checks.Format()); err != nil {
+		fmt.Fprintln(s.Stderr, "zyx:", err)
+		return exitError
+	}
+	if err := writeAtomically(filepath.Join(m.Root, "zyx.mod"), m.File.Format()); err != nil {
 		fmt.Fprintln(s.Stderr, "zyx:", err)
 		return exitError
 	}
 	return exitOK
 }
 
-// writeManifest replaces a manifest atomically: a reader sees the whole old
-// file or the whole new one, never a half-written one, and a failure leaves
-// the file as it was.
-func writeManifest(path string, data []byte) error {
-	temp, err := os.CreateTemp(filepath.Dir(path), ".zyx.mod-")
+// writeAtomically replaces a file: a reader sees the whole old file or the
+// whole new one, never a half-written one, and a failure leaves the file as
+// it was.
+func writeAtomically(path string, data []byte) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-")
 	if err != nil {
 		return err
 	}
