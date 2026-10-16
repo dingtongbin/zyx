@@ -186,6 +186,129 @@ func (g *generator) argNodes(n *zyxc.Node) []*zyxc.Node {
 	return out
 }
 
+// predeclaredEnumMethod lowers a method the language gives a predeclared
+// enum. The option and the result have no declaration in any tree: each
+// answers whether it carries a value, takes that value out, or offers it as
+// the other enum.
+func (g *generator) predeclaredEnumMethod(module string, n *zyxc.Node, recv *value, name string) (*value, bool) {
+	typ := recv.typ
+	if typ == nil || typ.Kind != types.KindEnum || typ.Pkg != "" {
+		return nil, false
+	}
+	var carried, empty string
+	switch typ.Name {
+	case "Option":
+		carried, empty = "Some", "None"
+	case "Result":
+		carried, empty = "Ok", "Err"
+	default:
+		return nil, false
+	}
+	base := g.addrText(recv)
+	switch name {
+	case "IsSome", "IsOk":
+		return boolValue(g.enumTagIs(typ, base, carried, "eq")), true
+	case "IsNone", "IsErr":
+		return boolValue(g.enumTagIs(typ, base, empty, "eq")), true
+	case "Unwrap":
+		// The variant the caller asked for is the one that carries a value,
+		// so the other one is the defect.
+		g.guard(g.enumTagIs(typ, base, empty, "eq"), "called Unwrap on "+article(empty))
+		return g.payloadValue(base, typ, arg(typ, 0), 0), true
+	case "UnwrapOr":
+		return g.unwrapOr(module, n, typ, base, carried), true
+	case "Ok", "Err":
+		return g.resultAsOption(n, typ, base, name), true
+	}
+	return nil, false
+}
+
+// article renders a variant name inside a panic message.
+func article(name string) string {
+	if name == "Err" {
+		return "an Err"
+	}
+	return "a None"
+}
+
+// boolValue wraps a condition as a value of the language's bool.
+func boolValue(cond string) *value {
+	return &value{text: cond, ll: "i1", typ: types.Bool}
+}
+
+// enumTagIs returns the condition an enum object's tag satisfies against one
+// variant: pred is the integer predicate the test uses.
+func (g *generator) enumTagIs(typ *types.Type, base, variant, pred string) string {
+	index, _, ok := g.variantOf(typ, variant)
+	if !ok {
+		g.fail(fmt.Errorf("llvmgen: %s has no variant %s", typ, variant))
+		return "false"
+	}
+	ll := g.tagType(g.tagSize(typ))
+	tag := g.newReg()
+	g.emit("  %s = load %s, ptr %s", tag, ll, base)
+	cond := g.newReg()
+	g.emit("  %s = icmp %s %s %s, %d", cond, pred, ll, tag, index)
+	return cond
+}
+
+// unwrapOr lowers UnwrapOr: the value the variant carries, or the argument
+// when the enum carries the other one. The argument is evaluated once, where
+// the call stands, because it is an argument rather than a fallback.
+func (g *generator) unwrapOr(module string, n *zyxc.Node, typ *types.Type, base, carried string) *value {
+	args := g.argNodes(n)
+	if len(args) < 1 {
+		g.fail(fmt.Errorf("llvmgen: %s.UnwrapOr needs a default value", typ))
+		return nil
+	}
+	elem := arg(typ, 0)
+	fallback := g.expr(module, args[0], elem)
+	if fallback == nil {
+		return nil
+	}
+	slot := g.alloca(elem)
+	valueLabel := g.newLabel("unwrap.value")
+	defaultLabel := g.newLabel("unwrap.default")
+	endLabel := g.newLabel("unwrap.end")
+	g.branch("  br i1 %s, label %%%s, label %%%s",
+		g.enumTagIs(typ, base, carried, "eq"), valueLabel, defaultLabel)
+	g.label(valueLabel)
+	g.storeInto(slot, elem, g.payloadValue(base, typ, elem, 0), false)
+	g.branch("  br label %%%s", endLabel)
+	g.label(defaultLabel)
+	g.storeInto(slot, elem, fallback, false)
+	g.branch("  br label %%%s", endLabel)
+	g.label(endLabel)
+	return &value{text: slot, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true}
+}
+
+// resultAsOption lowers Result.Ok and Result.Err: the value the named variant
+// carries as an option, or None when the result carries the other one.
+func (g *generator) resultAsOption(n *zyxc.Node, typ *types.Type, base, name string) *value {
+	index := 0
+	if name == "Err" {
+		index = 1
+	}
+	payload := arg(typ, index)
+	opt := types.Option.Instantiate(payload)
+	slot := g.alloca(opt)
+	valueLabel := g.newLabel("result.value")
+	emptyLabel := g.newLabel("result.empty")
+	endLabel := g.newLabel("result.end")
+	g.branch("  br i1 %s, label %%%s, label %%%s",
+		g.enumTagIs(typ, base, name, "eq"), valueLabel, emptyLabel)
+	g.label(valueLabel)
+	carried := g.buildVariant(n, opt, "Some", []*value{g.payloadValue(base, typ, payload, 0)})
+	g.storeInto(slot, opt, &value{text: carried, ll: "ptr", typ: opt}, false)
+	g.branch("  br label %%%s", endLabel)
+	g.label(emptyLabel)
+	absent := g.buildVariant(n, opt, "None", nil)
+	g.storeInto(slot, opt, &value{text: absent, ll: "ptr", typ: opt}, false)
+	g.branch("  br label %%%s", endLabel)
+	g.label(endLabel)
+	return &value{text: slot, ll: "ptr", typ: opt, lvalue: true}
+}
+
 // matchStmt lowers a match. Each arm tests its pattern, binds the names the
 // pattern introduces, and runs its body; the first arm that matches wins.
 func (g *generator) matchStmt(module string, n *zyxc.Node) {

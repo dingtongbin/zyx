@@ -1,0 +1,13 @@
+5
+three ?
+1 3 5 7 9 
+one three five seven nine 
+FIVE 5
+three false 4
+1 5 7 9 
+?
+2 true false
+2 4 
+2 false 1
+0
+apple fig pear 

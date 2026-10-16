@@ -1175,18 +1175,20 @@ func (g *generator) index(module string, n *zyxc.Node) *value {
 		if recv.typ.Name != "Array" {
 			break
 		}
-		// A growable array lives in the runtime, so its element is read
-		// through the runtime after the same check.
+		// The element lives in the buffer the runtime owns, so the access
+		// answers its address: an assignment through it writes the element
+		// itself rather than a copy of it. The address stays valid until the
+		// array is structurally modified, which the language forbids while a
+		// borrow is live.
 		elem := arg(recv.typ, 0)
 		g.declareRuntime("zyxrt_array_len", g.ptrInt(), "ptr")
 		length := g.newReg()
 		g.emit("  %s = call %s @zyxrt_array_len(ptr %s)", length, g.ptrInt(), recv.text)
 		g.guardIndex(idx.text, length)
-		slot := g.objectAlloca(elem)
-		g.declareRuntime("zyxrt_array_get_unchecked", "void", "ptr", g.ptrInt(), "ptr")
-		g.emit("  call void @zyxrt_array_get_unchecked(ptr %s, %s %s, ptr %s)",
-			recv.text, idx.ll, idx.text, slot)
-		return g.load(&value{text: slot, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true})
+		g.declareRuntime("zyxrt_array_slot", "ptr", "ptr", g.ptrInt())
+		slot := g.newReg()
+		g.emit("  %s = call ptr @zyxrt_array_slot(ptr %s, %s %s)", slot, recv.text, idx.ll, idx.text)
+		return &value{text: slot, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true}
 	}
 	g.fail(fmt.Errorf("llvmgen: indexing %s is not lowered", recv.typ))
 	return nil

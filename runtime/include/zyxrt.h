@@ -25,6 +25,9 @@ void zyxrt_array_push(void *handle, const void *value);
 int zyxrt_array_pop(void *handle, void *out);
 int zyxrt_array_get(void *handle, size_t index, void *out);
 void zyxrt_array_get_unchecked(void *handle, size_t index, void *out);
+/* zyxrt_array_slot is the address of an element, which the compiler reads and
+   writes through. It stays valid until the array is structurally modified. */
+void *zyxrt_array_slot(void *handle, size_t index);
 void zyxrt_array_remove(void *handle, size_t index);
 /* zyxrt_array_cap is the room the array has, zyxrt_array_clear drops every
    element and keeps it, zyxrt_array_reserve makes room for n elements,

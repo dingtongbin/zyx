@@ -25,7 +25,7 @@ struct Node<K, V> {
 // A TreeMap keeps its entries in the order of their keys. A key must be
 // comparable and ordered, and the two must agree: a comparison that answers
 // zero exactly when the keys are equal.
-struct TreeMap<K: Eq + Order, V> {
+struct TreeMap<K: Eq + Ord, V> {
     nodes: Array<Node<K, V>>
     root: i64
     size: i64
@@ -36,7 +36,7 @@ struct TreeMap<K: Eq + Order, V> {
     // init builds an empty map.
     func init() -> Self {
         return TreeMap<K, V> {
-            nodes: new Array<Node<K, V>>(),
+            nodes: new Array<Node<K, V>>(0),
             root: nothing,
             size: 0,
             removed: Option.None,
@@ -80,8 +80,7 @@ struct TreeMap<K: Eq + Order, V> {
 
     // Insert writes a value under a key, replacing what was there.
     func Insert(k: K, v: V) {
-        var added = false
-        self.root = self.insert(self.root, k, v, added)
+        self.root = self.insert(self.root, k, v)
         self.nodes[self.root].red = false
     }
 
@@ -101,40 +100,35 @@ struct TreeMap<K: Eq + Order, V> {
 
     // Keys answers every key in order.
     func Keys() -> Array<K> {
-        var out = new Array<K>()
+        var out = new Array<K>(0)
         self.collectKeys(self.root, out)
         return out
     }
 
     // Values answers every value in the order of its key.
     func Values() -> Array<V> {
-        var out = new Array<V>()
+        var out = new Array<V>(0)
         self.collectValues(self.root, out)
         return out
     }
 
     // insert writes one entry and answers the root of the subtree, having
     // restored the leaning on the way back up.
-    func insert(h: i64, k: K, v: V, added: bool) -> i64 {
+    func insert(h: i64, k: K, v: V) -> i64 {
         if h == nothing {
             self.nodes.Push(Node<K, V> { key: k, value: v, left: nothing, right: nothing, red: true })
             self.size += 1
-            added = true
             return i64(self.nodes.Len()) - 1
         }
         var cmp = k.Compare(self.nodes[h].key)
         if cmp < 0 {
-            var moved = false
-            self.nodes[h].left = self.insert(self.nodes[h].left, k, v, moved)
-            if moved {
-                added = true
-            }
+            // A descent can grow the pool, and growing it moves the buffer,
+            // so the link below is written only once the subtree is settled.
+            var below = self.insert(self.nodes[h].left, k, v)
+            self.nodes[h].left = below
         } else if cmp > 0 {
-            var moved = false
-            self.nodes[h].right = self.insert(self.nodes[h].right, k, v, moved)
-            if moved {
-                added = true
-            }
+            var below = self.insert(self.nodes[h].right, k, v)
+            self.nodes[h].right = below
         } else {
             self.nodes[h].value = v
         }
@@ -307,12 +301,12 @@ struct TreeMap<K: Eq + Order, V> {
 
 // A TreeSet keeps its values in their own order. It is a map whose values
 // carry nothing, so the tree is written once.
-struct TreeSet<T: Eq + Order> {
+struct TreeSet<T: Eq + Ord> {
     m: TreeMap<T, bool>
 
     // init builds an empty set.
     func init() -> Self {
-        return TreeSet<T> { m: TreeMap<T, bool> { nodes: new Array<Node<T, bool>>(), root: nothing, size: 0, removed: Option.None } }
+        return TreeSet<T> { m: TreeMap<T, bool> { nodes: new Array<Node<T, bool>>(0), root: nothing, size: 0, removed: Option.None } }
     }
 
     // Len is how many values the set holds.

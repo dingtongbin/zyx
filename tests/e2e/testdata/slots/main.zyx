@@ -1,0 +1,78 @@
+package main
+
+import "std/fmt"
+
+// A place is written where it lies: an element of a fixed-size array, and a
+// field of an element a container holds. A struct is a reference, so a call
+// that takes one shares it.
+
+struct Cell {
+    hits: i64
+    tag: str
+}
+
+func bump(cell: Cell) {
+    cell.hits += 1
+}
+
+func fill(xs: Array<Cell>) {
+    xs.Push(Cell { hits: 0, tag: "new" })
+}
+
+func main() {
+    var counts: [i64; 3] = [1, 2, 3]
+    counts[1] = 20
+    counts[2] = counts[0] + counts[1]
+    fmt.PrintI64(counts[0])
+    fmt.Print(" ")
+    fmt.PrintI64(counts[1])
+    fmt.Print(" ")
+    fmt.PrintI64(counts[2])
+    fmt.PrintNl()
+
+    // An array element is a place too: the buffer is only replaced by a
+    // structural modification, which the language forbids while a borrow is
+    // live.
+    var slots = new Array<i64>(0)
+    slots.Push(4)
+    slots.Push(5)
+    slots[1] = 50
+    fmt.PrintI64(slots[0])
+    fmt.Print(" ")
+    fmt.PrintI64(slots[1])
+    fmt.PrintNl()
+
+    var cells = new Array<Cell>(0)
+    cells.Push(Cell { hits: 1, tag: "a" })
+    cells.Push(Cell { hits: 2, tag: "b" })
+    cells[0].hits = 10
+    cells[1].tag = "bee"
+    fmt.PrintI64(cells[0].hits)
+    fmt.Print(" ")
+    fmt.Print(cells[1].tag)
+    fmt.Print(" ")
+    fmt.PrintI64(i64(cells.Len()))
+    fmt.PrintNl()
+
+    var one = Cell { hits: 0, tag: "s" }
+    bump(one)
+    bump(one)
+    fmt.PrintI64(one.hits)
+    fmt.PrintNl()
+
+    var grown = new Array<Cell>(0)
+    fill(grown)
+    fmt.PrintI64(i64(grown.Len()))
+    fmt.Print(" ")
+    fmt.Print(grown[0].tag)
+    fmt.PrintNl()
+
+    // A loop that writes each element where it lies.
+    for i in 0 .. cells.Len() {
+        cells[i].hits += 1
+    }
+    fmt.PrintI64(cells[0].hits)
+    fmt.Print(" ")
+    fmt.PrintI64(cells[1].hits)
+    fmt.PrintNl()
+}

@@ -35,26 +35,39 @@ func (c *checker) checkBodies() {
 }
 
 // checkTypeBodies checks the method bodies and member constants of one type
-// body.
+// body. A method body sees its own type instantiated with the type parameters
+// it declared, so a call through self resolves the way a call from outside
+// does.
 func (c *checker) checkTypeBodies(name *ast.Ident, params []*ast.TypeParam, members []ast.Decl) {
 	d := c.declOfDecl(name)
 	if d == nil {
 		return
 	}
+	self := selfType(d)
 	for _, m := range members {
 		switch v := m.(type) {
 		case *ast.FuncDecl:
-			c.withParams(params, func() { c.checkFuncBody(v, d.Type) })
+			c.withParams(params, func() { c.checkFuncBody(v, self) })
 		case *ast.ImplBlock:
 			c.withParams(params, func() {
 				for _, f := range v.Methods {
-					c.checkFuncBody(f, d.Type)
+					c.checkFuncBody(f, self)
 				}
 			})
 		case *ast.ConstDecl:
 			c.checkMemberInit(d, v)
 		}
 	}
+}
+
+// selfType returns the type a method body reads through self: the declared
+// type instantiated with its own type parameters. A type that declares none
+// is its own receiver type.
+func selfType(d *Decl) *types.Type {
+	if len(d.Params) == 0 {
+		return d.Type
+	}
+	return d.Type.Instantiate(d.Params...)
 }
 
 // checkFuncBody checks the body of one function or method. self is the
@@ -157,10 +170,10 @@ func (c *checker) checkCond(e ast.Expr) {
 	}
 }
 
-// checkAssignTarget reports a target that has no storage to write. The
-// language's containers are appended to and read, a slice is a read-only view,
-// and a str is immutable, so only a name, a field, or an element of a
-// fixed-size array can be assigned through.
+// checkAssignTarget reports a target that has no storage to write. An array
+// element is a place, a slice is a read-only view, and a str is immutable. A
+// map is not indexed for writing: its entry is written through Insert and read
+// through Get.
 func (c *checker) checkAssignTarget(target ast.Expr) {
 	index, ok := target.(*ast.IndexExpr)
 	if !ok {
@@ -172,9 +185,11 @@ func (c *checker) checkAssignTarget(target ast.Expr) {
 	}
 	switch base.Kind {
 	case types.KindContainer:
-		c.errorHelp(diag.CodeTypeMismatch, target.Span(),
-			"assign to a name, a field, or an element of a fixed-size array",
-			"a %s is appended to and read, so its elements are not assigned", base)
+		if base.Name == "Map" {
+			c.errorHelp(diag.CodeTypeMismatch, target.Span(),
+				"write a map entry through Insert, or read it through Get",
+				"a %s entry is written through Insert", base)
+		}
 	case types.KindSlice:
 		c.errorHelp(diag.CodeTypeMismatch, target.Span(),
 			"assign to a name, a field, or an element of a fixed-size array",

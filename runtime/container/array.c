@@ -89,6 +89,15 @@ void zyxrt_array_get_unchecked(void *handle, size_t index, void *out) {
   memcpy(out, a->data + index * a->elem, a->elem);
 }
 
+/* zyxrt_array_slot returns the address of an element, which the compiler
+   writes through when an element or one of its fields is assigned. The address
+   stays valid until the array is structurally modified, because that may move
+   the buffer. */
+void *zyxrt_array_slot(void *handle, size_t index) {
+  zyxrt_array *a = (zyxrt_array *)handle;
+  return a->data + index * a->elem;
+}
+
 void zyxrt_array_remove(void *handle, size_t index) {
   zyxrt_array *a = (zyxrt_array *)handle;
   if (a == NULL || index >= a->len) return;
