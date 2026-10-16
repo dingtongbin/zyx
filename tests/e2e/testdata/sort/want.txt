@@ -1,0 +1,8 @@
+true 200 0 995
+995 0
+few: 1 2 3
+0
+7 7 40
+abc
+470
+false false 0

@@ -1,1 +1,109 @@
 package sort
+
+import c "zyxrt.h"
+
+// Sorting a sequence in place, and finding a value in a sorted one. The order
+// is a comparison the caller supplies, so the same functions serve any element
+// type: the language has no operator overloading, and a container reaches no
+// order of its own.
+
+// RUN is the length below which an insertion sort beats a partition: the
+// exchanges it makes cost less than the bookkeeping a partition does.
+const RUN = 12
+
+// Sort orders a sequence in place. It is not stable: elements the comparison
+// calls equal keep no relative order. A stable order comes from sorting on a
+// key that carries the original position.
+func Sort<T>(xs: Array<T>, less: func(T, T) -> bool) {
+    quicksort(xs, 0, i64(xs.Len()), less)
+}
+
+// Search answers the position of a value in a sequence the caller has already
+// sorted by `less`, or None. A value the comparison calls equal to more than
+// one element may answer with any of their positions.
+func Search<T>(xs: Array<T>, v: T, less: func(T, T) -> bool) -> Option<usize> {
+    var lo: i64 = 0
+    var hi = i64(xs.Len())
+    for lo < hi {
+        var mid = lo + (hi - lo) / 2
+        if less(xs[mid], v) {
+            lo = mid + 1
+            continue
+        }
+        if less(v, xs[mid]) {
+            hi = mid
+            continue
+        }
+        return Option.Some(usize(mid))
+    }
+    return Option.None
+}
+
+// swap exchanges two elements. The exchange happens in the sequence's own
+// storage, through the runtime, because an element of a reference type names
+// storage inside the sequence: a temporary the language made would keep naming
+// it after the exchange had moved it.
+func swap<T>(xs: Array<T>, a: i64, b: i64) {
+    c.zyxrt_array_swap(xs, usize(a), usize(b))
+}
+
+// quicksort orders xs[lo:hi] by partitioning around the middle of three
+// elements. It sorts the smaller side by recursing and the larger one by
+// looping, so the recursion never goes deeper than the logarithm of the
+// length, and it leaves a short range to an insertion sort.
+func quicksort<T>(xs: Array<T>, lo: i64, hi: i64, less: func(T, T) -> bool) {
+    for hi - lo > RUN {
+        var mid = lo + (hi - lo) / 2
+        if less(xs[mid], xs[lo]) {
+            swap(xs, lo, mid)
+        }
+        if less(xs[hi - 1], xs[lo]) {
+            swap(xs, lo, hi - 1)
+        }
+        if less(xs[hi - 1], xs[mid]) {
+            swap(xs, mid, hi - 1)
+        }
+        // Three elements in order put the middle one where the pivot belongs,
+        // and leave the ends holding values the scans below cannot pass:
+        // xs[lo] is at most the pivot and xs[hi-1] is at least it.
+        swap(xs, mid, hi - 2)
+        var left = lo
+        var right = hi - 2
+        for {
+            left += 1
+            for less(xs[left], xs[hi - 2]) {
+                left += 1
+            }
+            right -= 1
+            for less(xs[hi - 2], xs[right]) {
+                right -= 1
+            }
+            if left >= right {
+                break
+            }
+            swap(xs, left, right)
+        }
+        swap(xs, left, hi - 2)
+        if left - lo < hi - left {
+            quicksort(xs, lo, left, less)
+            lo = left + 1
+        } else {
+            quicksort(xs, left + 1, hi, less)
+            hi = left
+        }
+    }
+    insertion(xs, lo, hi, less)
+}
+
+// insertion orders a short range by moving each element down to where it
+// belongs. The range is short enough that the exchanges it makes cost less
+// than the bookkeeping a partition would.
+func insertion<T>(xs: Array<T>, lo: i64, hi: i64, less: func(T, T) -> bool) {
+    for i in lo + 1 .. hi {
+        var j = i
+        for j > lo && less(xs[j], xs[j - 1]) {
+            swap(xs, j - 1, j)
+            j -= 1
+        }
+    }
+}

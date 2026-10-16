@@ -1,1 +1,145 @@
 package bits
+
+// A Bitset is a fixed-length bitmap. Its words are the storage and its length
+// is how many bits are in use, which is not always a whole number of words.
+// The spare bits of the last word are always clear, so the words can be
+// counted or searched without masking every step; the answers that could name
+// one of them clamp to the length instead.
+
+// words_for is how many words hold n bits.
+func words_for(n: usize) -> usize {
+    return (n + 63) / 64
+}
+
+// bit_of is the mask of one bit of a word.
+func bit_of(i: usize) -> u64 {
+    return u64(1) << u64(i % 64)
+}
+
+struct Bitset {
+    words: Array<u64>
+    bits: usize
+
+    // init builds a bitmap of n bits, all clear.
+    func init(n: usize) -> Self {
+        var count = words_for(n)
+        var words = new Array<u64>(count)
+        for _ in 0 .. count {
+            words.Push(0)
+        }
+        return Bitset { words: words, bits: n }
+    }
+
+    // Len is how many bits the bitmap holds.
+    func Len() -> usize {
+        return self.bits
+    }
+
+    // Set raises one bit. An index outside the bitmap is a fault.
+    func Set(i: usize) {
+        if i >= self.bits {
+            panic("index out of range")
+        }
+        var mask = bit_of(i)
+        self.words[i / 64] |= mask
+    }
+
+    // Clear lowers one bit.
+    func Clear(i: usize) {
+        if i >= self.bits {
+            panic("index out of range")
+        }
+        var mask = bit_of(i)
+        self.words[i / 64] &= ~mask
+    }
+
+    // Test reports whether one bit is up.
+    func Test(i: usize) -> bool {
+        if i >= self.bits {
+            panic("index out of range")
+        }
+        return self.words[i / 64] & bit_of(i) != 0
+    }
+
+    // SetAll raises every bit in the bitmap.
+    func SetAll() {
+        for i in 0 .. self.words.Len() {
+            self.words[i] = ~u64(0)
+        }
+        self.clear_spare()
+    }
+
+    // ClearAll lowers every bit.
+    func ClearAll() {
+        for i in 0 .. self.words.Len() {
+            self.words[i] = 0
+        }
+    }
+
+    // Count is how many bits are up.
+    func Count() -> usize {
+        var total: usize = 0
+        for i in 0 .. self.words.Len() {
+            total += usize(self.words[i].count_ones())
+        }
+        return total
+    }
+
+    // NextSet answers the first bit at or after i that is up, or the length
+    // when there is none.
+    func NextSet(i: usize) -> usize {
+        return self.scan(i, true)
+    }
+
+    // NextClear answers the first bit at or after i that is down, or the
+    // length when there is none.
+    func NextClear(i: usize) -> usize {
+        return self.scan(i, false)
+    }
+
+    // scan walks the words from the one i is in, looking for a bit whose value
+    // is the one asked for. A word that answers zero holds no such bit.
+    func scan(i: usize, want_set: bool) -> usize {
+        if i >= self.bits {
+            return self.bits
+        }
+        var word = i / 64
+        var at = i % 64
+        for word < self.words.Len() {
+            var rest = self.word_at(word, want_set) >> u64(at)
+            if rest != 0 {
+                var found = word * 64 + at + usize(rest.trailing_zeros())
+                if found >= self.bits {
+                    return self.bits
+                }
+                return found
+            }
+            word += 1
+            at = 0
+        }
+        return self.bits
+    }
+
+    // word_at answers one word as the search sees it: the word itself when the
+    // search wants a bit that is up, and its complement when it wants one that
+    // is down.
+    func word_at(word: usize, want_set: bool) -> u64 {
+        var bits = self.words[word]
+        if want_set {
+            return bits
+        }
+        return ~bits
+    }
+
+    // clear_spare lowers the bits of the last word that the bitmap does not
+    // hold, so a search or a count never sees them.
+    func clear_spare() {
+        var spare = self.bits % 64
+        if spare == 0 {
+            return
+        }
+        var last = self.words.Len() - 1
+        var mask = u64(1) << u64(spare)
+        self.words[last] &= mask - 1
+    }
+}

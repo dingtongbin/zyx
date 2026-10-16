@@ -9,6 +9,9 @@
 
 /* The buffer an array grows from, and the array itself. */
 #define ZYXXRT_ARRAY_MIN 4u
+/* The bytes one exchange moves at a time, which keeps an exchange free of
+   allocation whatever the element size is. */
+#define ZYXXRT_ARRAY_SWAP_CHUNK 32u
 
 typedef struct zyxrt_array {
   size_t len;
@@ -128,6 +131,34 @@ void *zyxrt_array_slot(void *handle, size_t index) {
   return a->data + index * a->elem;
 }
 
+/* zyxrt_array_swap exchanges two elements. The exchange happens in the
+   buffer, so it serves an element of any size without a temporary the caller
+   would have to own: an element of a reference type names storage inside the
+   sequence, and a temporary would keep naming it after the exchange moved
+   it. */
+void zyxrt_array_swap(void *handle, size_t a, size_t b) {
+  zyxrt_array *array = (zyxrt_array *)handle;
+  if (array == NULL) return;
+  if (a >= array->len || b >= array->len) {
+    zyxrt_panic("index out of range", 18);
+  }
+  if (a == b) return;
+  unsigned char *x = array->data + a * array->elem;
+  unsigned char *y = array->data + b * array->elem;
+  unsigned char held[ZYXXRT_ARRAY_SWAP_CHUNK];
+  size_t left = array->elem;
+  while (left > 0) {
+    size_t chunk = left < ZYXXRT_ARRAY_SWAP_CHUNK ? left : ZYXXRT_ARRAY_SWAP_CHUNK;
+    memcpy(held, x, chunk);
+    memcpy(x, y, chunk);
+    memcpy(y, held, chunk);
+    x += chunk;
+    y += chunk;
+    left -= chunk;
+  }
+}
+
+/* zyxrt_array_remove drops one element, moving what follows it. */
 void zyxrt_array_remove(void *handle, size_t index) {
   zyxrt_array *a = (zyxrt_array *)handle;
   if (a == NULL || index >= a->len) return;

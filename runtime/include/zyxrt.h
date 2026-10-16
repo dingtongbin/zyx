@@ -28,6 +28,9 @@ void zyxrt_array_get_unchecked(void *handle, size_t index, void *out);
 /* zyxrt_array_slot is the address of an element, which the compiler reads and
    writes through. It stays valid until the array is structurally modified. */
 void *zyxrt_array_slot(void *handle, size_t index);
+/* zyxrt_array_swap exchanges two elements inside the buffer, which serves an
+   element of any size. An index past the end is a fault. */
+void zyxrt_array_swap(void *handle, size_t a, size_t b);
 void zyxrt_array_remove(void *handle, size_t index);
 /* zyxrt_array_cap is the room the array has, zyxrt_array_clear drops every
    element and keeps it, zyxrt_array_reserve makes room for n elements,

@@ -278,6 +278,14 @@ func cArgFits(t *types.Type, params []*types.Type) bool {
 	if types.Identical(t, p) {
 		return true
 	}
+	// A runtime handle is an opaque pointer on the C side, so a container or a
+	// channel crosses where the header declares void*. The language owns those
+	// types and never exposes their representation, so a C parameter is the
+	// only place the two meet; what the callee does with the handle is the
+	// unsafe face the boundary already declares.
+	if types.Identical(p, types.Raw) && handlesAsPointer(t) {
+		return true
+	}
 	if t.IsNumeric() && p.IsNumeric() {
 		return cWidth(t) == cWidth(p)
 	}
@@ -286,6 +294,16 @@ func cArgFits(t *types.Type, params []*types.Type) bool {
 		return cWidth(p) == 1
 	case types.KindChar:
 		return cWidth(p) == 4
+	}
+	return false
+}
+
+// handlesAsPointer reports whether a value of the type is an opaque handle the
+// runtime owns, which is a pointer on the C side.
+func handlesAsPointer(t *types.Type) bool {
+	switch t.Kind {
+	case types.KindContainer, types.KindChan:
+		return true
 	}
 	return false
 }
