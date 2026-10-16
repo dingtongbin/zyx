@@ -2,7 +2,9 @@ package main
 
 import "std/fmt"
 
-import c "mine.h"
+import c "mine.h" {
+    fast add
+}
 import c "zyxrt.h"
 
 func main() {
@@ -32,6 +34,10 @@ func main() {
     // A record crosses by value, placed the way the target places one.
     var point = Point { x: 3, y: 4 }
     fmt.PrintI64(i64(c.sum(point)))
+    fmt.PrintNl()
+    // The linkage declaration lists add as fast, so its calls run on the
+    // calling coroutine rather than through the blocking pool.
+    fmt.PrintI64(i64(c.add(4, 5)))
     fmt.PrintNl()
 }
 // The header's own tag and a declaration of the same name are one type.

@@ -70,8 +70,6 @@ func (r *resolver) resolveExpr(e ast.Expr) {
 		r.resolveExpr(v.Count)
 	case *ast.AggregateLitExpr:
 		r.resolveAggregate(v)
-	case *ast.FastExpr:
-		r.resolveExpr(v.X)
 	}
 }
 

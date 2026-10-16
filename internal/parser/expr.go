@@ -121,14 +121,6 @@ func (p *parser) parseUnary() ast.Expr {
 		p.advance()
 		x := p.parsePostfix()
 		return &ast.TryExpr{Sp: p.spanFrom(start), X: x}
-	case token.Fast:
-		p.advance()
-		x := p.parsePostfix()
-		if !isCallExpr(x) {
-			p.errorHelpSpan(x.Span(), diag.CodeUnexpectedToken,
-				"mark a C call with fast", "`fast` applies to a call")
-		}
-		return &ast.FastExpr{Sp: p.spanFrom(start), X: x}
 	case token.Spawn, token.SpawnWatched:
 		return p.parseSpawn()
 	}
@@ -479,13 +471,11 @@ func isAssignTarget(x ast.Expr) bool {
 }
 
 // isExprStatement reports whether x may stand alone as a statement: a call,
-// a spawn, a `fast` call, or a `try` call.
+// a spawn, or a `try` call.
 func isExprStatement(x ast.Expr) bool {
 	switch v := x.(type) {
 	case *ast.CallExpr, *ast.SpawnExpr:
 		return true
-	case *ast.FastExpr:
-		return isCallExpr(v.X)
 	case *ast.TryExpr:
 		return isCallExpr(v.X)
 	}

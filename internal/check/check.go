@@ -182,6 +182,11 @@ type Package struct {
 	MethodValues map[ast.Node]bool
 	// Consts maps each evaluated constant to its value.
 	Consts map[string]*Value
+	// FastC names the C functions whose calls run on the calling coroutine
+	// rather than through the blocking pool. The set comes from the
+	// package's own linkage declarations: a `fast extern func`, and the
+	// fast list of an import of a C header.
+	FastC map[string]bool
 	// Interface is the surface downstream packages consume.
 	Interface *Interface
 
@@ -318,6 +323,7 @@ func newChecker(pkg *resolve.Package, info *resolve.Info, imports Imports, targe
 		PatternVariants: map[ast.Node]bool{},
 		MethodValues:    map[ast.Node]bool{},
 		Consts:          map[string]*Value{},
+		FastC:           map[string]bool{},
 		imports:         imports,
 	}
 	if info != nil {
@@ -329,11 +335,47 @@ func newChecker(pkg *resolve.Package, info *resolve.Info, imports Imports, targe
 
 // run performs the check passes in order.
 func (c *checker) run() {
+	c.collectFastC()
 	c.declareTypes()
 	c.checkDecls()
 	c.checkImpls()
 	c.checkBodies()
 	c.buildInterface()
+}
+
+// collectFastC gathers the C functions the package declared as fast. Whether
+// a C function blocks is a property of the function, so a package states it
+// where it declares the linkage: on a `fast extern func`, or in the fast list
+// of an import of a header. A name a header import lists must be one the
+// header declares, because the list is about a function of that header.
+func (c *checker) collectFastC() {
+	for _, f := range c.pkg.Files {
+		for _, imp := range f.Imports {
+			if !imp.CHeader {
+				continue
+			}
+			table := c.cdecls[imp.Path]
+			for _, id := range imp.Fast {
+				if id == nil {
+					continue
+				}
+				if table == nil || table.Functions[id.Name] == nil {
+					c.errorHelp(diag.CodeUndefinedName, id.Sp,
+						"list a function the header declares, or drop the name",
+						"%s is not a function %s declares", id.Name, imp.Path)
+					continue
+				}
+				c.out.FastC[id.Name] = true
+			}
+		}
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || !fn.Quals.Fast || fn.Name == nil {
+				continue
+			}
+			c.out.FastC[fn.Name.Name] = true
+		}
+	}
 }
 
 // declareTypes registers the named type of every type declaration before

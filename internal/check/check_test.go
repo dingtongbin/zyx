@@ -2381,3 +2381,55 @@ func Serve(s: Server, jobs: chan<i32>) -> Result<i32, PanicError> {
 		resolveDeps{"std/net": rdep}, checkDeps{"std/net": cdep}, src)
 	wantClean(t, diags)
 }
+
+func TestCFastDeclarations(t *testing.T) {
+	src := `package server
+
+import c "test.h" {
+	fast printf
+}
+fast extern func getpid() -> i32
+extern func scanf(fmt: str, ...)
+
+func Work() {
+	c.printf(0)
+	c.scanf("")
+	getpid()
+}
+`
+	pkg, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	for _, name := range []string{"printf", "getpid"} {
+		if !pkg.FastC[name] {
+			t.Errorf("%s was declared fast, but it is not in the fast set", name)
+		}
+	}
+	if pkg.FastC["scanf"] {
+		t.Errorf("scanf was declared blocking, but it is in the fast set")
+	}
+}
+
+func TestCFastOnADefinedFunction(t *testing.T) {
+	src := `package server
+
+fast func Work() {
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeUnexpectedToken)
+}
+
+func TestCFastNameNotInTheHeader(t *testing.T) {
+	src := `package server
+
+import c "test.h" {
+	fast nosuch
+}
+
+func Work() {
+	c.printf(0)
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeUndefinedName)
+}

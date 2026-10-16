@@ -1,6 +1,8 @@
 package main
 
-import c "stdio.h"
+import c "stdio.h" {
+    fast printf
+}
 
 struct Holder {
     slot: str
@@ -35,7 +37,7 @@ func stored() -> i64 {
 }
 
 func fastCall() {
-    fast c.printf("fast\n")
+    c.printf("fast\n")
 }
 
 func use(bag: Bag) {

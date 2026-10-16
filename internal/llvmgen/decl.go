@@ -388,8 +388,11 @@ func (g *generator) function(module string, n *zyxc.Node) {
 		return
 	}
 	symbol := sym
-	if qual == "c" {
-		// A function with the C ABI is reachable from C by its own name.
+	if qual == "c" || qual == "extern" {
+		// A function with the C ABI keeps its own name in the object code,
+		// because that is the name the C side defines. Every other function
+		// is named by its symbol id, which carries the package and cannot
+		// collide.
 		symbol = name
 	}
 	params, result, retLL := g.signature(module, n)

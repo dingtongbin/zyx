@@ -46,8 +46,40 @@ func (p *parser) parseImport() *ast.ImportDecl {
 	} else {
 		p.expected(token.Str)
 	}
+	if d.CHeader && p.at(token.LBrace) {
+		p.parseFastNames(d)
+	}
 	d.Sp = p.spanFrom(start)
 	return d
+}
+
+// parseFastNames parses the `{ fast a, b }` list of an import of a C header.
+// The list names the functions of that header whose calls run on the calling
+// coroutine, so the blocking behavior of a C function is stated where the
+// linkage to it is declared rather than at every call.
+func (p *parser) parseFastNames(d *ast.ImportDecl) {
+	p.advance() // {
+	p.skipLineBreaks()
+	for !p.at(token.RBrace) && !p.at(token.EOF) {
+		if !p.accept(token.Fast) {
+			p.errorHelpAt(p.tok, diag.CodeExpectedToken,
+				"write fast before the names, as `fast read, write`",
+				"expected fast, found %s", describe(p.tok))
+			p.sync()
+			break
+		}
+		for {
+			if id := p.name(); id != nil {
+				d.Fast = append(d.Fast, id)
+			}
+			if !p.accept(token.Comma) {
+				break
+			}
+			p.skipLineBreaks()
+		}
+		p.skipSeparators()
+	}
+	p.expect(token.RBrace)
 }
 
 // parseDecl parses one top-level declaration.
@@ -66,7 +98,7 @@ func (p *parser) parseDecl() ast.Decl {
 		return p.parseEnum()
 	case token.Interface:
 		return p.parseInterface()
-	case token.Func, token.Comptime, token.C:
+	case token.Func, token.Comptime, token.C, token.Fast:
 		start, doc := p.tok.Span, p.takeDoc()
 		return p.parseFunc(doc, start)
 	case token.Extern:
@@ -157,11 +189,7 @@ func (p *parser) parseFunc(doc *ast.Doc, start source.Span) *ast.FuncDecl {
 	d := &ast.FuncDecl{Doc: doc, Sp: start}
 	var qualCount int
 	var firstQual token.Token
-	for p.at(token.Comptime) || p.at(token.Extern) || p.at(token.C) {
-		if qualCount == 0 {
-			firstQual = p.tok
-		}
-		qualCount++
+	for p.at(token.Comptime) || p.at(token.Extern) || p.at(token.C) || p.at(token.Fast) {
 		switch p.tok.Kind {
 		case token.Comptime:
 			d.Quals.Comptime = true
@@ -169,7 +197,18 @@ func (p *parser) parseFunc(doc *ast.Doc, start source.Span) *ast.FuncDecl {
 			d.Quals.Extern = true
 		case token.C:
 			d.Quals.CAbi = true
+		case token.Fast:
+			// fast states the blocking behavior of the C symbol the
+			// declaration links, so it modifies extern rather than being a
+			// qualifier of its own.
+			d.Quals.Fast = true
+			p.advance()
+			continue
 		}
+		if qualCount == 0 {
+			firstQual = p.tok
+		}
+		qualCount++
 		p.advance()
 	}
 	if qualCount > 1 {
@@ -370,7 +409,7 @@ func (p *parser) parseTypeMembers(kind memberKind) []ast.Decl {
 		}
 		before := p.pos
 		switch p.tok.Kind {
-		case token.Func, token.Comptime, token.Extern, token.C:
+		case token.Func, token.Comptime, token.Extern, token.C, token.Fast:
 			doc, start := p.takeDoc(), p.tok.Span
 			members = append(members, p.parseFunc(doc, start))
 		case token.Impl:

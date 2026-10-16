@@ -77,7 +77,8 @@ var specMarks = []string{
 // coveredMarks lists the marks the corpus emits. It grows as the corpus
 // grows: a mark that stops being emitted fails the test below.
 var coveredMarks = []string{
-	"alias", "boundary-clone", "boundary-share", "c-blocking", "chan:select",
+	"alias", "boundary-clone", "boundary-share", "c-blocking", "c-fast",
+	"chan:close", "chan:recv", "chan:select", "chan:send", "chan:try",
 	"coro:handoff", "coro:host", "coro:panic-path", "coro:region", "coro:spawn",
 	"defer-site", "defers", "entry", "home", "init", "iter-guard", "last-use",
 	"move", "region:enter", "region:exit", "shared-bind", "shared-ref",
@@ -88,18 +89,9 @@ var coveredMarks = []string{
 // yet, with the reason. Every entry is work the front end still owes, not a
 // decision to drop the mark.
 var deferredMarks = map[string]string{
-	"c-fast":     unexercised,
-	"chan:close": unexercised,
-	"chan:recv":  unexercised,
-	"chan:send":  unexercised,
-	"chan:try":   notEmitted,
-	"coro:body":  notEmitted,
-	"mono-rule":  notEmitted,
+	"coro:body": notEmitted,
+	"mono-rule": notEmitted,
 }
-
-// unexercised is the reason a mark the front end already produces is deferred:
-// no program of the corpus has its shape yet, so nothing verifies it.
-const unexercised = "no corpus program has this shape yet"
 
 // notEmitted is the reason a mark the format defines is deferred: the pass
 // that would produce it does not run yet.

@@ -188,8 +188,6 @@ func (b *builder) walkExpr(e ast.Expr) {
 		}
 	case *ast.TryExpr:
 		b.walkExpr(v.X)
-	case *ast.FastExpr:
-		b.walkExpr(v.X)
 	case *ast.LambdaExpr:
 		b.walkStmt(v.Body)
 		b.walkExpr(v.BodyExpr)

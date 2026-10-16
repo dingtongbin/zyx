@@ -14,6 +14,11 @@ extern union Bits {
     whole: u64
     half: u32
 }
+// A C symbol can also be linked by a declaration of its own, which names the
+// symbol the C side defines rather than a name the compiler builds. The fast
+// qualifier states that calls to it run on the calling coroutine.
+
+fast extern func zyxrt_hash_bytes(p: raw, n: usize) -> u64
 
 func main() {
     var pair = Pair { left: 3, right: 4 }
@@ -32,5 +37,8 @@ func main() {
     var one: u8 = 7
     var two: u8 = 7
     fmt.PrintBool(c.zyxrt_hash_bytes(& one, 1) == c.zyxrt_hash_bytes(& two, 1))
+    fmt.PrintNl()
+    // The same symbol reached by its own declaration is the same function.
+    fmt.PrintBool(zyxrt_hash_bytes(& one, 1) == c.zyxrt_hash_bytes(& two, 1))
     fmt.PrintNl()
 }

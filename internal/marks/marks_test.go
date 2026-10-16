@@ -177,11 +177,16 @@ func Work(ch: chan<i32>) -> i32 {
 func TestCMarks(t *testing.T) {
 	src := `package server
 
-import c "stdio.h"
+import c "test.h" {
+	fast printf
+}
+extern func strlen(s: str) -> usize
+fast extern func puts(s: str) -> i32
 
 func Work() {
 	c.printf(0)
-	fast c.printf(0)
+	puts("")
+	strlen("")
 }
 `
 	info, diags := marksOf(t, src)

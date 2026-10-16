@@ -199,17 +199,22 @@ func (b *builder) importNode(imp *ast.ImportDecl) *Node {
 			return n
 		}
 		for _, name := range table.Names() {
-			n.Child(cDeclaration(table, name))
+			n.Child(b.cDeclaration(table, name))
 		}
 		return n
 	}
 	return b.at(New("import", imp.Path), imp.Span())
 }
 
-// cDeclaration renders one declaration a C header exposes.
-func cDeclaration(table *cheader.Table, name string) *Node {
+// cDeclaration renders one declaration a C header exposes. A function the
+// package declared fast carries the flag, so the blocking behavior of every C
+// call is settled in the intermediate form rather than derived again.
+func (b *builder) cDeclaration(table *cheader.Table, name string) *Node {
 	if fn, ok := table.Functions[name]; ok {
 		n := New("c-func", name)
+		if b.cpkg != nil && b.cpkg.FastC[name] {
+			n.Payload = append(n.Payload, "fast")
+		}
 		for i, pt := range fn.Params {
 			p := New("param", fn.Names[i], pt.String())
 			n.Child(p)
@@ -982,16 +987,6 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 			n.Child(b.wrap("watcher", b.expr(v.Watcher)))
 		}
 		return b.at(n, v.Sp)
-	case *ast.FastExpr:
-		n := New("c-call", "")
-		if call, ok := v.X.(*ast.CallExpr); ok {
-			n.Payload = []string{cName(call.Fn)}
-			for _, a := range call.Args {
-				n.Child(b.wrap("arg", b.expr(a)))
-			}
-			return b.at(n, call.Sp)
-		}
-		return b.expr(v.X)
 	case *ast.FuncRefExpr:
 		n := New("func-ref", b.symID(v.Name))
 		return b.at(n, v.Sp)
@@ -1032,14 +1027,6 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 	}
 	b.fail(e, "expression "+nodeName(e))
 	return nil
-}
-
-// cName returns the C name a C call reaches.
-func cName(fn ast.Expr) string {
-	if sel, ok := fn.(*ast.SelectorExpr); ok && sel.Name != nil {
-		return sel.Name.Name
-	}
-	return ""
 }
 
 // namespace returns the predeclared namespace a selector reaches, such as

@@ -70,8 +70,6 @@ func (c *checker) exprType(e ast.Expr, want *types.Type) *types.Type {
 		return c.arrayRepeatType(v, want)
 	case *ast.AggregateLitExpr:
 		return c.aggregateType(v, want)
-	case *ast.FastExpr:
-		return c.checkExpr(v.X, want)
 	}
 	return nil
 }

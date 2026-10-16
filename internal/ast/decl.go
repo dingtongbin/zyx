@@ -31,6 +31,10 @@ type ImportDecl struct {
 	Path string
 	// PathSp covers the string literal.
 	PathSp source.Span
+	// Fast names the C functions of the header whose calls run on the
+	// calling coroutine. The list is the import's own linkage declaration,
+	// so a package states the blocking behavior of the functions it links.
+	Fast []*Ident
 }
 
 // Span returns the declaration source range.
@@ -100,6 +104,11 @@ type FuncQualifiers struct {
 	Extern bool
 	// CAbi marks `c func`, a C ABI definition.
 	CAbi bool
+	// Fast marks `fast extern func`, a C symbol whose calls run on the
+	// calling coroutine instead of through the blocking pool. Whether a C
+	// function blocks is a property of the function, so it is declared with
+	// the linkage rather than written at each call.
+	Fast bool
 }
 
 // Param is one function parameter.

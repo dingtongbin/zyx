@@ -257,6 +257,14 @@ func (c *checker) funcType(v *ast.FuncDecl) *types.Type {
 // the variadic parameter, default values, and the reserved names.
 func (c *checker) checkFuncShape(v *ast.FuncDecl, ctx funcContext) {
 	hasBody := v.Body != nil || v.BodyExpr != nil
+	if v.Quals.Fast && !v.Quals.Extern {
+		// Whether a C function blocks is a property of the function, so the
+		// declaration that links it is where fast belongs. A function the
+		// program defines is not a C symbol at all.
+		c.errorHelp(diag.CodeUnexpectedToken, nameSpan(v),
+			"mark the function extern, or drop fast",
+			"fast states the blocking behavior of a C symbol, so it needs extern")
+	}
 	switch {
 	case v.Quals.Extern:
 		if hasBody {

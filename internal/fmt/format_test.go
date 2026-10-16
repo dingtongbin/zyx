@@ -21,6 +21,7 @@ var sources = []string{
 	"package main\n\nfunc g() {\nvar m: Map<str, i64> = Map { \"a\": 1 }\nvar i = 0\nfor i < 3 {\ni += 1\n}\n}\n",
 	"package main\n\nfunc h() {\nvar x = 0 - 1\nvar y = a - b\n}\n",
 	"package main\n\nfunc i() {\n// a comment\nvar x = 1 // trailing\n}\n",
+	"package main\nimport c \"test.h\" { fast read, write }\nfast extern func getpid() -> i32\nfunc main() {\n}\n",
 }
 
 func TestFormatIsIdempotent(t *testing.T) {
@@ -126,5 +127,21 @@ func TestFormatKeepsATypeArgumentListTight(t *testing.T) {
 	got := format(src)
 	if !strings.Contains(got, "Map<str, i64>") {
 		t.Errorf("a type argument list must stay tight:\n%s", got)
+	}
+}
+
+// TestFormatKeepsFastDeclarations checks the two places a C function's
+// blocking behavior is declared: the fast list of an import of a header, and
+// the fast qualifier of an extern declaration.
+func TestFormatKeepsFastDeclarations(t *testing.T) {
+	src := "package main\nimport c \"test.h\" { fast read, write }\nfast extern func getpid() -> i32\nfunc main() {\n}\n"
+	got := format(src)
+	for _, want := range []string{"fast read, write", "fast extern func getpid() -> i32"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the formatted source lost %q:\n%s", want, got)
+		}
+	}
+	if again := format(got); again != got {
+		t.Errorf("format is not idempotent:\n--- first ---\n%s\n--- second ---\n%s", got, again)
 	}
 }

@@ -133,8 +133,6 @@ func (c *checker) eval(e ast.Expr) *Value {
 		return c.evalIs(v)
 	case *ast.NewExpr:
 		return c.evalNew(v)
-	case *ast.FastExpr:
-		return c.eval(v.X)
 	}
 	return nil
 }

@@ -191,7 +191,8 @@ func (p *printer) token(toks []token.Token, i int) {
 func isDeclKeyword(k token.Kind) bool {
 	switch k {
 	case token.Package, token.Import, token.Const, token.Var, token.Type,
-		token.Func, token.Struct, token.Enum, token.Interface, token.Extern:
+		token.Func, token.Struct, token.Enum, token.Interface, token.Extern,
+		token.Fast:
 		return true
 	}
 	return false

@@ -691,20 +691,29 @@ func TestTryCallAsStatement(t *testing.T) {
 
 func TestExternAndCAbiFunctions(t *testing.T) {
 	src := `package main
-import c "stdio.h"
+import c "stdio.h" {
+	fast printf
+}
 extern func strlen(s: str) -> usize
+fast extern func fwrite(p: raw, n: usize) -> usize
 extern func printf(fmt: str, ...)
 c func OnAccept(fd: i32) { }
 func use() {
 	c.printf("hello\n")
-	fast c.printf("fast\n")
+	fwrite(nil, 0)
 }
 `
 	f, diags := parseSrc(t, src)
 	assertClean(t, diags)
-	var variadic, cAbi, extern, cCall, fast bool
+	var variadic, cAbi, extern, fast, fastList bool
 	ast.Walk(f, func(n ast.Node) bool {
 		switch v := n.(type) {
+		case *ast.ImportDecl:
+			for _, id := range v.Fast {
+				if id.Name == "printf" {
+					fastList = true
+				}
+			}
 		case *ast.Param:
 			if v.Variadic {
 				variadic = true
@@ -716,18 +725,15 @@ func use() {
 			if v.Quals.Extern {
 				extern = true
 			}
-		case *ast.SelectorExpr:
-			if id, ok := v.X.(*ast.Ident); ok && id.Name == "c" {
-				cCall = true
+			if v.Quals.Fast {
+				fast = true
 			}
-		case *ast.FastExpr:
-			fast = true
 		}
 		return true
 	})
 	for name, ok := range map[string]bool{
 		"variadic param": variadic, "c ABI func": cAbi, "extern func": extern,
-		"c call": cCall, "fast call": fast,
+		"fast extern func": fast, "fast name in an import": fastList,
 	} {
 		if !ok {
 			t.Errorf("no %s in the tree", name)
