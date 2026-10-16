@@ -264,7 +264,7 @@ func TestFileFor(t *testing.T) {
 		{"net_windows_test.zyx", false, true},
 	}
 	for _, c := range cases {
-		include, test := fileFor(c.name, target)
+		include, test := fileFor(c.name, ".zyx", target)
 		if include != c.include || test != c.test {
 			t.Errorf("fileFor(%q) = %v, %v; want %v, %v", c.name, include, test, c.include, c.test)
 		}

@@ -37,6 +37,9 @@ type CompileOptions struct {
 	Debug bool
 	// FastMath allows floating-point reassociation.
 	FastMath bool
+	// Includes names directories a C source searches beside the ones the
+	// runtime always provides, which is where a package's own header sits.
+	Includes []string
 }
 
 // Locate finds the compiler programs and the runtime tree. It reports the
@@ -325,6 +328,9 @@ func (t *Toolchain) CompileC(src, out string, opts CompileOptions) error {
 		args = append(args, "-std=c11")
 	}
 	args = append(args, t.IncludeFlags()...)
+	for _, dir := range opts.Includes {
+		args = append(args, "-I"+dir)
+	}
 	args = append(args, levelFlag(opts.Level)...)
 	if opts.Debug {
 		args = append(args, "-g")

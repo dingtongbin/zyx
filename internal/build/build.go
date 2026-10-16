@@ -43,6 +43,10 @@ type Package struct {
 	Imports []string
 	// CHeaders lists the C header paths, sorted and deduplicated.
 	CHeaders []string
+	// CSources lists the C sources of the package, as full paths in
+	// file-name byte order. Each is a translation unit of its own, compiled
+	// by the same compiler and linked beside the objects of the package.
+	CSources []string
 }
 
 // A Loader collects packages from a module tree.
@@ -122,10 +126,17 @@ func (l *Loader) LoadPackage(importPath string) (*Package, error) {
 	if err != nil {
 		return nil, err
 	}
+	cnames, err := cSourceNames(dir, l.Target)
+	if err != nil {
+		return nil, err
+	}
 	pkg := &Package{ImportPath: importPath, Dir: dir}
+	for _, name := range cnames {
+		pkg.CSources = append(pkg.CSources, filepath.Join(dir, name))
+	}
 	if len(names) == 0 {
 		// A package whose every file is excluded by the target is empty,
-		// which the language allows.
+		// which the language allows. It may still carry C sources.
 		return pkg, nil
 	}
 	files, err := l.readFiles(dir, names)
@@ -463,6 +474,28 @@ func (l *Loader) All(prefix string) ([]string, error) {
 	return out, nil
 }
 
+// cSourceNames returns the C source names of a directory that take part in a
+// build for the target, in byte order. A C file follows the same platform
+// rule a zyx file does, so a package can keep one implementation per target.
+func cSourceNames(dir string, target toolchain.Target) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read %s: %w", dir, err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".c") {
+			continue
+		}
+		if include, _ := fileFor(entry.Name(), ".c", target); !include {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 // hasSource reports whether a directory holds at least one .zyx file.
 func hasSource(dir string) (bool, error) {
 	entries, err := os.ReadDir(dir)
@@ -489,7 +522,7 @@ func sourceNames(dir string, target toolchain.Target, testing bool) ([]string, e
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".zyx") {
 			continue
 		}
-		include, test := fileFor(entry.Name(), target)
+		include, test := fileFor(entry.Name(), ".zyx", target)
 		if !include || (test && !testing) {
 			continue
 		}
@@ -502,8 +535,8 @@ func sourceNames(dir string, target toolchain.Target, testing bool) ([]string, e
 // fileFor reports whether a source file takes part in a build for the
 // target and whether it is a test file. A name whose trailing segment is
 // neither a platform nor "test" is an ordinary file name.
-func fileFor(name string, target toolchain.Target) (include, test bool) {
-	stem := strings.TrimSuffix(name, ".zyx")
+func fileFor(name, ext string, target toolchain.Target) (include, test bool) {
+	stem := strings.TrimSuffix(name, ext)
 	i := strings.LastIndex(stem, "_")
 	if i < 0 {
 		return true, false

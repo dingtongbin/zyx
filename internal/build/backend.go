@@ -94,6 +94,20 @@ func (s *Session) Link(entry string, results []*Result, opts BackendOptions) (st
 			objects = append(objects, out)
 		}
 	}
+	// A package's own C sources are translation units of their own: a header
+	// declares what a C file defines, and the two meet at the link.
+	at := 0
+	for _, res := range results {
+		for _, src := range res.Package.CSources {
+			out := filepath.Join(dir, fmt.Sprintf("c%d.o", at))
+			at++
+			copts.Includes = []string{res.Package.Dir}
+			if err := t.CompileC(src, out, copts); err != nil {
+				return "", err
+			}
+			objects = append(objects, out)
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(opts.Output), 0o755); err != nil {
 		return "", err
 	}
