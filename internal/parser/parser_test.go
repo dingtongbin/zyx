@@ -811,3 +811,40 @@ func TestFuncRefNames(t *testing.T) {
 		}
 	}
 }
+
+// TestGenericAggregateLiteral checks that a literal of a type with type
+// arguments parses, and that a comparison that looks the same does not.
+func TestGenericAggregateLiteral(t *testing.T) {
+	src := "package main\n\nstruct Box<T> {\n\tv: T\n}\n\nfunc f(a: i64, b: i64) -> i64 {\n\tvar box = Box<i64> { v: 5 }\n\tif a < b {\n\t\treturn box.v\n\t}\n\treturn a\n}\n"
+	f, diags := parseSrc(t, src)
+	assertClean(t, diags)
+	var literal bool
+	ast.Walk(f, func(n ast.Node) bool {
+		if v, ok := n.(*ast.AggregateLitExpr); ok {
+			if v.Type != nil && v.Type.Name != nil && v.Type.Name.Name == "Box" && len(v.Type.Args) == 1 {
+				literal = true
+			}
+		}
+		return true
+	})
+	if !literal {
+		t.Error("a literal of a type with type arguments did not parse")
+	}
+}
+
+// TestChainedComparisonIsNotATypeArgumentList checks the lookahead: a brace
+// must follow the type arguments, so `a < Box > b` stays a comparison and is
+// reported as one rather than read as a literal.
+func TestChainedComparisonIsNotATypeArgumentList(t *testing.T) {
+	src := "package main\n\nfunc f(a: i64, b: i64) -> bool {\n\treturn a < Box > b\n}\n"
+	f, diags := parseSrc(t, src)
+	if len(diags) == 0 {
+		t.Fatal("a chained comparison was accepted")
+	}
+	ast.Walk(f, func(n ast.Node) bool {
+		if _, ok := n.(*ast.AggregateLitExpr); ok {
+			t.Error("a chained comparison parsed as a literal")
+		}
+		return true
+	})
+}

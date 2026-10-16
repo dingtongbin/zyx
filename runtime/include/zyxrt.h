@@ -209,6 +209,16 @@ void *zyxrt_sem_new(int64_t n);
 void zyxrt_sem_acquire(void *sem);
 int zyxrt_sem_try_acquire(void *sem);
 void zyxrt_sem_release(void *sem);
+/* A mutex is held by one coroutine at a time. zyxrt_mutex_wait releases the
+   lock and parks the coroutine until a notification arrives, then takes the
+   lock again, which is what makes the monitor methods a condition variable. */
+void *zyxrt_mutex_new(void);
+void zyxrt_mutex_lock(void *mutex);
+int zyxrt_mutex_try_lock(void *mutex);
+void zyxrt_mutex_unlock(void *mutex);
+void zyxrt_mutex_wait(void *mutex);
+void zyxrt_mutex_notify_one(void *mutex);
+void zyxrt_mutex_notify_all(void *mutex);
 
 /* Channels. A channel carries values of one size, up to a fixed capacity. */
 void *zyxrt_chan_new(size_t elem, size_t cap);

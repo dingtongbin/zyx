@@ -56,8 +56,7 @@ extern struct Once {
 }
 
 // A Semaphore holds a count of permits.
-extern struct Semaphore {
-    handle: raw
+extern struct Semaphore {    handle: raw
 
     // init builds a semaphore that holds n permits.
     func init(n: i64) -> Semaphore {
@@ -78,5 +77,80 @@ extern struct Semaphore {
     // Release returns one permit.
     func Release() {
         c.zyxrt_sem_release(self.handle)
+    }
+}
+
+// A Mutex is held by one coroutine at a time. The data it guards is the Data
+// field, which the holder reads and writes directly: the language provides no
+// implicit locking, so the discipline is the program's.
+struct Mutex<T> {
+    handle: raw
+    Data: T
+
+    // init builds a mutex that guards v.
+    func init(v: T) -> Self {
+        return Mutex { handle: c.zyxrt_mutex_new(), Data: v }
+    }
+
+    // Lock takes the mutex, parking the calling coroutine while another holds
+    // it.
+    func Lock() {
+        c.zyxrt_mutex_lock(self.handle)
+    }
+
+    // TryLock takes the mutex if it is free, and answers whether it did.
+    func TryLock() -> bool {
+        return c.zyxrt_mutex_try_lock(self.handle) != 0
+    }
+
+    // Unlock releases the mutex.
+    func Unlock() {
+        c.zyxrt_mutex_unlock(self.handle)
+    }
+
+    // Wait releases the mutex and parks the calling coroutine until a
+    // notification arrives, then takes the mutex again. The caller must hold
+    // the mutex.
+    func Wait() {
+        c.zyxrt_mutex_wait(self.handle)
+    }
+
+    // NotifyOne wakes one coroutine waiting on the mutex. The caller must
+    // hold the mutex.
+    func NotifyOne() {
+        c.zyxrt_mutex_notify_one(self.handle)
+    }
+
+    // NotifyAll wakes every coroutine waiting on the mutex. The caller must
+    // hold the mutex.
+    func NotifyAll() {
+        c.zyxrt_mutex_notify_all(self.handle)
+    }
+}
+
+// A Shared is a value one coroutine at a time reads and writes, with the lock
+// inside: Get and Set take it themselves.
+struct Shared<T> {
+    handle: raw
+    Data: T
+
+    // init builds a shared value holding v.
+    func init(v: T) -> Self {
+        return Shared { handle: c.zyxrt_mutex_new(), Data: v }
+    }
+
+    // Get answers the value.
+    func Get() -> T {
+        c.zyxrt_mutex_lock(self.handle)
+        var out = self.Data
+        c.zyxrt_mutex_unlock(self.handle)
+        return out
+    }
+
+    // Set replaces the value.
+    func Set(v: T) {
+        c.zyxrt_mutex_lock(self.handle)
+        self.Data = v
+        c.zyxrt_mutex_unlock(self.handle)
     }
 }

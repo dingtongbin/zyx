@@ -842,7 +842,9 @@ func argsSpan(args []ast.Expr) source.Span {
 }
 
 // accepts reports whether an argument of type got may stand where want is
-// expected. An unsuffixed numeric literal adopts the expected numeric type.
+// expected. An unsuffixed numeric literal adopts the expected numeric type,
+// and a generic declaration's own type accepts the form that declaration
+// builds when it writes that type with its own parameters.
 func (c *checker) accepts(want *types.Type, arg ast.Expr, got *types.Type) bool {
 	if c.assignable(want, got) {
 		return true
@@ -851,7 +853,25 @@ func (c *checker) accepts(want *types.Type, arg ast.Expr, got *types.Type) bool 
 		c.out.Nodes[arg] = want
 		return true
 	}
-	return false
+	return uninstantiatedForm(want, got)
+}
+
+// uninstantiatedForm reports whether want is a generic declaration's own type
+// and got is that type instantiated with type parameters, which is the form
+// the declaration builds when it names itself without arguments.
+func uninstantiatedForm(want, got *types.Type) bool {
+	if want == nil || got == nil || !want.IsNamed() || !got.IsNamed() {
+		return false
+	}
+	if want.ID != got.ID || len(want.Args) != 0 || len(got.Args) == 0 {
+		return false
+	}
+	for _, a := range got.Args {
+		if a == nil || a.Kind != types.KindTypeParam {
+			return false
+		}
+	}
+	return true
 }
 
 // assignable reports whether a value of type src may be stored where dst is
@@ -910,7 +930,24 @@ func builtinImplements(t, iface *types.Type) bool {
 		case types.KindChan, types.KindStr:
 			return true
 		}
-		return t.ID == types.JoinHandle.ID || t.ID == types.PanicError.ID
+		if t.ID == types.JoinHandle.ID || t.ID == types.PanicError.ID {
+			return true
+		}
+		return syncSafeType(t)
+	}
+	return false
+}
+
+// syncSafeType reports whether a named type is one of the concurrency
+// primitives the standard library provides. They cross a coroutine boundary
+// by reference rather than by copy, because what they guard is shared.
+func syncSafeType(t *types.Type) bool {
+	if t.Pkg != "sync" && !strings.HasSuffix(t.Pkg, "/sync") {
+		return false
+	}
+	switch t.Name {
+	case "Atomic", "Mutex", "Once", "WaitGroup", "Semaphore", "Shared":
+		return true
 	}
 	return false
 }

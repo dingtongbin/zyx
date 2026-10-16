@@ -230,6 +230,12 @@ func (p *parser) parsePrimary() ast.Expr {
 		if p.at(token.LBrace) && p.aggregateAllowed() {
 			return p.parseAggregate(&ast.TypeName{Sp: start, Name: id})
 		}
+		// A literal of a type with type arguments is written the same way,
+		// and the arguments are read only when a brace follows them: without
+		// that lookahead `a < B > c` would be a comparison.
+		if p.at(token.Lt) && p.aggregateAhead() {
+			return p.parseAggregate(p.namedTypeFrom(id, start))
+		}
 		return id
 	case token.SelfLower, token.C:
 		id := &ast.Ident{Sp: start, Name: p.tok.Text()}

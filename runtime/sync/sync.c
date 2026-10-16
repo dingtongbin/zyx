@@ -4,6 +4,7 @@
 
 #include "zyxrt_internal.h"
 
+
 /* A wait group counts the coroutines a waiter waits for. */
 typedef struct zyxrt_wg {
   int64_t count;
@@ -73,6 +74,77 @@ void zyxrt_once_leave(void *handle) {
   zyxrt_once *o = (zyxrt_once *)handle;
   o->done = 2;
   zyxrt_wait_wake(&o->waiters);
+}
+
+/* A mutex is held by one coroutine at a time. Waiting parks the coroutine,
+   so a lock that is contended costs no scheduler thread, and a monitor
+   method releases the lock while it waits, as a condition variable does. */
+typedef struct zyxrt_mutex {
+  int locked;
+  zyxrt_waitlist waiters;
+  zyxrt_waitlist monitors;
+} zyxrt_mutex;
+
+void *zyxrt_mutex_new(void) {
+  zyxrt_mutex *m = (zyxrt_mutex *)zyxrt_region_alloc_current(sizeof(zyxrt_mutex), 8);
+  m->locked = 0;
+  m->waiters.head = NULL;
+  m->monitors.head = NULL;
+  return m;
+}
+
+void zyxrt_mutex_lock(void *handle) {
+  zyxrt_mutex *m = (zyxrt_mutex *)handle;
+  zyxrt_coro *self = zyxrt_sched_current();
+  while (m->locked) {
+    if (!self) return;
+    zyxrt_waiter w = {self, NULL};
+    zyxrt_wait_add(&m->waiters, &w);
+    zyxrt_sched_suspend(self);
+  }
+  m->locked = 1;
+}
+
+int zyxrt_mutex_try_lock(void *handle) {
+  zyxrt_mutex *m = (zyxrt_mutex *)handle;
+  if (m->locked) return 0;
+  m->locked = 1;
+  return 1;
+}
+
+void zyxrt_mutex_unlock(void *handle) {
+  zyxrt_mutex *m = (zyxrt_mutex *)handle;
+  m->locked = 0;
+  if (m->waiters.head) zyxrt_wait_wake(&m->waiters);
+}
+
+/* zyxrt_mutex_wait releases the lock and parks the coroutine until a monitor
+   notification arrives, then takes the lock again. The caller must hold the
+   lock. */
+void zyxrt_mutex_wait(void *handle) {
+  zyxrt_mutex *m = (zyxrt_mutex *)handle;
+  zyxrt_coro *self = zyxrt_sched_current();
+  m->locked = 0;
+  if (m->waiters.head) zyxrt_wait_wake(&m->waiters);
+  if (self) {
+    zyxrt_waiter w = {self, NULL};
+    zyxrt_wait_add(&m->monitors, &w);
+    zyxrt_sched_suspend(self);
+  }
+  zyxrt_mutex_lock(handle);
+}
+
+void zyxrt_mutex_notify_one(void *handle) {
+  zyxrt_mutex *m = (zyxrt_mutex *)handle;
+  zyxrt_waiter *w = m->monitors.head;
+  if (!w) return;
+  m->monitors.head = w->next;
+  zyxrt_sched_ready(w->coro);
+}
+
+void zyxrt_mutex_notify_all(void *handle) {
+  zyxrt_mutex *m = (zyxrt_mutex *)handle;
+  zyxrt_wait_wake(&m->monitors);
 }
 
 /* A semaphore holds a count of permits. */
