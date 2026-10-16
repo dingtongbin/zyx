@@ -39,6 +39,10 @@ void zyxrt_array_clear(void *handle);
 void zyxrt_array_reserve(void *handle, size_t n);
 void zyxrt_array_insert(void *handle, size_t index, const void *value);
 void zyxrt_array_remove_range(void *handle, size_t index, size_t n);
+/* zyxrt_array_mod_gen is the count of the structural modifications an array
+   has taken. A loop takes the count when it begins and compares it each round,
+   because a structural modification may replace the buffer the loop walks. */
+size_t zyxrt_array_mod_gen(void *handle);
 
 /* A map hashes and compares a key through the two functions it is given, so
    the same table serves a scalar key, a string key, and a key of a type with
@@ -55,6 +59,17 @@ int zyxrt_map_remove(void *handle, const void *key, void *out);
 void zyxrt_map_keys(void *handle, void *out);
 void zyxrt_map_values(void *handle, void *out);
 void *zyxrt_map_key_list(void *handle, size_t key_size);
+/* zyxrt_map_mod_gen is the count of the structural modifications a map has
+   taken, which an iteration compares each round for the same reason an array
+   iteration does. */
+size_t zyxrt_map_mod_gen(void *handle);
+/* An iteration walks the entries of a map, or the elements of a set, which is
+   a map whose value is never read. The cursor lives in the region that made
+   it; zyxrt_map_iter_next answers whether there was another entry. */
+void *zyxrt_map_iter_new(void *handle);
+int zyxrt_map_iter_next(void *handle, void *key, void *value);
+void *zyxrt_set_iter_new(void *handle);
+int zyxrt_set_iter_next(void *handle, void *elem);
 
 /* A priority queue is a heap ordered by a comparison the caller supplies. */
 void *zyxrt_queue_new(size_t elem, void *less);
@@ -124,6 +139,10 @@ int8_t zyxrt_str_eq(const char *a, size_t an, const char *b, size_t bn);
 /* zyxrt_str_compare orders two strings by their bytes, answering a negative
    number, zero, or a positive number. */
 int32_t zyxrt_str_compare(const char *a, size_t an, const char *b, size_t bn);
+/* zyxrt_str_rune decodes the rune at a byte offset and writes where the next
+   one begins. A byte sequence that is not valid UTF-8 is U+FFFD and the offset
+   advances by one, so a decoder always makes progress. */
+uint32_t zyxrt_str_rune(const char *s, size_t len, size_t at, size_t *next);
 
 /* The text of one value, in the single form the language writes it. Each
    function renders into a buffer the caller owns and reports the byte count.

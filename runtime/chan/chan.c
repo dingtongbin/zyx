@@ -146,13 +146,11 @@ void zyxrt_select_wait(void *const *handles, const int *recv_arms, size_t n, uin
     zyxrt_wait_add(recv_arms[i] ? &ch->receivers : &ch->senders, &nodes[i]);
   }
   /* A select with a timeout also waits for the deadline. */
-  zyxrt_waiter timer;
+  zyxrt_timer timer;
   int timed = deadline != 0;
   if (timed) {
-    self->wake_at = deadline;
     timer.coro = self;
-    timer.next = NULL;
-    zyxrt_wait_add(zyxrt_sched_sleepers(), &timer);
+    zyxrt_wheel_add(&timer, deadline);
   }
   zyxrt_sched_suspend(self);
   /* The lists that did not fire still hold the nodes: take them off. A wake
@@ -161,6 +159,6 @@ void zyxrt_select_wait(void *const *handles, const int *recv_arms, size_t n, uin
     zyxrt_chan *ch = (zyxrt_chan *)handles[i];
     zyxrt_wait_remove(recv_arms[i] ? &ch->receivers : &ch->senders, &nodes[i]);
   }
-  if (timed) zyxrt_wait_remove(zyxrt_sched_sleepers(), &timer);
+  if (timed) zyxrt_wheel_remove(&timer);
   if (nodes != inline_nodes) free(nodes);
 }

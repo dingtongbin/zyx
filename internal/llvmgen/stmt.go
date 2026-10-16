@@ -277,6 +277,7 @@ func (g *generator) ifStmt(module string, n *zyxc.Node) {
 func (g *generator) forStmt(module string, n *zyxc.Node) {
 	condLabel := g.newLabel("for.cond")
 	bodyLabel := g.newLabel("for.body")
+	latchLabel := g.newLabel("for.latch")
 	endLabel := g.newLabel("for.end")
 	g.terminator("  br label %%%s", condLabel)
 	g.label(condLabel)
@@ -290,12 +291,15 @@ func (g *generator) forStmt(module string, n *zyxc.Node) {
 		g.terminator("  br label %%%s", bodyLabel)
 	}
 	g.label(bodyLabel)
-	g.fn.loops = append(g.fn.loops, loopInfo{breakTo: endLabel, continueTo: condLabel})
+	g.fn.loops = append(g.fn.loops, loopInfo{label: loopLabel(n, 0), breakTo: endLabel, continueTo: latchLabel})
 	g.stmt(module, g.wrapped(n, "body"))
 	g.fn.loops = g.fn.loops[:len(g.fn.loops)-1]
 	if !g.fn.terminated {
-		g.terminator("  br label %%%s", condLabel)
+		g.terminator("  br label %%%s", latchLabel)
 	}
+	g.label(latchLabel)
+	g.preemptCheck()
+	g.terminator("  br label %%%s", condLabel)
 	g.label(endLabel)
 }
 

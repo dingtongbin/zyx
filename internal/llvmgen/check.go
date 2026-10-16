@@ -43,6 +43,16 @@ func (g *generator) panicMessage(message string) {
 	g.fn.terminated = true
 }
 
+// preemptCheck emits the check a loop back edge makes. A coroutine that
+// computes without blocking would otherwise hold the scheduler thread, so the
+// runtime marks one that has had it long enough and this call lets another
+// coroutine run. The check is one call and one atomic load, and the language
+// keeps it at every optimization level.
+func (g *generator) preemptCheck() {
+	g.declareRuntime("zyxrt_preempt_check", "void")
+	g.emit("  call void @zyxrt_preempt_check()")
+}
+
 // checkedArith lowers an integer addition, subtraction, or multiplication
 // with the overflow check the language defines. The intrinsic reports the
 // result and whether it overflowed, which is what a checked operation costs

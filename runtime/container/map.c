@@ -28,6 +28,10 @@ typedef struct zyxrt_map {
   size_t cap;
   size_t key_size;
   size_t val_size;
+  /* mod_gen counts the structural modifications, which is what an iteration
+     compares to notice that the table it walks is no longer the one the map
+     holds. */
+  size_t mod_gen;
   zyxrt_hash_fn hash;
   zyxrt_eq_fn eq;
   zyxrt_map_entry **buckets;
@@ -58,6 +62,7 @@ void *zyxrt_map_new(size_t key_size, size_t val_size, void *hash, void *eq) {
   m->val_size = val_size == 0 ? 1 : val_size;
   m->hash = (zyxrt_hash_fn)hash;
   m->eq = (zyxrt_eq_fn)eq;
+  m->mod_gen = 0;
   m->buckets = buckets_for(m->cap);
   memset(m->buckets, 0, m->cap * sizeof(zyxrt_map_entry *));
   return m;
@@ -114,6 +119,9 @@ void zyxrt_map_set(void *handle, const void *key, const void *value) {
     e->next = m->buckets[index];
     m->buckets[index] = e;
     m->len++;
+    /* Adding an entry changes what an iteration walks, and a rehash moves
+       every entry it already had. Overwriting a value changes neither. */
+    m->mod_gen++;
   }
   memcpy(e->value, value, m->val_size);
 }
@@ -155,11 +163,57 @@ int zyxrt_map_remove(void *handle, const void *key, void *out) {
       }
       *link = e->next;
       m->len--;
+      m->mod_gen++;
       return 1;
     }
     link = &e->next;
   }
   return 0;
+}
+
+/* zyxrt_map_mod_gen answers the structural modification count, which a loop
+   compares each round: a difference means the map it walks was modified and
+   the language makes that a fault. */
+size_t zyxrt_map_mod_gen(void *handle) {
+  zyxrt_map *m = (zyxrt_map *)handle;
+  return m == NULL ? 0 : m->mod_gen;
+}
+
+/* An iteration walks the buckets in order and remembers where it was. The
+   cursor lives in the region, so it is released with everything else, and the
+   modification count makes a structural change during the walk a fault rather
+   than a walk over storage the map no longer holds. */
+typedef struct zyxrt_map_iter {
+  zyxrt_map *map;
+  size_t bucket;
+  zyxrt_map_entry *entry;
+} zyxrt_map_iter;
+
+void *zyxrt_map_iter_new(void *handle) {
+  zyxrt_map_iter *it = (zyxrt_map_iter *)zyxrt_region_alloc_current(sizeof(zyxrt_map_iter), 8);
+  it->map = (zyxrt_map *)handle;
+  it->bucket = 0;
+  it->entry = NULL;
+  return it;
+}
+
+/* zyxrt_map_iter_next advances to the next entry and copies its key and value
+   into the caller's storage, answering whether there was one. */
+int zyxrt_map_iter_next(void *handle, void *key, void *value) {
+  zyxrt_map_iter *it = (zyxrt_map_iter *)handle;
+  zyxrt_map *m = it == NULL ? NULL : it->map;
+  if (m == NULL) return 0;
+  if (it->entry != NULL) {
+    it->entry = it->entry->next;
+  }
+  while (it->entry == NULL) {
+    if (it->bucket >= m->cap) return 0;
+    it->entry = m->buckets[it->bucket];
+    it->bucket++;
+  }
+  if (key != NULL) memcpy(key, it->entry->key, m->key_size);
+  if (value != NULL) memcpy(value, it->entry->value, m->val_size);
+  return 1;
 }
 
 /* zyxrt_map_keys copies every key into a buffer the caller made room for, in
@@ -265,9 +319,18 @@ int zyxrt_set_remove(void *handle, const void *elem, void *out) {
       }
       *link = e->next;
       m->len--;
+      m->mod_gen++;
       return 1;
     }
     link = &e->next;
   }
   return 0;
+}
+
+/* A set is a map whose value the caller never reads, so its iteration is the
+   map's with the value left out. */
+void *zyxrt_set_iter_new(void *handle) { return zyxrt_map_iter_new(handle); }
+
+int zyxrt_set_iter_next(void *handle, void *elem) {
+  return zyxrt_map_iter_next(handle, elem, NULL);
 }

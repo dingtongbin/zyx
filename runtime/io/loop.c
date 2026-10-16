@@ -33,7 +33,10 @@ typedef struct zyxrt_ready {
   struct zyxrt_ready *next;
 } zyxrt_ready;
 
-static zyxrt_ready *ready_head;
+/* The readiness another thread found. The head is atomic so the scheduler can
+   tell that the list is empty without taking the lock, which is what makes
+   draining on every turn affordable. */
+static _Atomic(zyxrt_ready *) ready_head;
 static zyxrt_ready *ready_free;
 
 /* polled marks a loop a poller thread drives; a target without threads drives
@@ -86,8 +89,8 @@ static void record(int fd, int events) {
   node->fd = fd;
   node->events = events;
   zyxrt_lock_hold(&loop_lock);
-  node->next = ready_head;
-  ready_head = node;
+  node->next = atomic_load_explicit(&ready_head, memory_order_relaxed);
+  atomic_store_explicit(&ready_head, node, memory_order_release);
   zyxrt_lock_drop(&loop_lock);
 }
 
@@ -304,10 +307,11 @@ static void ready_fd(int fd, int events) {
 
 void zyxrt_loop_drain(void) {
   if (!loop_started) return;
+  if (atomic_load_explicit(&ready_head, memory_order_acquire) == NULL) return;
   for (;;) {
     zyxrt_lock_hold(&loop_lock);
-    zyxrt_ready *r = ready_head;
-    ready_head = NULL;
+    zyxrt_ready *r = atomic_load_explicit(&ready_head, memory_order_relaxed);
+    atomic_store_explicit(&ready_head, NULL, memory_order_relaxed);
     zyxrt_lock_drop(&loop_lock);
     if (r == NULL) return;
     while (r != NULL) {

@@ -14,6 +14,10 @@ typedef struct zyxrt_array {
   size_t len;
   size_t cap;
   size_t elem;
+  /* mod_gen counts the structural modifications, which is what an iteration
+     compares to notice that the buffer it walks is no longer the one the
+     container holds. */
+  size_t mod_gen;
   unsigned char *data;
 } zyxrt_array;
 
@@ -23,6 +27,7 @@ void *zyxrt_array_new(size_t elem, size_t cap) {
   a->len = 0;
   a->cap = cap;
   a->elem = elem == 0 ? 1 : elem;
+  a->mod_gen = 0;
   a->data = (unsigned char *)zyxrt_region_alloc_current(a->cap * a->elem, 8);
   return a;
 }
@@ -48,6 +53,18 @@ static void grow(zyxrt_array *a) {
   a->cap = cap;
 }
 
+/* touch records a structural modification, which an iteration compares against
+   the count it took when it began. */
+static void touch(zyxrt_array *a) { a->mod_gen++; }
+
+/* zyxrt_array_mod_gen answers the structural modification count, which a loop
+   compares each round: a difference means the container it walks was modified
+   and the language makes that a fault. */
+size_t zyxrt_array_mod_gen(void *handle) {
+  zyxrt_array *a = (zyxrt_array *)handle;
+  return a == NULL ? 0 : a->mod_gen;
+}
+
 /* zyxrt_array_append adds n elements in one step, which the runtime uses when
    it already has the bytes. */
 void zyxrt_array_append(void *handle, const void *data, size_t n) {
@@ -58,6 +75,7 @@ void zyxrt_array_append(void *handle, const void *data, size_t n) {
   }
   memcpy(a->data + a->len * a->elem, data, n * a->elem);
   a->len += n;
+  touch(a);
 }
 
 void zyxrt_array_push(void *handle, const void *value) {
@@ -66,6 +84,7 @@ void zyxrt_array_push(void *handle, const void *value) {
   if (a->len == a->cap) grow(a);
   memcpy(a->data + a->len * a->elem, value, a->elem);
   a->len++;
+  touch(a);
 }
 
 int zyxrt_array_pop(void *handle, void *out) {
@@ -73,6 +92,7 @@ int zyxrt_array_pop(void *handle, void *out) {
   if (a == NULL || a->len == 0) return 0;
   a->len--;
   memcpy(out, a->data + a->len * a->elem, a->elem);
+  touch(a);
   return 1;
 }
 
@@ -104,6 +124,7 @@ void zyxrt_array_remove(void *handle, size_t index) {
   a->len--;
   memmove(a->data + index * a->elem, a->data + (index + 1) * a->elem,
           (a->len - index) * a->elem);
+  touch(a);
 }
 
 size_t zyxrt_array_cap(void *handle) {
@@ -117,6 +138,7 @@ void zyxrt_array_clear(void *handle) {
   zyxrt_array *a = (zyxrt_array *)handle;
   if (a == NULL) return;
   a->len = 0;
+  touch(a);
 }
 
 /* zyxrt_array_reserve makes room for n elements, which is what a caller does
@@ -124,9 +146,11 @@ void zyxrt_array_clear(void *handle) {
 void zyxrt_array_reserve(void *handle, size_t n) {
   zyxrt_array *a = (zyxrt_array *)handle;
   if (a == NULL) return;
+  if (a->cap >= n) return;
   while (a->cap < n) {
     grow(a);
   }
+  touch(a);
 }
 
 /* zyxrt_array_insert puts one element at an index, moving what follows it. An
@@ -142,6 +166,7 @@ void zyxrt_array_insert(void *handle, size_t index, const void *value) {
           (a->len - index) * a->elem);
   memcpy(a->data + index * a->elem, value, a->elem);
   a->len++;
+  touch(a);
 }
 
 /* zyxrt_array_remove_range drops n elements from an index, moving what
@@ -153,4 +178,5 @@ void zyxrt_array_remove_range(void *handle, size_t index, size_t n) {
   memmove(a->data + index * a->elem, a->data + (index + n) * a->elem,
           (a->len - index - n) * a->elem);
   a->len -= n;
+  touch(a);
 }

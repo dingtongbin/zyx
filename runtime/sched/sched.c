@@ -43,9 +43,11 @@ void zyxrt_sched_ready(zyxrt_coro *c) {
 
 /* posted holds the coroutines another thread made ready, and post_lock guards
    it. A pool thread or a poller thread appends to the list and signals the
-   wakeup handle; the scheduler drains the list on its own thread. */
+   wakeup handle; the scheduler drains the list on its own thread. The head is
+   atomic so the scheduler can tell that the list is empty without taking the
+   lock, which is what makes draining on every turn affordable. */
 static zyxrt_lock post_lock;
-static zyxrt_coro *post_head;
+static _Atomic(zyxrt_coro *) post_head;
 static int post_ready;
 
 void zyxrt_sched_post_init(void) {
@@ -60,19 +62,20 @@ void zyxrt_sched_post(zyxrt_coro *c) {
     return;
   }
   zyxrt_lock_hold(&post_lock);
-  c->post_next = post_head;
-  post_head = c;
+  c->post_next = atomic_load_explicit(&post_head, memory_order_relaxed);
+  atomic_store_explicit(&post_head, c, memory_order_release);
   zyxrt_lock_drop(&post_lock);
   zyxrt_wakeup_signal();
 }
 
 int zyxrt_sched_drain(void) {
   if (!post_ready) return 0;
+  if (atomic_load_explicit(&post_head, memory_order_acquire) == NULL) return 0;
   int readied = 0;
   for (;;) {
     zyxrt_lock_hold(&post_lock);
-    zyxrt_coro *c = post_head;
-    post_head = NULL;
+    zyxrt_coro *c = atomic_load_explicit(&post_head, memory_order_relaxed);
+    atomic_store_explicit(&post_head, NULL, memory_order_relaxed);
     zyxrt_lock_drop(&post_lock);
     if (c == NULL) return readied;
     while (c != NULL) {
@@ -113,7 +116,11 @@ int zyxrt_sched_run_once(void) {
   zyxrt_coro *c = take_ready();
   if (!c) return 0;
   current = c;
+  /* The monitor watches the coroutine the scheduler is running, so it is
+     recorded before the switch and cleared after it. */
+  zyxrt_preempt_enter(c);
   zyxrt_ctx_switch(sched_ctx, c->ctx);
+  zyxrt_preempt_leave();
   current = NULL;
   return 1;
 }
@@ -143,8 +150,9 @@ void zyxrt_sched_abandon(zyxrt_coro *c) {
   zyxrt_ctx_switch(c->ctx, sched_ctx);
 }
 
-/* sleepers holds the waiters of the deadlines. */
-static zyxrt_waitlist sleepers;
+/* sleepers held the waiters of the deadlines; the wheel holds them now, so
+   the only state left here is what counts a coroutine waiting for something
+   the scheduler cannot see. */
 
 /* externals counts the coroutines waiting for something outside the
    scheduler, which is what tells the main loop to wait on the wakeup handle
@@ -153,15 +161,18 @@ static int externals;
 
 void zyxrt_sched_external(int delta) { externals += delta; }
 
-zyxrt_waitlist *zyxrt_sched_sleepers(void) { return &sleepers; }
-
 void zyxrt_sched_park(uint64_t deadline) {
   zyxrt_coro *self = current;
   if (!self) return;
-  self->wake_at = deadline;
-  zyxrt_waiter w = {self, NULL};
-  zyxrt_wait_add(&sleepers, &w);
+  /* The timer lives on this frame, which stays alive while the coroutine is
+     parked, so a deadline costs no allocation. */
+  zyxrt_timer t;
+  t.coro = self;
+  zyxrt_wheel_add(&t, deadline);
   zyxrt_sched_suspend(self);
+  /* A deadline the wheel already removed is removed again, which does
+     nothing; one that did not fire leaves the wheel here. */
+  zyxrt_wheel_remove(&t);
 }
 
 void zyxrt_sched_sleep(uint64_t ns) {
@@ -172,29 +183,8 @@ void zyxrt_sched_sleep(uint64_t ns) {
 
 int64_t zyxrt_sched_wait(void) {
   uint64_t now = zyxrt_now();
-  int64_t wait = -1;
-  int readied = 0;
-  zyxrt_waiter **link = &sleepers.head;
-  while (*link) {
-    zyxrt_waiter *w = *link;
-    int64_t remaining = (int64_t)(w->coro->wake_at - now);
-    if (remaining <= 0) {
-      *link = w->next;
-      zyxrt_sched_ready(w->coro);
-      readied = 1;
-      continue;
-    }
-    if (wait < 0 || remaining < wait) {
-      wait = remaining;
-    }
-    link = &w->next;
-  }
-  /* A coroutine that just became ready must run before the scheduler waits
-     for anything else, so the caller is told to run again rather than to
-     sleep. */
-  if (readied) {
-    return 0;
-  }
+  zyxrt_wheel_advance(now);
+  int64_t wait = zyxrt_wheel_next(now);
   /* A target whose event loop has no poller thread watches the descriptors
      here, so one wait covers both the deadlines and the descriptors. */
   if (externals > 0 && zyxrt_loop_poll_once(wait)) {

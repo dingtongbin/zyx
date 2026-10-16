@@ -1496,9 +1496,6 @@ func cHeaderNames(t map[string]*cheader.Table) []string {
 	return out
 }
 
-// memberID returns the symbol id of a member of a receiver's type. A method
-// the language builds in has no declaration, so its id stays empty and the
-// backend pairs the name with the receiver's type.
 // memberID returns the symbol id of a method the receiver's type declares, or
 // BuiltinID when the language provides the method itself: a container's
 // operations, the methods of a predeclared enum, and the built-in interfaces

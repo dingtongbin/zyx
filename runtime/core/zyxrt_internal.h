@@ -4,6 +4,8 @@
 
 #include "zyxrt.h"
 
+#include <stdatomic.h>
+
 /* A slab is a run of equal-sized objects. Its size class is implied by the
    list it is on, so no object carries a header. */
 typedef struct zyxrt_slab {
@@ -46,6 +48,34 @@ typedef struct zyxrt_waitlist {
   zyxrt_waiter *head;
 } zyxrt_waitlist;
 
+/* A timer is one coroutine's deadline. It lives on the frame of the coroutine
+   that parked on it, so the wheel never allocates and a deadline costs no
+   memory of its own. */
+typedef struct zyxrt_timer {
+  struct zyxrt_coro *coro;
+  uint64_t deadline;
+  struct zyxrt_timer *next;
+  struct zyxrt_timer *prev;
+  /* level is where the timer sits in the wheel, or -1 when it is not in it. */
+  int level;
+  int slot;
+} zyxrt_timer;
+
+/* The timer wheel: six levels of 64 buckets over a hundred-microsecond grain,
+   which covers about eighty days. A bucket holds a chain of timers, and a
+   level holds a bit per bucket so the next deadline costs a scan of the marks
+   rather than of the wheel. */
+#define ZYXXRT_WHEEL_LEVELS 6
+#define ZYXXRT_WHEEL_SLOTS 64
+#define ZYXXRT_WHEEL_SHIFT 6
+#define ZYXXRT_WHEEL_GRAIN 100000ull
+
+void zyxrt_wheel_init(void);
+void zyxrt_wheel_add(zyxrt_timer *t, uint64_t deadline);
+void zyxrt_wheel_remove(zyxrt_timer *t);
+void zyxrt_wheel_advance(uint64_t now);
+int64_t zyxrt_wheel_next(uint64_t now);
+
 /* A coroutine. It runs on its own stack; the stack switch itself comes from
    the platform layer, which uses fibers on Windows and the ucontext
    primitives elsewhere. */
@@ -66,6 +96,9 @@ typedef struct zyxrt_coro {
   /* root marks the coroutine that runs the language main function. */
   int root;
   int done;
+  /* preempt marks a coroutine the monitor has asked to let another one run,
+     which it notices at the next loop back edge. */
+  _Atomic int preempt;
   /* queued marks a coroutine that is already on the ready queue. Two wait
      lists can wake one coroutine, because a select waits on several
      channels, and the queue holds it once. */
@@ -79,9 +112,6 @@ typedef struct zyxrt_coro {
   /* waiters holds the waiters blocked on this one. They are woken when it
      finishes, which is what a join waits for. */
   zyxrt_waitlist waiters;
-  /* wake_at is the monotonic deadline a sleeping coroutine waits for, in
-     nanoseconds. It is meaningful only while the coroutine is asleep. */
-  uint64_t wake_at;
   /* regions holds the regions an explicit region block entered, innermost
      last. Leaving a block restores the one before it. */
   void **regions;
@@ -130,9 +160,8 @@ void zyxrt_sched_suspend(zyxrt_coro *c);
 void zyxrt_sched_abandon(zyxrt_coro *c);
 void zyxrt_sched_yield(void);
 /* zyxrt_sched_sleep suspends the running coroutine until a deadline, and
-   zyxrt_sched_wait readies every sleeper whose deadline has passed and
-   reports how long the scheduler should wait for the next one, or -1 when
-   none is asleep. */
+   zyxrt_sched_wait readies every timer that has come due and reports how long
+   the scheduler should wait for the next one, or -1 when none is waiting. */
 void zyxrt_sched_sleep(uint64_t ns);
 /* zyxrt_sched_external records that a coroutine waits for something outside
    the scheduler, such as a call handed to the blocking pool. The main loop
@@ -219,12 +248,18 @@ zyxrt_coro *zyxrt_sched_current(void);
 void zyxrt_wait_add(zyxrt_waitlist *list, zyxrt_waiter *w);
 void zyxrt_wait_remove(zyxrt_waitlist *list, zyxrt_waiter *w);
 void zyxrt_wait_wake(zyxrt_waitlist *list);
-/* zyxrt_sched_sleepers is the list of deadlines, which a select puts its own
-   node on so the node lives on its frame. */
-zyxrt_waitlist *zyxrt_sched_sleepers(void);
 /* zyxrt_sched_park suspends the running coroutine on the deadline, which a
    select uses together with its channel lists. */
 void zyxrt_sched_park(uint64_t deadline);
+
+/* Cooperative preemption. zyxrt_preempt_init starts the monitor thread, which
+   marks a coroutine that has held the scheduler thread for a whole quantum;
+   zyxrt_preempt_enter and zyxrt_preempt_leave record which coroutine is
+   running; zyxrt_preempt_check is what a loop back edge calls. */
+void zyxrt_preempt_init(void);
+void zyxrt_preempt_enter(zyxrt_coro *c);
+void zyxrt_preempt_leave(void);
+void zyxrt_preempt_check(void);
 
 /* The stack size every coroutine starts with. */
 #define ZYXXRT_STACK_MIN (2u * 1024u * 8u)

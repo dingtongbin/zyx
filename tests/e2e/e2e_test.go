@@ -176,6 +176,8 @@ func TestInsertedChecksPanic(t *testing.T) {
 		{"a negative index reads as a large one", "var xs: [i64; 4] = [1, 2, 3, 4]\n\tvar at: i64 = -1\n\tfmt.PrintI64(xs[usize(at)])", "panic: index out of range"},
 		{"a map key that is not there", "var m = new Map<str, i64>()\n\tm[\"a\"] = 1\n\tfmt.PrintI64(m[\"b\"])", "panic: map key not found"},
 		{"a compound assignment to a key that is not there", "var m = new Map<str, i64>()\n\tm[\"a\"] = 1\n\tm[\"b\"] += 1\n\tfmt.PrintI64(m[\"a\"])", "panic: map key not found"},
+		{"a container modified during an iteration", "var xs = new Array<i64>(0)\n\txs.Push(1)\n\tvar ys = xs\n\tfor x in xs {\n\t\tfmt.PrintI64(x)\n\t\tys.Push(2)\n\t}", "panic: the container was modified while it was being iterated"},
+		{"a map modified during an iteration", "var m = new Map<i64, i64>()\n\tm.Insert(1, 10)\n\tvar n = m\n\tfor k, v in m {\n\t\tfmt.PrintI64(k + v)\n\t\tn.Insert(2, 20)\n\t}", "panic: the container was modified while it was being iterated"},
 	}
 	for _, level := range []string{"-O0", "-O2", "-O3"} {
 		for _, c := range cases {

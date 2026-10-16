@@ -132,6 +132,13 @@ func (g *generator) methodCall(module string, n *zyxc.Node) *value {
 		// carries.
 		return g.ifaceCall(module, n, recv, n.Payload[0])
 	}
+	if recv.typ.Kind == types.KindStr {
+		// A str is a borrowed pointer and a length, so the language gives it
+		// methods of its own rather than a declaration to reach.
+		if v, ok := g.strBuiltin(module, n, g.load(recv), n.Payload[0]); ok {
+			return v
+		}
+	}
 	if n.Payload[0] == "Show" && g.builtinShow(recv.typ) {
 		// The language gives a primitive or a str its Show from the fixed
 		// table the backend owns, so the call appends the value to the
