@@ -179,6 +179,79 @@ size_t zyxrt_map_mod_gen(void *handle) {
   return m == NULL ? 0 : m->mod_gen;
 }
 
+/* zyxrt_map_clear drops every entry and keeps the table, so a map filled again
+   does not allocate again. */
+void zyxrt_map_clear(void *handle) {
+  zyxrt_map *m = (zyxrt_map *)handle;
+  if (m == NULL) return;
+  for (size_t i = 0; i < m->cap; i++) {
+    m->buckets[i] = NULL;
+  }
+  m->len = 0;
+  m->mod_gen++;
+}
+
+/* zyxrt_set_is_subset reports whether every element of the first set is in the
+   second. Both are maps whose value the caller never reads, so it tests
+   membership through the same comparison the table uses. */
+int zyxrt_set_is_subset(void *handle, void *other) {
+  zyxrt_map *a = (zyxrt_map *)handle;
+  zyxrt_map *b = (zyxrt_map *)other;
+  if (a == NULL) return 1;
+  if (b == NULL) return a->len == 0;
+  for (size_t i = 0; i < a->cap; i++) {
+    for (zyxrt_map_entry *e = a->buckets[i]; e != NULL; e = e->next) {
+      if (find(b, e->key) == NULL) {
+        return 0;
+      }
+    }
+  }
+  return 1;
+}
+
+/* keep only the entries a test accepts. The walk follows the link that points
+   at each entry, so an entry it drops leaves the chain in one step. */
+static void keep_where(zyxrt_map *a, zyxrt_map *b, int keep_in_both) {
+  if (a == NULL) return;
+  for (size_t i = 0; i < a->cap; i++) {
+    zyxrt_map_entry **link = &a->buckets[i];
+    while (*link != NULL) {
+      zyxrt_map_entry *e = *link;
+      int in_both = b != NULL && find(b, e->key) != NULL;
+      if (in_both == keep_in_both) {
+        link = &e->next;
+        continue;
+      }
+      *link = e->next;
+      a->len--;
+      a->mod_gen++;
+    }
+  }
+}
+
+/* zyxrt_set_intersect keeps the elements both sets hold, and
+   zyxrt_set_difference keeps the ones only the receiver holds. */
+void zyxrt_set_intersect(void *handle, void *other) {
+  keep_where((zyxrt_map *)handle, (zyxrt_map *)other, 1);
+}
+
+void zyxrt_set_difference(void *handle, void *other) {
+  keep_where((zyxrt_map *)handle, (zyxrt_map *)other, 0);
+}
+
+/* zyxrt_set_union adds every element of the other set. */
+void zyxrt_set_union(void *handle, void *other) {
+  zyxrt_map *a = (zyxrt_map *)handle;
+  zyxrt_map *b = (zyxrt_map *)other;
+  if (a == NULL || b == NULL) return;
+  unsigned char dummy = 0;
+  for (size_t i = 0; i < b->cap; i++) {
+    for (zyxrt_map_entry *e = b->buckets[i]; e != NULL; e = e->next) {
+      zyxrt_map_set(a, e->key, &dummy);
+    }
+  }
+}
+
 /* An iteration walks the buckets in order and remembers where it was. The
    cursor lives in the region, so it is released with everything else, and the
    modification count makes a structural change during the walk a fault rather
@@ -282,6 +355,7 @@ void *zyxrt_map_key_list(void *handle, size_t key_size) {
   void *list = zyxrt_array_new(key_size, m == NULL ? 0 : m->len);
   if (m != NULL && m->len > 0) {
     zyxrt_map_keys(m, zyxrt_array_data(list));
+    zyxrt_array_set_len(list, m->len);
   }
   return list;
 }

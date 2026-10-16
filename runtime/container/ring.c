@@ -56,6 +56,24 @@ void zyxrt_ring_push(void *handle, const void *value) {
   r->len++;
 }
 
+/* zyxrt_ring_peek copies the oldest element out without taking it, which is
+   what the language's Peek answers with. */
+int zyxrt_ring_peek(void *handle, void *out) {
+  zyxrt_ring *r = (zyxrt_ring *)handle;
+  if (r == NULL || r->len == 0) return 0;
+  memcpy(out, slot(r, r->head), r->elem);
+  return 1;
+}
+
+/* zyxrt_ring_clear drops every element. The capacity is fixed, so clearing
+   only moves the head back to the start. */
+void zyxrt_ring_clear(void *handle) {
+  zyxrt_ring *r = (zyxrt_ring *)handle;
+  if (r == NULL) return;
+  r->len = 0;
+  r->head = 0;
+}
+
 /* zyxrt_ring_pop takes the oldest element out. It reports whether one was
    there, so the caller can build the Option the language answers with. */
 int zyxrt_ring_pop(void *handle, void *out) {

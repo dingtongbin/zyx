@@ -625,7 +625,8 @@ var containerMethods = map[string]map[string]func(*types.Type) *types.Type{
 		},
 	},
 	"Map": {
-		"Len": func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Len":   func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Clear": func(*types.Type) *types.Type { return types.FuncOf(void) },
 		"Get": func(recv *types.Type) *types.Type {
 			return types.FuncOf(types.Option.Instantiate(arg(recv, 1)), arg(recv, 0))
 		},
@@ -649,7 +650,11 @@ var containerMethods = map[string]map[string]func(*types.Type) *types.Type{
 		},
 	},
 	"Set": {
-		"Len": func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Len":   func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Clear": func(*types.Type) *types.Type { return types.FuncOf(void) },
+		"IsSubset": func(recv *types.Type) *types.Type {
+			return types.FuncOf(types.Bool, recv)
+		},
 		"Add": func(recv *types.Type) *types.Type {
 			return types.FuncOf(void, arg(recv, 0))
 		},
@@ -673,19 +678,27 @@ var containerMethods = map[string]map[string]func(*types.Type) *types.Type{
 		},
 	},
 	"PriorityQueue": {
-		"Len": func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Len":   func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Clear": func(*types.Type) *types.Type { return types.FuncOf(void) },
 		"Push": func(recv *types.Type) *types.Type {
 			return types.FuncOf(void, arg(recv, 0))
 		},
 		"Pop": func(recv *types.Type) *types.Type {
 			return types.FuncOf(types.Option.Instantiate(arg(recv, 0)))
 		},
+		"Peek": func(recv *types.Type) *types.Type {
+			return types.FuncOf(types.Option.Instantiate(arg(recv, 0)))
+		},
 	},
 	"Ring": {
-		"Len":  func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
-		"Cap":  func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
-		"Push": func(recv *types.Type) *types.Type { return types.FuncOf(void, arg(recv, 0)) },
+		"Len":   func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Cap":   func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Clear": func(*types.Type) *types.Type { return types.FuncOf(void) },
+		"Push":  func(recv *types.Type) *types.Type { return types.FuncOf(void, arg(recv, 0)) },
 		"Pop": func(recv *types.Type) *types.Type {
+			return types.FuncOf(types.Option.Instantiate(arg(recv, 0)))
+		},
+		"Peek": func(recv *types.Type) *types.Type {
 			return types.FuncOf(types.Option.Instantiate(arg(recv, 0)))
 		},
 	},
@@ -705,6 +718,7 @@ var containerMethods = map[string]map[string]func(*types.Type) *types.Type{
 	},
 	"BlockingQueue": {
 		"Len": func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Cap": func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
 		"Push": func(recv *types.Type) *types.Type {
 			return types.FuncOf(void, arg(recv, 0))
 		},

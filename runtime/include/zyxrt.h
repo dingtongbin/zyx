@@ -59,6 +59,17 @@ int zyxrt_map_remove(void *handle, const void *key, void *out);
 void zyxrt_map_keys(void *handle, void *out);
 void zyxrt_map_values(void *handle, void *out);
 void *zyxrt_map_key_list(void *handle, size_t key_size);
+/* zyxrt_map_clear drops every entry and keeps the table. */
+void zyxrt_map_clear(void *handle);
+/* zyxrt_set_is_subset reports whether every element of the first set is in the
+   second. */
+int zyxrt_set_is_subset(void *handle, void *other);
+/* The combining operations, each O(n) over the two sets: intersect keeps the
+   elements both hold, difference keeps the ones only the receiver holds, and
+   union adds the ones only the other holds. */
+void zyxrt_set_intersect(void *handle, void *other);
+void zyxrt_set_difference(void *handle, void *other);
+void zyxrt_set_union(void *handle, void *other);
 /* zyxrt_map_mod_gen is the count of the structural modifications a map has
    taken, which an iteration compares each round for the same reason an array
    iteration does. */
@@ -76,12 +87,17 @@ void *zyxrt_queue_new(size_t elem, void *less);
 size_t zyxrt_queue_len(void *handle);
 void zyxrt_queue_push(void *handle, const void *value);
 int zyxrt_queue_pop(void *handle, void *out);
+/* zyxrt_queue_peek copies the first element out without taking it, and
+   zyxrt_queue_clear drops every element and keeps the buffer. */
+int zyxrt_queue_peek(void *handle, void *out);
+void zyxrt_queue_clear(void *handle);
 
 /* A blocking queue is bounded and ordered by a comparison the caller
    supplies. A push waits while it is full and a pop waits while it is
    empty, so coroutines hand work to one another through it. */
 void *zyxrt_bqueue_new(size_t elem, size_t cap, void *less);
 size_t zyxrt_bqueue_len(void *handle);
+size_t zyxrt_bqueue_cap(void *handle);
 void zyxrt_bqueue_push(void *handle, const void *value);
 int zyxrt_bqueue_try_push(void *handle, const void *value);
 void zyxrt_bqueue_pop(void *handle, void *out);
@@ -109,6 +125,10 @@ size_t zyxrt_ring_len(void *handle);
 size_t zyxrt_ring_cap(void *handle);
 void zyxrt_ring_push(void *handle, const void *value);
 int zyxrt_ring_pop(void *handle, void *out);
+/* zyxrt_ring_peek copies the oldest element out without taking it, and
+   zyxrt_ring_clear drops every element. */
+int zyxrt_ring_peek(void *handle, void *out);
+void zyxrt_ring_clear(void *handle);
 
 /* A set holds each element once. */
 void *zyxrt_set_new(size_t elem_size, void *hash, void *eq);

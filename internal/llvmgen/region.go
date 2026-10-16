@@ -34,6 +34,11 @@ func (g *generator) closeRegion(slot string) {
 // every object created inside it is released when it leaves. The order is the
 // one the language fixes: wait for the coroutines the block started, run its
 // deferred calls, then release the memory.
+//
+// A body that ends without reaching the end of the block, which a panic does,
+// leaves this code unreachable: the panic runs the deferred calls and releases
+// the region as it leaves the coroutine, so the epilogue is emitted only where
+// control actually arrives.
 func (g *generator) regionStmt(module string, n *zyxc.Node) {
 	body := g.wrapped(n, "body")
 	region := g.newReg()
@@ -52,6 +57,9 @@ func (g *generator) regionStmt(module string, n *zyxc.Node) {
 		deferSlot = g.openRegion()
 	}
 	g.stmt(module, body)
+	if g.fn.terminated {
+		return
+	}
 
 	g.declareRuntime("zyxrt_region_wait", "void", "ptr")
 	g.emit("  call void @zyxrt_region_wait(ptr %s)", region)

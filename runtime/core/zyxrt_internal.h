@@ -224,6 +224,9 @@ size_t zyxrt_block_cap(void);
 /* The buffer of an array, which the runtime writes into when it fills an
    array in one step. */
 unsigned char *zyxrt_array_data(void *handle);
+/* zyxrt_array_set_len records that n elements are live, which a caller uses
+   when it wrote them through zyxrt_array_data. */
+void zyxrt_array_set_len(void *handle, size_t n);
 /* zyxrt_array_append adds n elements in one step. */
 void zyxrt_array_append(void *handle, const void *data, size_t n);
 

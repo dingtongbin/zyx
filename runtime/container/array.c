@@ -65,6 +65,16 @@ size_t zyxrt_array_mod_gen(void *handle) {
   return a == NULL ? 0 : a->mod_gen;
 }
 
+/* zyxrt_array_set_len records that n elements are live. It is what a caller
+   uses when it wrote them through zyxrt_array_data, so an array filled in one
+   step reports the length of what it holds. */
+void zyxrt_array_set_len(void *handle, size_t n) {
+  zyxrt_array *a = (zyxrt_array *)handle;
+  if (a == NULL) return;
+  a->len = n;
+  touch(a);
+}
+
 /* zyxrt_array_append adds n elements in one step, which the runtime uses when
    it already has the bytes. */
 void zyxrt_array_append(void *handle, const void *data, size_t n) {

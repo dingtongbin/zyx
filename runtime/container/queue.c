@@ -112,6 +112,23 @@ void zyxrt_queue_push(void *handle, const void *value) {
   sift_up(q, q->len - 1);
 }
 
+/* zyxrt_queue_peek copies the first element out without taking it, which is
+   what the language's Peek answers with. */
+int zyxrt_queue_peek(void *handle, void *out) {
+  zyxrt_queue *q = (zyxrt_queue *)handle;
+  if (q == NULL || q->len == 0) return 0;
+  memcpy(out, slot(q, 0), q->elem);
+  return 1;
+}
+
+/* zyxrt_queue_clear drops every element and keeps the buffer, so a queue
+   filled again does not allocate again. */
+void zyxrt_queue_clear(void *handle) {
+  zyxrt_queue *q = (zyxrt_queue *)handle;
+  if (q == NULL) return;
+  q->len = 0;
+}
+
 /* zyxrt_queue_pop takes the first element out. It reports whether one was
    there, so the caller can build the Option the language answers with. */
 int zyxrt_queue_pop(void *handle, void *out) {

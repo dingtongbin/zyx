@@ -303,6 +303,10 @@ func (g *generator) mapCall(module string, n *zyxc.Node, recv *value, name strin
 		return g.mapSlice(module, n, recv, elem, name == "Values")
 	case "KeyList":
 		return g.mapKeyList(module, n, recv, key)
+	case "Clear":
+		g.declareRuntime("zyxrt_map_clear", "void", "ptr")
+		g.emit("  call void @zyxrt_map_clear(ptr %s)", recv.text)
+		return &value{ll: "void"}
 	}
 	g.fail(fmt.Errorf("llvmgen: Map.%s is not lowered", name))
 	return nil
@@ -493,6 +497,35 @@ func (g *generator) setCall(module string, n *zyxc.Node, recv *value, name strin
 		flag := g.newReg()
 		g.emit("  %s = call i32 @zyxrt_set_remove(ptr %s, ptr %s, ptr %s)", flag, recv.text, slot, out)
 		return g.optionValue(module, n, out, elem, flag)
+	case "Clear":
+		g.declareRuntime("zyxrt_map_clear", "void", "ptr")
+		g.emit("  call void @zyxrt_map_clear(ptr %s)", recv.text)
+		return &value{ll: "void"}
+	case "ValueList":
+		// The elements are the keys of the table the set is built on, so the
+		// list is the key list.
+		return g.mapKeyList(module, n, recv, elem)
+	case "IsSubset", "Union", "Intersect", "Difference":
+		other := g.load(g.expr(module, g.sole(n.First("arg")), nil))
+		if other == nil {
+			return nil
+		}
+		if name == "IsSubset" {
+			g.declareRuntime("zyxrt_set_is_subset", "i32", "ptr", "ptr")
+			reg := g.newReg()
+			g.emit("  %s = call i32 @zyxrt_set_is_subset(ptr %s, ptr %s)", reg, recv.text, other.text)
+			return g.boolFrom(reg)
+		}
+		fn := "zyxrt_set_union"
+		switch name {
+		case "Intersect":
+			fn = "zyxrt_set_intersect"
+		case "Difference":
+			fn = "zyxrt_set_difference"
+		}
+		g.declareRuntime(fn, "void", "ptr", "ptr")
+		g.emit("  call void @%s(ptr %s, ptr %s)", fn, recv.text, other.text)
+		return &value{ll: "void"}
 	}
 	g.fail(fmt.Errorf("llvmgen: Set.%s is not lowered", name))
 	return nil
@@ -521,6 +554,16 @@ func (g *generator) queueCall(module string, n *zyxc.Node, recv *value, name str
 		flag := g.newReg()
 		g.emit("  %s = call i32 @zyxrt_queue_pop(ptr %s, ptr %s)", flag, recv.text, slot)
 		return g.optionValue(module, n, slot, elem, flag)
+	case "Peek":
+		slot := g.objectAlloca(elem)
+		g.declareRuntime("zyxrt_queue_peek", "i32", "ptr", "ptr")
+		flag := g.newReg()
+		g.emit("  %s = call i32 @zyxrt_queue_peek(ptr %s, ptr %s)", flag, recv.text, slot)
+		return g.optionValue(module, n, slot, elem, flag)
+	case "Clear":
+		g.declareRuntime("zyxrt_queue_clear", "void", "ptr")
+		g.emit("  call void @zyxrt_queue_clear(ptr %s)", recv.text)
+		return &value{ll: "void"}
 	}
 	g.fail(fmt.Errorf("llvmgen: PriorityQueue.%s is not lowered", name))
 	return nil
@@ -553,6 +596,16 @@ func (g *generator) ringCall(module string, n *zyxc.Node, recv *value, name stri
 		flag := g.newReg()
 		g.emit("  %s = call i32 @zyxrt_ring_pop(ptr %s, ptr %s)", flag, recv.text, slot)
 		return g.optionValue(module, n, slot, elem, flag)
+	case "Peek":
+		slot := g.objectAlloca(elem)
+		g.declareRuntime("zyxrt_ring_peek", "i32", "ptr", "ptr")
+		flag := g.newReg()
+		g.emit("  %s = call i32 @zyxrt_ring_peek(ptr %s, ptr %s)", flag, recv.text, slot)
+		return g.optionValue(module, n, slot, elem, flag)
+	case "Clear":
+		g.declareRuntime("zyxrt_ring_clear", "void", "ptr")
+		g.emit("  call void @zyxrt_ring_clear(ptr %s)", recv.text)
+		return &value{ll: "void"}
 	}
 	g.fail(fmt.Errorf("llvmgen: Ring.%s is not lowered", name))
 	return nil
@@ -647,6 +700,11 @@ func (g *generator) bqueueCall(module string, n *zyxc.Node, recv *value, name st
 		g.declareRuntime("zyxrt_bqueue_len", g.ptrInt(), "ptr")
 		reg := g.newReg()
 		g.emit("  %s = call %s @zyxrt_bqueue_len(ptr %s)", reg, g.ptrInt(), recv.text)
+		return &value{text: reg, ll: g.ptrInt(), typ: types.Usize}
+	case "Cap":
+		g.declareRuntime("zyxrt_bqueue_cap", g.ptrInt(), "ptr")
+		reg := g.newReg()
+		g.emit("  %s = call %s @zyxrt_bqueue_cap(ptr %s)", reg, g.ptrInt(), recv.text)
 		return &value{text: reg, ll: g.ptrInt(), typ: types.Usize}
 	case "Push", "TryPush":
 		slot, ok := g.elementSlot(module, n, elem)

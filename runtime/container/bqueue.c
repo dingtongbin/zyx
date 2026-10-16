@@ -102,6 +102,11 @@ size_t zyxrt_bqueue_len(void *handle) {
   return q == NULL ? 0 : q->len;
 }
 
+size_t zyxrt_bqueue_cap(void *handle) {
+  zyxrt_bqueue *q = (zyxrt_bqueue *)handle;
+  return q == NULL ? 0 : q->cap;
+}
+
 /* insert places an element and restores the heap order. */
 static void insert(zyxrt_bqueue *q, const void *value) {
   memcpy(slot(q, q->len), value, q->elem);
