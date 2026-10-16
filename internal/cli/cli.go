@@ -67,6 +67,8 @@ func (s *Session) Run(args []string) int {
 		return s.fmt(rest)
 	case "clean":
 		return s.clean(rest)
+	case "get":
+		return s.get(rest)
 	case "mod":
 		return s.mod(rest)
 	case "new":
@@ -94,7 +96,8 @@ commands:
   run        build with -O0 and run immediately
   fmt        rewrite sources into canonical form
   clean      remove the build tree, and the cache with --cache
-  mod        manage the module: init, tidy
+  get        add or upgrade a module requirement
+  mod        manage the module: init, tidy, vendor
   new        scaffold a project skeleton
   version    print compiler and toolchain versions
   emit-zyxc  write the intermediate representation
@@ -261,6 +264,12 @@ type module struct {
 	Root string
 	// File is the parsed zyx.mod.
 	File *mod.File
+	// Build is the module list a build reads, settled by version selection
+	// over the whole dependency graph.
+	Build []mod.Module
+	// Vendored marks a module whose build reads a vendor directory rather
+	// than the module cache.
+	Vendored bool
 }
 
 // findModule walks up from a directory to the module root.
@@ -286,14 +295,54 @@ func (s *Session) findModule(start string) (*module, error) {
 	}
 }
 
-// loader returns a loader for a module and a target.
-func (s *Session) loader(m *module, o *options) *build.Loader {
-	return &build.Loader{
+// loaderFor returns a loader that resolves the modules a walk has settled: the
+// requirements it holds, and the modules a replacement points at a directory
+// of the working tree.
+func (s *Session) loaderFor(m *module, o *options, required, local map[string]string) *build.Loader {
+	l := &build.Loader{
 		Root:       m.Root,
 		ModulePath: m.File.Module,
 		StdRoot:    s.stdRoot(),
 		Target:     o.target,
+		Requires:   required,
+		Local:      local,
 	}
+	if !m.Vendored {
+		l.Modules = s.moduleCache(m)
+	}
+	if vendor := filepath.Join(m.Root, "vendor"); isDirectory(vendor) {
+		l.Vendor = vendor
+	}
+	return l
+}
+
+// loader returns a loader for the modules a build reads.
+func (s *Session) loader(m *module, o *options) *build.Loader {
+	required := map[string]string{}
+	local := map[string]string{}
+	for _, dep := range m.Build {
+		if dep.Dir != "" {
+			local[dep.Path] = dep.Dir
+			continue
+		}
+		required[dep.Path] = dep.Version
+	}
+	return s.loaderFor(m, o, required, local)
+}
+
+// moduleCacheRoot returns where fetched modules live: the directory the
+// environment names, or one beside the module.
+func (s *Session) moduleCacheRoot(m *module) string {
+	if dir := s.env("ZYXMODCACHE"); dir != "" {
+		return dir
+	}
+	return filepath.Join(m.Root, ".zyx-mod")
+}
+
+// isDirectory reports whether a path is an existing directory.
+func isDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // stdRoot returns the standard library tree that ships with the compiler.

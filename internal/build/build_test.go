@@ -1,12 +1,20 @@
 package build
 
 import (
+	"archive/zip"
+	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
+	"zyx/internal/cache"
+	"zyx/internal/diag"
+	"zyx/internal/llvmgen"
+	"zyx/internal/mod"
 	"zyx/internal/toolchain"
 )
 
@@ -219,6 +227,411 @@ func TestResolveRejectsUnknownAndRelativePaths(t *testing.T) {
 		if _, err := l.Resolve(path); err == nil {
 			t.Errorf("%q must not resolve", path)
 		}
+	}
+}
+
+func TestInternalImportIsRefused(t *testing.T) {
+	// A path with an internal segment is only importable from inside the
+	// subtree that holds it, so the loader reports the import rather than
+	// reaching the package.
+	l := loader(t, map[string]string{
+		"main.zyx":                   "package main\n\nimport \"example.com/app/sub/internal/util\"\n\nfunc Main() {\n}\n",
+		"sub/internal/util/util.zyx": "package util\n\nfunc Use() {\n}\n",
+	})
+	g, err := l.Load("example.com/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := g.Order[len(g.Order)-1]
+	if len(entry.Diags) == 0 {
+		t.Fatal("an import from outside the subtree was accepted")
+	}
+	if entry.Diags[0].Code != diag.CodeImportInvalid {
+		t.Errorf("code = %s, want %s", entry.Diags[0].Code, diag.CodeImportInvalid)
+	}
+}
+
+func TestInternalImportFromInsideIsAccepted(t *testing.T) {
+	l := loader(t, map[string]string{
+		"main.zyx":                   "package main\n\nimport \"example.com/app/sub/server\"\n\nfunc Main() {\n}\n",
+		"sub/server/server.zyx":      "package server\n\nimport \"example.com/app/sub/internal/util\"\n\nfunc Listen() {\n}\n",
+		"sub/internal/util/util.zyx": "package util\n\nfunc Use() {\n}\n",
+	})
+	g, err := l.Load("example.com/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pkg := range g.Order {
+		if len(pkg.Diags) != 0 {
+			t.Errorf("%s reported %v", pkg.ImportPath, pkg.Diags)
+		}
+	}
+}
+
+func TestOutputPaths(t *testing.T) {
+	linux := linuxAMD64()
+	root := t.TempDir()
+	paths, err := OutputPaths(root, []string{"example.com/app"}, "", linux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root, "build", "app"); paths[0] != want {
+		t.Errorf("path = %q, want %q", paths[0], want)
+	}
+
+	// The target decides the extension an executable carries.
+	if windows, err := toolchain.ParseTarget("amd64-pc-windows-gnu"); err == nil {
+		paths, err := OutputPaths(root, []string{"example.com/app"}, "", windows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(root, "build", "app.exe"); paths[0] != want {
+			t.Errorf("windows path = %q, want %q", paths[0], want)
+		}
+	}
+
+	// Two main packages whose directories share a name cannot share the
+	// default directory.
+	if _, err := OutputPaths(root, []string{"example.com/app/tool", "example.com/lib/tool"}, "", linux); err == nil {
+		t.Error("two packages with the same directory name were accepted")
+	}
+
+	// A file holds one executable only.
+	if _, err := OutputPaths(root, []string{"example.com/app", "example.com/other"}, "out", linux); err == nil {
+		t.Error("two main packages were accepted with a file output")
+	}
+
+	// A directory holds one executable per main package, named after its
+	// directory.
+	dir := filepath.Join(root, "bin") + string(filepath.Separator)
+	paths, err = OutputPaths(root, []string{"example.com/app", "example.com/other"}, dir, linux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paths[0] != filepath.Join(root, "bin", "app") || paths[1] != filepath.Join(root, "bin", "other") {
+		t.Errorf("directory paths = %v", paths)
+	}
+}
+
+// zipOf builds a module archive holding the named files.
+func zipOf(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		entry, err := w.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write([]byte(files[name])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestResolvesARequiredModule(t *testing.T) {
+	root := t.TempDir()
+	cache, err := mod.OpenModuleCache(filepath.Join(root, ".zyx-mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A module in the cache, as a fetch would leave it.
+	archive := zipOf(t, map[string]string{
+		"example.com/dep@v1.0.0/zyx.mod":       "module example.com/dep\n\nzyx 0.1\n",
+		"example.com/dep@v1.0.0/util/util.zyx": "package util\n\nfunc Use() {\n}\n",
+	})
+	content, err := mod.HashContent(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Put("example.com/dep", "v1.0.0", content, archive); err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, map[string]string{
+		"main.zyx": "package main\n\nimport \"example.com/dep/util\"\n\nfunc Main() {\n}\n",
+	})
+	l := &Loader{
+		Root:       root,
+		ModulePath: "example.com/app",
+		Target:     linuxAMD64(),
+		Requires:   map[string]string{"example.com/dep": "v1.0.0"},
+		Modules:    cache,
+	}
+	pkg, err := l.LoadPackage("example.com/dep/util")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Name != "util" {
+		t.Errorf("name = %q, want util", pkg.Name)
+	}
+	if _, err := l.Load("example.com/app"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestModuleOfTakesTheLongestPrefix(t *testing.T) {
+	l := &Loader{Requires: map[string]string{
+		"example.com/dep":      "v1.0.0",
+		"example.com/dep/tool": "v2.0.0",
+	}}
+	path, version, ok := l.moduleOf("example.com/dep/tool/run")
+	if !ok || path != "example.com/dep/tool" || version != "v2.0.0" {
+		t.Errorf("moduleOf = %q %q %v, want example.com/dep/tool v2.0.0", path, version, ok)
+	}
+	path, version, ok = l.moduleOf("example.com/dep/util")
+	if !ok || path != "example.com/dep" || version != "v1.0.0" {
+		t.Errorf("moduleOf = %q %q %v, want example.com/dep v1.0.0", path, version, ok)
+	}
+	if _, _, ok := l.moduleOf("example.com/other"); ok {
+		t.Error("an unrelated path resolved to a requirement")
+	}
+}
+
+func TestVendorTakesPrecedence(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, map[string]string{
+		"vendor/example.com/dep/util/util.zyx": "package util\n\nfunc Use() {\n}\n",
+	})
+	l := &Loader{
+		Root:       root,
+		ModulePath: "example.com/app",
+		Target:     linuxAMD64(),
+		Requires:   map[string]string{"example.com/dep": "v1.0.0"},
+		Vendor:     filepath.Join(root, "vendor"),
+	}
+	dir, err := l.Resolve("example.com/dep/util")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root, "vendor", "example.com", "dep", "util"); dir != want {
+		t.Errorf("dir = %q, want the vendor copy at %q", dir, want)
+	}
+}
+
+func TestReplacementResolvesToADirectory(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "app")
+	local := filepath.Join(parent, "dep")
+	write(t, root, map[string]string{
+		"main.zyx": "package main\n\nimport \"example.com/dep/util\"\n\nfunc Main() {\n}\n",
+	})
+	write(t, local, map[string]string{
+		"util/util.zyx": "package util\n\nfunc Use() {\n}\n",
+	})
+	l := &Loader{
+		Root:       root,
+		ModulePath: "example.com/app",
+		Target:     linuxAMD64(),
+		Local:      map[string]string{"example.com/dep": "../dep"},
+	}
+	pkg, err := l.LoadPackage("example.com/dep/util")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Name != "util" {
+		t.Errorf("name = %q, want util", pkg.Name)
+	}
+	if _, err := l.Load("example.com/app"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// testCache returns a cache the tests that compile share, so the runtime
+// library is built once rather than once per test.
+var testCache = sync.OnceValue(func() string {
+	dir, err := os.MkdirTemp("", "zyx-build-test-")
+	if err != nil {
+		panic(err)
+	}
+	return filepath.Join(dir, ".zyx-cache")
+})
+
+func TestEachPackageBecomesItsOwnModule(t *testing.T) {
+	tc, err := toolchain.Locate()
+	if err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	root := t.TempDir()
+	write(t, root, map[string]string{
+		"zyx.mod":  "module example.com/app\n\nzyx 0.1\n",
+		"main.zyx": "package main\n\nimport \"example.com/app/greet\"\n\nfunc main() -> i32 {\n    return i32(greet.Total())\n}\n",
+		"greet/greet.zyx": "package greet\n\nvar Count: i64 = 7\n\nvar hidden: i64 = 1\n\n" +
+			"func Total() -> i64 {\n    return Count + hidden\n}\n",
+	})
+	s := &Session{Loader: &Loader{Root: root, ModulePath: "example.com/app", Target: toolchain.HostTarget()}}
+	results, err := s.FrontEnd("example.com/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, res := range results {
+		for _, d := range res.Diags {
+			t.Errorf("%s: %s: %s", res.Package.ImportPath, d.Code, d.Message)
+		}
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+	prog, err := s.monoProgram("example.com/app", results)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Each package becomes a module of its own and the two link into one
+	// program, so a binding that crosses between them and a binding that stays
+	// where it lives both have to work.
+	dir := t.TempDir()
+	copts := toolchain.CompileOptions{Target: s.Loader.Target, Level: "-O0"}
+	var objects []string
+	for _, pkg := range []string{"example.com/app/greet", "example.com/app"} {
+		ir, err := llvmgen.Generate(prog, pkg, s.Loader.Target)
+		if err != nil {
+			t.Fatalf("generating %s: %v", pkg, err)
+		}
+		out := filepath.Join(dir, strings.ReplaceAll(pkg, "/", "_")+".o")
+		if err := tc.CompileIR(ir, out, copts); err != nil {
+			t.Fatalf("compiling %s: %v", pkg, err)
+		}
+		objects = append(objects, out)
+	}
+	lib, err := tc.RuntimeLibrary(s.Loader.Target, copts, nil, filepath.Join(testCache(), "rt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects = append(objects, lib)
+	exe := filepath.Join(dir, "app")
+	if err := tc.Link(s.Loader.Target, objects, exe, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// The program answers 8: seven from the binding that crosses between the
+	// packages and one from the binding the package keeps to itself, so both
+	// initializers ran and both were seen where they belong.
+	run := exec.Command(exe)
+	err = run.Run()
+	if err == nil {
+		t.Fatal("the program exited 0, want 8")
+	}
+	exit, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatal(err)
+	}
+	if code := exit.ExitCode(); code != 8 {
+		t.Errorf("the program exited %d, want 8", code)
+	}
+}
+
+func TestAnUnchangedPackageIsCompiledOnce(t *testing.T) {
+	tc, err := toolchain.Locate()
+	if err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	root := t.TempDir()
+	write(t, root, map[string]string{
+		"zyx.mod":  "module example.com/app\n\nzyx 0.1\n",
+		"main.zyx": "package main\n\nimport \"example.com/app/greet\"\n\nfunc main() -> i32 {\n    return i32(greet.Total())\n}\n",
+		"greet/greet.zyx": "package greet\n\nvar Count: i64 = 7\n\n" +
+			"func Total() -> i64 {\n    return Count\n}\n",
+	})
+	s := &Session{Loader: &Loader{Root: root, ModulePath: "example.com/app", Target: toolchain.HostTarget()}}
+	results, err := s.FrontEnd("example.com/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, err := s.monoProgram("example.com/app", results)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := cache.Open(testCache())
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := BackendOptions{Level: "-O0", Compiler: "test"}
+	copts := toolchain.CompileOptions{Target: s.Loader.Target, Level: "-O0"}
+	dir := t.TempDir()
+
+	first, err := s.packageObject(tc, c, filepath.Join(dir, "first"), prog.Files["example.com/app"], prog, "example.com/app", opts, copts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.packageObject(tc, c, filepath.Join(dir, "second"), prog.Files["example.com/app"], prog, "example.com/app", opts, copts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The second build reads the object out of the cache rather than
+	// compiling it again, which the path says: a compile lands in the
+	// directory it was given, and a hit lands in the cache.
+	if first != second {
+		t.Errorf("the second build compiled again: %q then %q", first, second)
+	}
+	if !strings.Contains(first, ".zyx-cache") {
+		t.Errorf("the object is not in the cache: %q", first)
+	}
+	if _, err := os.Stat(first); err != nil {
+		t.Errorf("the object is not there: %v", err)
+	}
+
+	// A different level is a different object, so the key covers the options.
+	other := opts
+	other.Level = "-O1"
+	third, err := s.packageObject(tc, c, filepath.Join(dir, "third"), prog.Files["example.com/app"], prog, "example.com/app", other,
+		toolchain.CompileOptions{Target: s.Loader.Target, Level: "-O1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third == first {
+		t.Error("another optimization level reused the same object")
+	}
+}
+
+func TestTheSameProgramLinksAlike(t *testing.T) {
+	if _, err := toolchain.Locate(); err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	root := t.TempDir()
+	write(t, root, map[string]string{
+		"zyx.mod":  "module example.com/app\n\nzyx 0.1\n",
+		"main.zyx": "package main\n\nimport \"example.com/app/greet\"\n\nfunc main() -> i32 {\n    return i32(greet.Total())\n}\n",
+		"greet/greet.zyx": "package greet\n\nvar Count: i64 = 7\n\n" +
+			"func Total() -> i64 {\n    return Count\n}\n",
+	})
+	s := &Session{Loader: &Loader{Root: root, ModulePath: "example.com/app", Target: toolchain.HostTarget()}}
+	results, err := s.FrontEnd("example.com/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := BackendOptions{Level: "-O0", Compiler: "test", CacheDir: testCache()}
+	first := filepath.Join(t.TempDir(), "one")
+	opts.Output = first
+	if _, err := s.Link("example.com/app", results, opts); err != nil {
+		t.Fatal(err)
+	}
+	// The second link reads what the first one built and copies it, so the two
+	// are byte for byte the same, which is the contract an incremental build
+	// rests on.
+	second := filepath.Join(t.TempDir(), "two")
+	opts.Output = second
+	if _, err := s.Link("example.com/app", results, opts); err != nil {
+		t.Fatal(err)
+	}
+	one, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := os.ReadFile(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(one, two) {
+		t.Error("the second link produced a different executable")
 	}
 }
 

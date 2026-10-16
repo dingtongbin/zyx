@@ -43,9 +43,14 @@ type Replacement struct {
 }
 
 // A Module names a module at a version.
+// A Module is one module version a build reads.
 type Module struct {
 	Path    string
 	Version string
+	// Dir is the directory a replacement points at, empty when the module
+	// comes from a proxy. A replacement to a path in the working tree keeps
+	// the module's own path, because that is what programs import.
+	Dir string
 }
 
 // A Retraction marks a range of this module's versions as withdrawn.
@@ -237,6 +242,59 @@ func parseRetraction(fields []string) (Retraction, error) {
 // Format renders the manifest in canonical form: one directive per line,
 // requirements, exclusions, and replacements sorted by path, and no
 // trailing space.
+// CheckLang reports whether a manifest asks for a language version this
+// compiler provides. The zyx directive declares the version a module is
+// written for, so a manifest that asks for a newer one cannot be built.
+func CheckLang(f *File, compiler string) error {
+	if f == nil || f.Lang == "" {
+		return nil
+	}
+	need, ok := versionParts(f.Lang)
+	if !ok {
+		return fmt.Errorf("the zyx directive of zyx.mod is %q, which is not a version", f.Lang)
+	}
+	have, ok := versionParts(compiler)
+	if !ok {
+		return nil
+	}
+	if need[0] != have[0] {
+		if need[0] > have[0] {
+			return langError(f.Lang, compiler)
+		}
+		return nil
+	}
+	if need[1] > have[1] {
+		return langError(f.Lang, compiler)
+	}
+	return nil
+}
+
+// langError reports a manifest this compiler cannot serve.
+func langError(need, have string) error {
+	return fmt.Errorf("zyx.mod requires language version %s, and this compiler provides %s", need, have)
+}
+
+// versionParts reads the major and minor components of a version. A
+// component that is not a number makes the version unreadable, which leaves
+// the check to whatever the caller does with a version it cannot compare.
+func versionParts(v string) ([2]int, bool) {
+	var out [2]int
+	fields := strings.Split(v, ".")
+	if len(fields) < 2 {
+		return out, false
+	}
+	for i := 0; i < 2; i++ {
+		n, err := strconv.Atoi(strings.TrimSpace(fields[i]))
+		if err != nil {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
+}
+
+// Format returns the manifest text, with one directive per line and the
+// entries of each list in byte order, so a rewrite is deterministic.
 func (f *File) Format() []byte {
 	var b strings.Builder
 	if f.Module != "" {
@@ -319,6 +377,27 @@ func ParseVersion(s string) (Version, error) {
 		*nums[i] = n
 	}
 	return v, nil
+}
+
+// LatestStable returns the highest version of a list that is a release, which
+// is what a requirement written without a version resolves to. A pre-release
+// is left out, and a pseudo-version carries one, so both are left out
+// together: a build reads releases.
+func LatestStable(versions []string) (string, error) {
+	best := ""
+	for _, version := range versions {
+		parsed, err := ParseVersion(version)
+		if err != nil || parsed.Pre != "" {
+			continue
+		}
+		if best == "" || Compare(version, best) > 0 {
+			best = version
+		}
+	}
+	if best == "" {
+		return "", fmt.Errorf("no release is available: %d versions were listed and every one is a pre-release", len(versions))
+	}
+	return best, nil
 }
 
 // Compare orders two versions: it returns a negative number when a sorts

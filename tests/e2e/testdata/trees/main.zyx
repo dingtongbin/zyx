@@ -1,0 +1,110 @@
+package main
+
+import "std/fmt"
+import "std/tree"
+
+// A sorted map keeps its keys in order, so iteration answers them sorted
+// whatever the insertion order was. A set is the same tree with nothing in
+// the value.
+
+func main() {
+    var m = new tree.TreeMap<i64, str>()
+    m.Insert(5, "five")
+    m.Insert(1, "one")
+    m.Insert(9, "nine")
+    m.Insert(3, "three")
+    m.Insert(7, "seven")
+    fmt.PrintI64(i64(m.Len()))
+    fmt.PrintNl()
+    match m.Get(3) {
+        Some(v) => fmt.Print(v)
+        None => fmt.Print("?")
+    }
+    fmt.Print(" ")
+    match m.Get(4) {
+        Some(v) => fmt.Print(v)
+        None => fmt.Print("?")
+    }
+    fmt.PrintNl()
+    var keys = m.Keys()
+    for i in 0 .. keys.Len() {
+        fmt.PrintI64(keys[i])
+        fmt.Print(" ")
+    }
+    fmt.PrintNl()
+    var values = m.Values()
+    for i in 0 .. values.Len() {
+        fmt.Print(values[i])
+        fmt.Print(" ")
+    }
+    fmt.PrintNl()
+    // Replacing a key keeps the count and the order.
+    m.Insert(5, "FIVE")
+    match m.Get(5) {
+        Some(v) => fmt.Print(v)
+        None => fmt.Print("?")
+    }
+    fmt.Print(" ")
+    fmt.PrintI64(i64(m.Len()))
+    fmt.PrintNl()
+    // A removal answers what it took out, and the tree stays sorted.
+    match m.Remove(3) {
+        Some(v) => fmt.Print(v)
+        None => fmt.Print("?")
+    }
+    fmt.Print(" ")
+    fmt.PrintBool(m.Contains(3))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(m.Len()))
+    fmt.PrintNl()
+    var rest = m.Keys()
+    for i in 0 .. rest.Len() {
+        fmt.PrintI64(rest[i])
+        fmt.Print(" ")
+    }
+    fmt.PrintNl()
+    match m.Remove(42) {
+        Some(v) => fmt.Print(v)
+        None => fmt.Print("?")
+    }
+    fmt.PrintNl()
+    var s = new tree.TreeSet<i64>()
+    s.Add(4)
+    s.Add(2)
+    s.Add(4)
+    fmt.PrintI64(i64(s.Len()))
+    fmt.Print(" ")
+    fmt.PrintBool(s.Contains(2))
+    fmt.Print(" ")
+    fmt.PrintBool(s.Contains(3))
+    fmt.PrintNl()
+    var list = s.ValueList()
+    for i in 0 .. list.Len() {
+        fmt.PrintI64(list[i])
+        fmt.Print(" ")
+    }
+    fmt.PrintNl()
+    match s.Remove(2) {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.Print("?")
+    }
+    fmt.Print(" ")
+    fmt.PrintBool(s.Contains(2))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(s.Len()))
+    fmt.PrintNl()
+    s.Clear()
+    fmt.PrintI64(i64(s.Len()))
+    fmt.PrintNl()
+    // Text keys take the byte order the language gives str.
+    var names = new tree.TreeMap<str, i64>()
+    names.Insert("pear", 2)
+    names.Insert("apple", 1)
+    names.Insert("fig", 3)
+    var ordered = names.Keys()
+    for i in 0 .. ordered.Len() {
+        fmt.Print(ordered[i])
+        fmt.Print(" ")
+    }
+    fmt.PrintNl()
+}

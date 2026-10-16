@@ -1,0 +1,32 @@
+package main
+
+import "std/fmt"
+
+// order reports the sign of a comparison the way Order.Compare does, through a
+// parameter the language gives an order to itself.
+
+func order < T: Ord > (a: T, b: T) -> i64 {
+    return i64(a.Compare(b))
+}
+
+func main() {
+    fmt.PrintI64(order(1, 2))
+    fmt.PrintNl()
+    fmt.PrintI64(order(2, 2))
+    fmt.PrintNl()
+    fmt.PrintI64(order(3, 1))
+    fmt.PrintNl()
+    // A string orders by its bytes, a bool puts false before true, and a char
+    // by its code point.
+    fmt.PrintI64(order("abc", "abd"))
+    fmt.PrintNl()
+    fmt.PrintI64(order(true, false))
+    fmt.PrintNl()
+    fmt.PrintI64(order('a', 'b'))
+    fmt.PrintNl()
+    // The same method is callable on a value directly, without a parameter.
+    fmt.PrintI64(i64(i64(9).Compare(4)))
+    fmt.PrintNl()
+    fmt.PrintI64(i64(i64(- 1).Compare(- 2)))
+    fmt.PrintNl()
+}

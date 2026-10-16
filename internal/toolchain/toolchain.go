@@ -411,6 +411,13 @@ func (t *Toolchain) compilerID() string { return toolIdentity(t.CC, t.id) }
 // archiverID returns the identity of the archiver.
 func (t *Toolchain) archiverID() string { return toolIdentity(t.Archiver, t.ar) }
 
+// Identity returns the identity of the tools that turn objects into an
+// executable. An artifact they produced depends on them, so every key of one
+// carries this.
+func (t *Toolchain) Identity() string {
+	return t.compilerID() + "+" + t.archiverID()
+}
+
 // loopBackend returns the runtime file that implements the event loop for a
 // target over its kernel facility.
 func (t *Toolchain) loopBackend(target Target) string {

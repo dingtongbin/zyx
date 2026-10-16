@@ -169,9 +169,23 @@ func (g *generator) tupleElement(v *value, index int, typ *types.Type) *value {
 	return &value{text: reg, ll: g.llPass(typ), typ: typ}
 }
 
-// assign lowers an assignment.
+// assign lowers an assignment. An entry of a map is written through the
+// runtime rather than through an address, because the key may not be there yet.
 func (g *generator) assign(module string, n *zyxc.Node) {
-	target := g.expr(module, g.wrapped(n, "target"), nil)
+	targetNode := g.wrapped(n, "target")
+	if typ, ok := g.mapIndexOf(module, targetNode); ok {
+		place, ok := g.mapPlaceOf(module, targetNode, typ)
+		if !ok {
+			return
+		}
+		valSlot, ok := g.namedSlot(module, n, "value", arg(typ, 1))
+		if !ok {
+			return
+		}
+		g.mapWrite(place, valSlot)
+		return
+	}
+	target := g.expr(module, targetNode, nil)
 	if target == nil {
 		return
 	}
@@ -189,7 +203,12 @@ func (g *generator) assignOp(module string, n *zyxc.Node) {
 		// A compound assignment carries its own spelling, such as `+=`.
 		op = strings.TrimSuffix(n.Payload[0], "=")
 	}
-	target := g.expr(module, g.wrapped(n, "target"), nil)
+	targetNode := g.wrapped(n, "target")
+	if typ, ok := g.mapIndexOf(module, targetNode); ok {
+		g.mapAssignOp(module, n, targetNode, typ, op)
+		return
+	}
+	target := g.expr(module, targetNode, nil)
 	if target == nil {
 		return
 	}
@@ -204,6 +223,29 @@ func (g *generator) assignOp(module string, n *zyxc.Node) {
 		return
 	}
 	g.storeInto(addr, target.typ, result, false)
+}
+
+// mapAssignOp lowers a compound assignment to a map entry: the entry is read,
+// which faults when the key is not there, the operator is applied, and the
+// result is written back.
+func (g *generator) mapAssignOp(module string, n, target *zyxc.Node, typ *types.Type, op string) {
+	place, ok := g.mapPlaceOf(module, target, typ)
+	if !ok {
+		return
+	}
+	val := arg(typ, 1)
+	cur := g.load(g.inlineObject(g.mapSlot(place), val))
+	rhs := g.expr(module, g.wrapped(n, "value"), val)
+	if rhs == nil {
+		return
+	}
+	result := g.arith(op, cur, rhs)
+	if result == nil {
+		return
+	}
+	slot := g.objectAlloca(val)
+	g.storeInto(slot, val, result, true)
+	g.mapWrite(place, slot)
 }
 
 // ifStmt lowers a conditional.

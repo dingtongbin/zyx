@@ -1,0 +1,59 @@
+package main
+
+import "std/fmt"
+
+struct Entry {
+    hits: i64
+    tag: str
+}
+
+// A map entry is a place: the index answers the value it holds, a key that is
+// not there is a fault, an assignment inserts or overwrites, and a field of an
+// entry is written where the entry lies.
+
+func main() {
+    var scores = new Map<str, i64>()
+    scores["alice"] = 90
+    scores["bob"] = 85
+    scores["alice"] = 91
+    fmt.PrintI64(i64(scores.Len()))
+    fmt.Print(" ")
+    fmt.PrintI64(scores["alice"])
+    fmt.Print(" ")
+    fmt.PrintI64(scores["bob"])
+    fmt.PrintNl()
+    // A compound assignment reads and writes the same entry once.
+    scores["bob"] += 5
+    fmt.PrintI64(scores["bob"])
+    fmt.PrintNl()
+    // The key is whatever the map was built over, so an index adopts the key
+    // type the way any literal in a known position does.
+    var squares = new Map<usize, i64>()
+    for i in 0 .. 4 {
+        squares[i] = i64(i) * i64(i)
+    }
+    fmt.PrintI64(squares[3])
+    fmt.Print(" ")
+    fmt.PrintI64(squares[0])
+    fmt.PrintNl()
+    // An entry that holds an object is written through the index too.
+    var table = new Map<str, Entry>()
+    table["a"] = Entry { hits: 1, tag: "one" }
+    table["a"].hits += 2
+    table["a"].tag = "A"
+    fmt.PrintI64(table["a"].hits)
+    fmt.Print(" ")
+    fmt.Print(table["a"].tag)
+    fmt.Print(" ")
+    fmt.PrintI64(i64(table.Len()))
+    fmt.PrintNl()
+    // A key that is not there is a fault rather than an absent value, which is
+    // what Get is for.
+    match scores.Get("carol") {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.Print("none")
+    }
+    fmt.PrintNl()
+    fmt.PrintI64(i64(scores.Len()))
+    fmt.PrintNl()
+}

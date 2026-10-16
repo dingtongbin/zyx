@@ -79,7 +79,7 @@ func (c *checker) checkValueCall(v *ast.CallExpr, want *types.Type) *types.Type 
 		if id, ok := v.Fn.(*ast.Ident); ok {
 			min = c.requiredArgs(id)
 		}
-		return c.checkArgs(sig, v.Args, v.Fn, v.Fn.Span(), min, false, want)
+		return c.checkArgs(sig, v.Args, callArgs{fn: v.Fn, sp: v.Fn.Span(), min: min, want: want})
 	})
 }
 
@@ -139,7 +139,13 @@ func (c *checker) checkSelectorCall(sel *ast.SelectorExpr, v *ast.CallExpr, want
 	}
 	c.out.Nodes[sel.Name] = sig
 	return c.withAddrOK(sel, func() *types.Type {
-		return c.checkArgs(sig, v.Args, sel.Name, sel.Name.Sp, c.requiredArgs(sel.Name), false, want)
+		return c.checkArgs(sig, v.Args, callArgs{
+			fn:   sel.Name,
+			sp:   sel.Name.Sp,
+			min:  c.requiredArgs(sel.Name),
+			want: want,
+			recv: recv,
+		})
 	})
 }
 
@@ -176,7 +182,7 @@ func (c *checker) checkQualifiedCall(sel *ast.SelectorExpr, v *ast.CallExpr, pkg
 		return nil
 	}
 	c.out.Nodes[sel.Name] = sig
-	return c.checkArgs(sig, v.Args, sel.Name, sel.Name.Sp, c.requiredArgs(sel.Name), false, nil)
+	return c.checkArgs(sig, v.Args, callArgs{fn: sel.Name, sp: sel.Name.Sp, min: c.requiredArgs(sel.Name)})
 }
 
 // checkCCall checks a call into the C namespace. The signature comes from the
@@ -349,8 +355,10 @@ func (c *checker) checkVariantCall(sel *ast.SelectorExpr, v *ast.CallExpr, sym *
 	}
 	bindings := map[string]*types.Type{}
 	// The expected type decides first, so an unsuffixed literal argument can
-	// adopt it rather than fall back to its default type.
-	if want != nil && want.ID == enum.ID {
+	// adopt it rather than fall back to its default type. The enum is
+	// identified by its name and its package rather than by the id the
+	// checker gives an instantiation.
+	if want != nil && want.Name == enum.Name && want.Pkg == enum.Pkg {
 		for i, p := range d.Params {
 			if i < len(want.Args) {
 				bindings[p.ID] = want.Args[i]
@@ -429,12 +437,29 @@ func orderedArgs(t *types.Type, d *Decl, bindings map[string]*types.Type) []*typ
 	return out
 }
 
+// callArgs describes the arguments of one call site.
+type callArgs struct {
+	// fn is the callee name, which is annotated with the signature this call
+	// instantiates so that no later stage has to work the instantiation out.
+	fn ast.Expr
+	// sp is the span reported for an argument-count mismatch.
+	sp source.Span
+	// min is the number of parameters without a default value.
+	min int
+	// variadic marks a C function whose parameter list ends with `...`.
+	variadic bool
+	// want is the expected result type, which decides the type arguments an
+	// argument list leaves unbound.
+	want *types.Type
+	// recv is the receiver of a method call. The type arguments of a receiver
+	// are already decided, so they are not this call's to infer; it is nil for
+	// a free function.
+	recv *types.Type
+}
+
 // checkArgs checks a call's arguments against a signature and returns the
-// result type. min is the number of parameters without a default value, and
-// variadic marks a C function whose parameter list ends with `...`. fn is the
-// callee expression, which is annotated with the signature this call
-// instantiates so that no later stage has to work the instantiation out.
-func (c *checker) checkArgs(sig *types.Type, args []ast.Expr, fn ast.Expr, sp source.Span, min int, variadic bool, want *types.Type) *types.Type {
+// result type.
+func (c *checker) checkArgs(sig *types.Type, args []ast.Expr, site callArgs) *types.Type {
 	if sig == nil || sig.Kind != types.KindFunc {
 		return nil
 	}
@@ -451,21 +476,21 @@ func (c *checker) checkArgs(sig *types.Type, args []ast.Expr, fn ast.Expr, sp so
 	}
 	params := sig.Elems
 	if types.ContainsTypeParam(sig) {
-		sig = c.bindParams(sig, args, argTypes, want)
+		sig = c.bindParams(sig, args, argTypes, site.want, site.recv)
 		params = sig.Elems
-		if fn != nil {
-			c.out.Nodes[fn] = sig
+		if site.fn != nil {
+			c.out.Nodes[site.fn] = sig
 		}
 	}
 	switch {
-	case variadic && len(args) < len(params):
-		c.errorHelp(diag.CodeArgCount, sp,
+	case site.variadic && len(args) < len(params):
+		c.errorHelp(diag.CodeArgCount, site.sp,
 			"pass at least the fixed parameters",
 			"%s takes at least %d arguments, got %d", sig, len(params), len(args))
-	case !variadic && (len(args) < min || len(args) > len(params)):
-		c.errorHelp(diag.CodeArgCount, sp,
+	case !site.variadic && (len(args) < site.min || len(args) > len(params)):
+		c.errorHelp(diag.CodeArgCount, site.sp,
 			"pass the declared number of arguments",
-			"%s takes %s, got %d", sig, arityText(min, len(params)), len(args))
+			"%s takes %s, got %d", sig, arityText(site.min, len(params)), len(args))
 	}
 	for i, a := range args {
 		if i >= len(params) {
@@ -573,7 +598,18 @@ func (p *Package) MethodOf(recv *types.Type, name string) *types.Type {
 // receiver's type arguments.
 var containerMethods = map[string]map[string]func(*types.Type) *types.Type{
 	"Array": {
-		"Len": func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Len":   func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Cap":   func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Clear": func(*types.Type) *types.Type { return types.FuncOf(void) },
+		"Reserve": func(*types.Type) *types.Type {
+			return types.FuncOf(void, types.Usize)
+		},
+		"Insert": func(recv *types.Type) *types.Type {
+			return types.FuncOf(void, types.Usize, arg(recv, 0))
+		},
+		"RemoveRange": func(*types.Type) *types.Type {
+			return types.FuncOf(void, types.Usize, types.Usize)
+		},
 		"Push": func(recv *types.Type) *types.Type {
 			return types.FuncOf(void, arg(recv, 0))
 		},
@@ -746,6 +782,12 @@ func builtinMethod(recv *types.Type, name string) *types.Type {
 	if name == "Hash" && hashable(recv) {
 		return types.FuncOf(types.Uint64)
 	}
+	if name == "Compare" && ordered(recv) {
+		// The language gives a value its order from the comparison the
+		// backend lowers, so the method is callable wherever a constrained
+		// parameter would call it.
+		return types.FuncOf(types.Int32, recv)
+	}
 	return nil
 }
 
@@ -793,9 +835,10 @@ func arg(t *types.Type, i int) *types.Type {
 }
 
 // bindParams binds a generic signature's type parameters from the argument
-// types and, for the parameters those leave unbound, from the expected
-// result type.
-func (c *checker) bindParams(sig *types.Type, args []ast.Expr, argTypes []*types.Type, want *types.Type) *types.Type {
+// types and, for the parameters those leave unbound, from the expected result
+// type. A parameter the receiver of a method call already decides is not this
+// call's to bind.
+func (c *checker) bindParams(sig *types.Type, args []ast.Expr, argTypes []*types.Type, want, recv *types.Type) *types.Type {
 	bindings := map[string]*types.Type{}
 	// The expected result decides first, so an unsuffixed literal argument
 	// can adopt it rather than fall back to its default type.
@@ -831,13 +874,24 @@ func (c *checker) bindParams(sig *types.Type, args []ast.Expr, argTypes []*types
 			bindings[k] = v
 		}
 	}
+	known := map[string]bool{}
+	for _, id := range types.ParamIDs(recv) {
+		known[id] = true
+	}
 	for _, id := range types.ParamIDs(sig) {
-		if _, ok := bindings[id]; !ok {
-			c.errorHelp(diag.CodeTypeArity, argsSpan(args),
-				"declare the result or argument type so the arguments can be inferred",
-				"cannot infer the type arguments of %s", sig)
-			break
+		if _, ok := bindings[id]; ok {
+			continue
 		}
+		// A method of a generic type carries the type's parameters in its
+		// signature. The receiver fixed them already, so only the parameters
+		// this call has to work out are required.
+		if known[id] {
+			continue
+		}
+		c.errorHelp(diag.CodeTypeArity, argsSpan(args),
+			"declare the result or argument type so the arguments can be inferred",
+			"cannot infer the type arguments of %s", sig)
+		break
 	}
 	return types.Substitute(sig, bindings)
 }
@@ -909,6 +963,12 @@ func (c *checker) implements(t, iface *types.Type) bool {
 	if t == nil || iface == nil || iface.Kind != types.KindInterface {
 		return false
 	}
+	// A type parameter implements exactly what its constraints require, so a
+	// generic body may use the operators and methods the constraint names
+	// before any instantiation decides the type behind it.
+	if t.Kind == types.KindTypeParam {
+		return hasConstraint(t, iface)
+	}
 	if builtinImplements(t, iface) {
 		return true
 	}
@@ -925,7 +985,8 @@ func (c *checker) implements(t, iface *types.Type) bool {
 // builtinImplements reports whether the language itself gives a type an
 // interface: the types it compares implement Eq, the types it hashes
 // implement Hash, the types whose text the backend writes from its fixed
-// table implement Show, and the concurrency handles are SyncSafe.
+// table implement Show, the types it orders implement Order, and the
+// concurrency handles are SyncSafe.
 func builtinImplements(t, iface *types.Type) bool {
 	switch iface.Name {
 	case "Eq":
@@ -934,6 +995,8 @@ func builtinImplements(t, iface *types.Type) bool {
 		return hashable(t)
 	case "Show":
 		return showable(t)
+	case "Ord":
+		return ordered(t)
 	case "SyncSafe":
 		switch t.Kind {
 		case types.KindChan, types.KindStr:
@@ -982,6 +1045,19 @@ func equatable(t *types.Type) bool {
 	}
 	return t.IsNumeric() || t.Kind == types.KindBool || t.Kind == types.KindChar ||
 		t.Kind == types.KindRaw || t.Kind == types.KindStr || t.Kind == types.KindDuration
+}
+
+// ordered reports whether the language gives the type a total order, which is
+// the set a sorted container accepts as a key. A floating-point value is left
+// out: a NaN makes its comparisons no order at all, so the reasoning that
+// keeps it out of Hash keeps it out of Order.
+func ordered(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	return (t.IsNumeric() && !t.IsFloat()) || t.Kind == types.KindBool ||
+		t.Kind == types.KindChar || t.Kind == types.KindRaw ||
+		t.Kind == types.KindStr || t.Kind == types.KindDuration
 }
 
 // hashable reports whether the language gives the type a hash, which is

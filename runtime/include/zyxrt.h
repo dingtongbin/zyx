@@ -25,7 +25,20 @@ void zyxrt_array_push(void *handle, const void *value);
 int zyxrt_array_pop(void *handle, void *out);
 int zyxrt_array_get(void *handle, size_t index, void *out);
 void zyxrt_array_get_unchecked(void *handle, size_t index, void *out);
+/* zyxrt_array_slot is the address of an element, which the compiler reads and
+   writes through. It stays valid until the array is structurally modified. */
+void *zyxrt_array_slot(void *handle, size_t index);
 void zyxrt_array_remove(void *handle, size_t index);
+/* zyxrt_array_cap is the room the array has, zyxrt_array_clear drops every
+   element and keeps it, zyxrt_array_reserve makes room for n elements,
+   zyxrt_array_insert puts one at an index, and
+   zyxrt_array_remove_range drops n of them from an index. An index past the
+   end of an insertion or a range is a fault. */
+size_t zyxrt_array_cap(void *handle);
+void zyxrt_array_clear(void *handle);
+void zyxrt_array_reserve(void *handle, size_t n);
+void zyxrt_array_insert(void *handle, size_t index, const void *value);
+void zyxrt_array_remove_range(void *handle, size_t index, size_t n);
 
 /* A map hashes and compares a key through the two functions it is given, so
    the same table serves a scalar key, a string key, and a key of a type with
@@ -34,6 +47,9 @@ void *zyxrt_map_new(size_t key_size, size_t val_size, void *hash, void *eq);
 size_t zyxrt_map_len(void *handle);
 void zyxrt_map_set(void *handle, const void *key, const void *value);
 int zyxrt_map_get(void *handle, const void *key, void *out);
+/* zyxrt_map_slot is the address of the value of a key, or NULL when the key is
+   not there. It stays valid until the entry is removed. */
+void *zyxrt_map_slot(void *handle, const void *key);
 int zyxrt_map_contains(void *handle, const void *key);
 int zyxrt_map_remove(void *handle, const void *key, void *out);
 void zyxrt_map_keys(void *handle, void *out);
@@ -105,6 +121,9 @@ void zyxrt_region_release(void *region, void *object, size_t size);
 /* Strings. A str is a borrowed pointer and its length, so equality compares
    the bytes rather than the two pointers. */
 int8_t zyxrt_str_eq(const char *a, size_t an, const char *b, size_t bn);
+/* zyxrt_str_compare orders two strings by their bytes, answering a negative
+   number, zero, or a positive number. */
+int32_t zyxrt_str_compare(const char *a, size_t an, const char *b, size_t bn);
 
 /* The text of one value, in the single form the language writes it. Each
    function renders into a buffer the caller owns and reports the byte count.

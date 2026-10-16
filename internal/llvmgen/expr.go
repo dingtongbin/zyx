@@ -52,6 +52,14 @@ func (g *generator) load(v *value) *value {
 	return &value{text: reg, ll: v.ll, typ: v.typ}
 }
 
+// inlineObject returns the value that names an object lying at addr. The
+// storage is the object itself rather than a reference to it, so its type is
+// the object's own: a load reads the whole object, and the address is what a
+// field access or a store reaches through.
+func (g *generator) inlineObject(addr string, typ *types.Type) *value {
+	return &value{text: addr, ll: g.llType(typ), typ: typ, lvalue: true, inline: true}
+}
+
 // addrText returns the address of the object a value names, materializing
 // one when the value lives in a register.
 func (g *generator) addrText(v *value) string {
@@ -516,6 +524,54 @@ func (g *generator) builtinEqCall(module string, n *zyxc.Node, v *value) *value 
 // builtinHashCall lowers a Hash call on a value the language hashes itself.
 // The hash reads the bytes of the value, which is the rule a container uses
 // for a key of the same type, so a Hash call and a key agree.
+// ordered reports whether the language orders the type itself, which the
+// backend lowers without a declaration. It is the set the check accepts for
+// Order, so the two never disagree.
+func ordered(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	return (t.IsNumeric() && !t.IsFloat()) || t.Kind == types.KindBool ||
+		t.Kind == types.KindChar || t.Kind == types.KindRaw ||
+		t.Kind == types.KindStr || t.Kind == types.KindDuration
+}
+
+// builtinCompareCall lowers a Compare call on a value the language orders
+// itself. The answer is a negative number, zero, or a positive number, which
+// is what a sorted container asks for.
+func (g *generator) builtinCompareCall(module string, n *zyxc.Node, v *value) *value {
+	other := g.load(g.expr(module, g.wrapped(n, "arg"), v.typ))
+	if other == nil {
+		return nil
+	}
+	if v.typ.Kind == types.KindStr {
+		ap, an := g.splitFat(v)
+		bp, bn := g.splitFat(other)
+		g.declareRuntime("zyxrt_str_compare", "i32",
+			"ptr", g.ptrInt(), "ptr", g.ptrInt(), "ptr", g.ptrInt(), "ptr", g.ptrInt())
+		reg := g.newReg()
+		g.emit("  %s = call i32 @zyxrt_str_compare(ptr %s, %s %s, ptr %s, %s %s)",
+			reg, ap, g.ptrInt(), an, bp, g.ptrInt(), bn)
+		return &value{text: reg, ll: "i32", typ: types.Int32}
+	}
+	// A value that counts or addresses compares without a sign, and one that
+	// measures a distance compares with one.
+	less, greater := "slt", "sgt"
+	if v.typ.IsUnsigned() || v.typ.Kind == types.KindBool ||
+		v.typ.Kind == types.KindChar || v.typ.Kind == types.KindRaw {
+		less, greater = "ult", "ugt"
+	}
+	low := g.newReg()
+	g.emit("  %s = icmp %s %s %s, %s", low, less, v.ll, v.text, other.text)
+	high := g.newReg()
+	g.emit("  %s = icmp %s %s %s, %s", high, greater, v.ll, v.text, other.text)
+	pos := g.newReg()
+	g.emit("  %s = select i1 %s, i32 1, i32 0", pos, high)
+	reg := g.newReg()
+	g.emit("  %s = select i1 %s, i32 -1, i32 %s", reg, low, pos)
+	return &value{text: reg, ll: "i32", typ: types.Int32}
+}
+
 func (g *generator) builtinHashCall(module string, n *zyxc.Node, v *value) *value {
 	size, err := layout.Size(v.typ, g.tab, g.target.Layout())
 	if err != nil {
@@ -1124,21 +1180,29 @@ func (g *generator) index(module string, n *zyxc.Node) *value {
 		g.emit("  %s = getelementptr inbounds i8, ptr %s, i64 %s", reg, ptrReg, idx.text)
 		return &value{text: reg, ll: "i8", typ: types.Uint8, lvalue: true, inline: true}
 	case types.KindContainer:
-		if recv.typ.Name != "Array" {
-			break
+		switch recv.typ.Name {
+		case "Array":
+			// The element lives in the buffer the runtime owns, so the access
+			// answers its address: an assignment through it writes the element
+			// itself rather than a copy of it. The address stays valid until
+			// the array is structurally modified, which the language forbids
+			// while a borrow is live.
+			elem := arg(recv.typ, 0)
+			g.declareRuntime("zyxrt_array_len", g.ptrInt(), "ptr")
+			length := g.newReg()
+			g.emit("  %s = call %s @zyxrt_array_len(ptr %s)", length, g.ptrInt(), recv.text)
+			g.guardIndex(idx.text, length)
+			g.declareRuntime("zyxrt_array_slot", "ptr", "ptr", g.ptrInt())
+			slot := g.newReg()
+			g.emit("  %s = call ptr @zyxrt_array_slot(ptr %s, %s %s)", slot, recv.text, idx.ll, idx.text)
+			return g.inlineObject(slot, elem)
+		case "Map":
+			place, ok := g.mapPlaceOf(module, n, recv.typ)
+			if !ok {
+				return nil
+			}
+			return g.inlineObject(g.mapSlot(place), arg(recv.typ, 1))
 		}
-		// A growable array lives in the runtime, so its element is read
-		// through the runtime after the same check.
-		elem := arg(recv.typ, 0)
-		g.declareRuntime("zyxrt_array_len", g.ptrInt(), "ptr")
-		length := g.newReg()
-		g.emit("  %s = call %s @zyxrt_array_len(ptr %s)", length, g.ptrInt(), recv.text)
-		g.guardIndex(idx.text, length)
-		slot := g.objectAlloca(elem)
-		g.declareRuntime("zyxrt_array_get_unchecked", "void", "ptr", g.ptrInt(), "ptr")
-		g.emit("  call void @zyxrt_array_get_unchecked(ptr %s, %s %s, ptr %s)",
-			recv.text, idx.ll, idx.text, slot)
-		return g.load(&value{text: slot, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true})
 	}
 	g.fail(fmt.Errorf("llvmgen: indexing %s is not lowered", recv.typ))
 	return nil

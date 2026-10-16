@@ -102,6 +102,15 @@ func isSupportedOS(os string) bool {
 	return false
 }
 
+// ExecutableSuffix returns the extension an executable of this target
+// carries, which is empty everywhere but Windows.
+func (t Target) ExecutableSuffix() string {
+	if t.OS == "windows" {
+		return ".exe"
+	}
+	return ""
+}
+
 // OperatingSystems lists the supported operating system segments.
 func OperatingSystems() []string {
 	out := append([]string(nil), supportedOS...)

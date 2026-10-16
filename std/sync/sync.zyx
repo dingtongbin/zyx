@@ -93,8 +93,8 @@ extern struct Semaphore {    handle: raw
     }
 }
 
-// Order is the memory order an atomic operation uses. The numbers the runtime
-// sees are the order of these variants.
+// Order is the memory order an atomic operation uses. The numbers the
+// runtime sees are the order of these variants.
 
 enum Order {
     SeqCst

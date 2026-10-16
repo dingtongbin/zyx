@@ -144,6 +144,12 @@ func (g *generator) methodCall(module string, n *zyxc.Node) *value {
 	if n.Payload[0] == "Hash" && hashable(recv.typ) {
 		return g.builtinHashCall(module, n, g.load(recv))
 	}
+	if n.Payload[0] == "Compare" && ordered(recv.typ) {
+		return g.builtinCompareCall(module, n, g.load(recv))
+	}
+	if v, ok := g.predeclaredEnumMethod(module, n, g.load(recv), n.Payload[0]); ok {
+		return v
+	}
 	if v, ok := g.intBuiltin(module, n, g.load(recv), n.Payload[0]); ok {
 		return v
 	}

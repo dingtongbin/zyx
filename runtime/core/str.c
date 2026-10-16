@@ -19,6 +19,24 @@ int8_t zyxrt_str_eq(const char *a, size_t an, const char *b, size_t bn) {
     return 1;
 }
 
+/* zyxrt_str_compare orders two strings by their bytes, which is the order a
+   sorted container keeps them in. It answers a negative number, zero, or a
+   positive number. */
+int32_t zyxrt_str_compare(const char *a, size_t an, const char *b, size_t bn) {
+    size_t n = an < bn ? an : bn;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char x = (unsigned char)a[i];
+        unsigned char y = (unsigned char)b[i];
+        if (x != y) {
+            return x < y ? -1 : 1;
+        }
+    }
+    if (an == bn) {
+        return 0;
+    }
+    return an < bn ? -1 : 1;
+}
+
 /* The text of one value is appended to a buffer, rendered by the shared
    formatter so it reads exactly as the printing helper writes it. */
 

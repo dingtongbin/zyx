@@ -45,7 +45,7 @@ func (c *checker) exprType(e ast.Expr, want *types.Type) *types.Type {
 	case *ast.CallExpr:
 		return c.checkCall(v, want)
 	case *ast.SelectorExpr:
-		return c.selectorType(v)
+		return c.selectorType(v, want)
 	case *ast.TupleIndexExpr:
 		return c.tupleIndexType(v)
 	case *ast.IndexExpr:
@@ -442,14 +442,14 @@ func (c *checker) isType(v *ast.IsExpr) *types.Type {
 
 // selectorType checks `p.x`, `ctx.Handle`, and `net.Listen` in value
 // position.
-func (c *checker) selectorType(v *ast.SelectorExpr) *types.Type {
+func (c *checker) selectorType(v *ast.SelectorExpr, want *types.Type) *types.Type {
 	if inner, ok := v.X.(*ast.SelectorExpr); ok {
 		// A variant of an enum another package declares carries both
 		// qualifiers: the package, then the enum.
 		if id, ok := inner.X.(*ast.Ident); ok {
 			if pkg := c.symOf(id); pkg != nil && pkg.Kind == resolve.KindPackage {
 				if t := c.importedType(pkg, inner.Name.Name); t != nil {
-					return c.variantOf(v, t)
+					return c.variantOf(v, t, want)
 				}
 			}
 		}
@@ -462,7 +462,7 @@ func (c *checker) selectorType(v *ast.SelectorExpr) *types.Type {
 		case sym != nil && sym.Kind == resolve.KindPackage:
 			return c.qualifiedValue(v, sym)
 		case isTypeSymbol(sym):
-			return c.variantValue(v, sym)
+			return c.variantValue(v, sym, want)
 		}
 	}
 	recv := c.checkExpr(v.X, nil)
@@ -611,13 +611,15 @@ func cTypeOf(table *cheader.Table, name string) *types.Type {
 
 // variantValue returns the type of `Type.Name` in value position for a type
 // the package declares.
-func (c *checker) variantValue(v *ast.SelectorExpr, sym *resolve.Symbol) *types.Type {
-	return c.variantOf(v, c.typeOfSymbol(sym))
+func (c *checker) variantValue(v *ast.SelectorExpr, sym *resolve.Symbol, want *types.Type) *types.Type {
+	return c.variantOf(v, c.typeOfSymbol(sym), want)
 }
 
 // variantOf returns the type of `Type.Name` in value position: a variant
-// without a payload, or a constant the type body declares.
-func (c *checker) variantOf(v *ast.SelectorExpr, typ *types.Type) *types.Type {
+// without a payload, or a constant the type body declares. A variant of a
+// generic enum carries no argument from which its type arguments could be
+// read, so the expected type is the only place they can come from.
+func (c *checker) variantOf(v *ast.SelectorExpr, typ *types.Type, want *types.Type) *types.Type {
 	if typ == nil {
 		return nil
 	}
@@ -629,8 +631,9 @@ func (c *checker) variantOf(v *ast.SelectorExpr, typ *types.Type) *types.Type {
 					"%s.%s needs a construction expression", typ.Name, v.Name.Name)
 				return nil
 			}
-			c.out.Nodes[v.Name] = typ
-			return typ
+			inst := c.bareVariant(v, typ, want)
+			c.out.Nodes[v.Name] = inst
+			return inst
 		}
 	}
 	if con := c.memberConst(typ, v.Name.Name); con != nil {
@@ -641,6 +644,22 @@ func (c *checker) variantOf(v *ast.SelectorExpr, typ *types.Type) *types.Type {
 		"check the member name",
 		"%s has no member %q", typ, v.Name.Name)
 	return nil
+}
+
+// bareVariant instantiates a variant that carries nothing, taking the type
+// arguments from the expected type. A constant's type is not generic, so it
+// comes back unchanged.
+func (c *checker) bareVariant(v *ast.SelectorExpr, typ *types.Type, want *types.Type) *types.Type {
+	if typ.Arity == 0 {
+		return typ
+	}
+	if want != nil && want.Name == typ.Name && want.Pkg == typ.Pkg && len(want.Args) == typ.Arity {
+		return typ.Instantiate(want.Args...)
+	}
+	c.errorHelp(diag.CodeTypeArity, v.Name.Sp,
+		"declare the result or argument type so the arguments can be inferred",
+		"cannot infer the type arguments of %s", typ.Name)
+	return typ
 }
 
 // importedType returns the declared type of a name in an imported package.
@@ -685,22 +704,30 @@ func (c *checker) indexType(v *ast.IndexExpr) *types.Type {
 	if t == nil || t.Kind == types.Invalid {
 		return nil
 	}
-	c.checkExpr(v.Index, types.Usize)
 	switch t.Kind {
 	case types.KindStr:
+		c.checkExpr(v.Index, types.Usize)
 		return types.Uint8
 	case types.KindSlice:
+		c.checkExpr(v.Index, types.Usize)
 		return t.Elem
 	case types.KindArray:
+		c.checkExpr(v.Index, types.Usize)
 		return t.Elem
 	case types.KindContainer:
 		switch t.Name {
 		case "Array":
+			c.checkExpr(v.Index, types.Usize)
 			return arg(t, 0)
 		case "Map":
-			return types.Option.Instantiate(arg(t, 1))
+			// A map is indexed by its key and answers the value that key
+			// holds. A key that is not there is a fault rather than an
+			// absent value, which is what Get is for.
+			c.checkExpr(v.Index, arg(t, 0))
+			return arg(t, 1)
 		}
 	}
+	c.checkExpr(v.Index, nil)
 	c.errorHelp(diag.CodeIndex, v.Sp,
 		"index a container, a fixed-size array, a slice, or str",
 		"%s cannot be indexed", t)
@@ -987,7 +1014,7 @@ func (c *checker) newStruct(v *ast.NewExpr, typ *types.Type) *types.Type {
 		return typ
 	}
 	sig := c.substituteFor(typ, d, init)
-	c.checkArgs(sig, v.Args, nil, v.Sp, 0, false, typ)
+	c.checkArgs(sig, v.Args, callArgs{sp: v.Sp, want: typ})
 	return typ
 }
 
@@ -1025,7 +1052,7 @@ func (c *checker) newContainer(v *ast.NewExpr, typ *types.Type) *types.Type {
 			"build a container with new",
 			"%s cannot be built with new", typ)
 	}
-	c.checkArgs(types.FuncOf(typ, params...), v.Args, nil, v.Sp, len(params), false, typ)
+	c.checkArgs(types.FuncOf(typ, params...), v.Args, callArgs{sp: v.Sp, min: len(params), want: typ})
 	return typ
 }
 
@@ -1134,8 +1161,13 @@ func (c *checker) checkStructLiteral(v *ast.AggregateLitExpr, typ *types.Type, d
 				"field %q is set twice", id.Name)
 		}
 		seen[id.Name] = true
+		// The field's declared type is the expected type of its value, which
+		// is what lets a variant that carries nothing adopt the field's type
+		// arguments. A literal written with a bare generic name has no type
+		// arguments to substitute yet, so its values keep their own types and
+		// the arguments are inferred from them instead.
 		var expect *types.Type
-		if !types.ContainsTypeParam(f.Type) {
+		if len(typ.Args) > 0 || len(d.Params) == 0 {
 			expect = c.substituteFor(typ, d, f.Type)
 		}
 		fields = append(fields, f)

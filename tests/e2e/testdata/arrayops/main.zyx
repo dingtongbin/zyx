@@ -1,0 +1,46 @@
+package main
+
+import "std/fmt"
+
+// The operations a growing array carries beside push and pop: room, clearing,
+// reserving, and writing in the middle.
+
+func main() {
+    var xs = new Array<i64>(0)
+    xs.Push(1)
+    xs.Push(3)
+    xs.Push(4)
+    fmt.PrintI64(i64(xs.Len()))
+    fmt.Print(" ")
+    fmt.PrintBool(xs.Cap() >= 3)
+    fmt.PrintNl()
+    // An insertion moves what follows it.
+    xs.Insert(1, 2)
+    for i in 0 .. xs.Len() {
+        fmt.PrintI64(xs[i])
+    }
+    fmt.PrintNl()
+    // A range comes out and the rest closes over it.
+    xs.RemoveRange(0, 2)
+    for i in 0 .. xs.Len() {
+        fmt.PrintI64(xs[i])
+    }
+    fmt.PrintNl()
+    // Clearing keeps the room, so filling it again does not allocate again.
+    var room = xs.Cap()
+    xs.Clear()
+    fmt.PrintI64(i64(xs.Len()))
+    fmt.Print(" ")
+    fmt.PrintBool(xs.Cap() == room)
+    fmt.PrintNl()
+    xs.Push(9)
+    fmt.PrintI64(xs[0])
+    fmt.PrintNl()
+    // Reserving makes room ahead of time.
+    var ahead = new Array<i64>(0)
+    ahead.Reserve(16)
+    fmt.PrintBool(ahead.Cap() >= 16)
+    fmt.Print(" ")
+    fmt.PrintI64(i64(ahead.Len()))
+    fmt.PrintNl()
+}

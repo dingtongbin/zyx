@@ -19,6 +19,7 @@ import (
 	"zyx/internal/coro"
 	"zyx/internal/diag"
 	"zyx/internal/marks"
+	"zyx/internal/mod"
 	"zyx/internal/resolve"
 	"zyx/internal/source"
 	"zyx/internal/toolchain"
@@ -62,6 +63,18 @@ type Loader struct {
 	Target toolchain.Target
 	// Testing includes test files, which an ordinary build leaves out.
 	Testing bool
+	// Requires holds the modules a build reads, keyed by module path. An
+	// import path outside the module and the standard library resolves to the
+	// longest requirement that is a prefix of it.
+	Requires map[string]string
+	// Local holds the module paths a replacement points at a directory of the
+	// working tree for, relative to the module root.
+	Local map[string]string
+	// Modules is the cache the required modules were fetched into.
+	Modules *mod.ModuleCache
+	// Vendor is the module's vendor directory, which takes precedence over
+	// the cache when it exists.
+	Vendor string
 }
 
 // A Graph is a module's packages in dependency order.
@@ -92,6 +105,7 @@ func (l *Loader) Load(importPath string) (*Graph, error) {
 			return err
 		}
 		for _, dep := range pkg.Imports {
+			l.checkImport(pkg, dep)
 			if err := visit(dep, append(stack, p)); err != nil {
 				return err
 			}
@@ -231,7 +245,87 @@ func (l *Loader) Resolve(importPath string) (string, error) {
 		rel := strings.TrimPrefix(strings.TrimPrefix(importPath, l.ModulePath), "/")
 		return filepath.Join(l.Root, filepath.FromSlash(rel)), nil
 	}
+	// A vendor directory is a mirror of the modules the build needs, so it
+	// answers first and a build with one runs without the cache (§12.3).
+	if dir, ok := l.vendorDir(importPath); ok {
+		return dir, nil
+	}
+	if dir, ok := l.requiredDir(importPath); ok {
+		return dir, nil
+	}
 	return "", fmt.Errorf("import %q is not provided by module %s", importPath, l.ModulePath)
+}
+
+// vendorDir returns where an import path resolves in the module's vendor
+// directory, if the module has one and the package is in it.
+func (l *Loader) vendorDir(importPath string) (string, bool) {
+	if l.Vendor == "" {
+		return "", false
+	}
+	dir := filepath.Join(l.Vendor, filepath.FromSlash(importPath))
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		return dir, true
+	}
+	return "", false
+}
+
+// requiredDir returns where an import path resolves among the required
+// modules, which live in the module cache under their path and version. A
+// module a replacement points at a directory of the working tree resolves
+// there instead.
+func (l *Loader) requiredDir(importPath string) (string, bool) {
+	path, version, ok := l.moduleOf(importPath)
+	if !ok {
+		return "", false
+	}
+	rel := filepath.FromSlash(strings.TrimPrefix(strings.TrimPrefix(importPath, path), "/"))
+	if dir, ok := l.Local[path]; ok {
+		return resolveUnder(l.Root, dir, rel)
+	}
+	if l.Modules == nil {
+		return "", false
+	}
+	return resolveUnder("", l.Modules.Dir(path, version), rel)
+}
+
+// resolveUnder returns a directory under a base, and whether it is there. A
+// relative base is taken from the module root, which is where a replacement
+// writes it.
+func resolveUnder(root, base, rel string) (string, bool) {
+	if base == "" {
+		return "", false
+	}
+	if !filepath.IsAbs(base) {
+		base = filepath.Join(root, filepath.FromSlash(base))
+	}
+	dir := filepath.Join(base, rel)
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		return dir, true
+	}
+	return "", false
+}
+
+// moduleOf returns the module an import path belongs to: the longest
+// requirement whose path is a prefix of it, which is what tells
+// example.com/dep/tool apart from example.com/dep.
+func (l *Loader) moduleOf(importPath string) (path, version string, ok bool) {
+	for candidate, candidateVersion := range l.Requires {
+		if importPath != candidate && !strings.HasPrefix(importPath, candidate+"/") {
+			continue
+		}
+		if len(candidate) > len(path) {
+			path, version, ok = candidate, candidateVersion, true
+		}
+	}
+	for candidate := range l.Local {
+		if importPath != candidate && !strings.HasPrefix(importPath, candidate+"/") {
+			continue
+		}
+		if len(candidate) > len(path) {
+			path, version, ok = candidate, "", true
+		}
+	}
+	return path, version, ok
 }
 
 // validImportPath reports whether a path is a full module path. The
@@ -270,6 +364,52 @@ func Importable(fromDir, toPath string) bool {
 		return true
 	}
 	return from == prefix || strings.HasPrefix(from, prefix+"/")
+}
+
+// checkImport reports an import a package may not make. The internal rule is
+// the one that can fail: the import is not there for the checker to see,
+// because the loader refuses to reach the package at all.
+func (l *Loader) checkImport(pkg *Package, dep string) {
+	if Importable(pkg.ImportPath, dep) {
+		return
+	}
+	at := pkg.ImportSpan(dep)
+	pkg.Diags = append(pkg.Diags, diag.New(diag.CodeImportInvalid, at,
+		"%s is internal to %s", dep, internalRoot(dep)).
+		WithHelp("move the import inside that subtree, or move the package out of it"))
+}
+
+// ImportSpan returns where a package writes an import of a path, so a
+// diagnostic about it points at the line the program wrote.
+func (p *Package) ImportSpan(path string) source.Span {
+	for _, file := range p.Syntax {
+		if file == nil {
+			continue
+		}
+		for _, imp := range file.Imports {
+			if !imp.CHeader && imp.Path == path {
+				return imp.Span()
+			}
+		}
+	}
+	for _, file := range p.Syntax {
+		if file != nil && file.Package != nil && file.Package.Name != nil {
+			return file.Package.Name.Sp
+		}
+	}
+	return source.Span{}
+}
+
+// internalRoot returns the subtree a path with an internal segment belongs
+// to, which is the part before the segment.
+func internalRoot(path string) string {
+	segments := strings.Split(path, "/")
+	for i, seg := range segments {
+		if seg == "internal" {
+			return strings.Join(segments[:i], "/")
+		}
+	}
+	return path
 }
 
 // A Result is the front-end result of one package.
