@@ -581,6 +581,49 @@ func TestAnUnchangedPackageIsCompiledOnce(t *testing.T) {
 	}
 }
 
+func TestTheSameProgramLinksAlike(t *testing.T) {
+	if _, err := toolchain.Locate(); err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	root := t.TempDir()
+	write(t, root, map[string]string{
+		"zyx.mod":  "module example.com/app\n\nzyx 0.1\n",
+		"main.zyx": "package main\n\nimport \"example.com/app/greet\"\n\nfunc main() -> i32 {\n    return i32(greet.Total())\n}\n",
+		"greet/greet.zyx": "package greet\n\nvar Count: i64 = 7\n\n" +
+			"func Total() -> i64 {\n    return Count\n}\n",
+	})
+	s := &Session{Loader: &Loader{Root: root, ModulePath: "example.com/app", Target: toolchain.HostTarget()}}
+	results, err := s.FrontEnd("example.com/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := BackendOptions{Level: "-O0", Compiler: "test", CacheDir: filepath.Join(root, ".zyx-cache")}
+	first := filepath.Join(t.TempDir(), "one")
+	opts.Output = first
+	if _, err := s.Link("example.com/app", results, opts); err != nil {
+		t.Fatal(err)
+	}
+	// The second link reads what the first one built and copies it, so the two
+	// are byte for byte the same, which is the contract an incremental build
+	// rests on.
+	second := filepath.Join(t.TempDir(), "two")
+	opts.Output = second
+	if _, err := s.Link("example.com/app", results, opts); err != nil {
+		t.Fatal(err)
+	}
+	one, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := os.ReadFile(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(one, two) {
+		t.Error("the second link produced a different executable")
+	}
+}
+
 func TestImportableInternalRule(t *testing.T) {
 	cases := []struct {
 		from string

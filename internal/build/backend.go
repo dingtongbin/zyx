@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"zyx/internal/cache"
 	"zyx/internal/llvmgen"
@@ -133,10 +134,96 @@ func (s *Session) Link(entry string, results []*Result, opts BackendOptions) (st
 	if err := os.MkdirAll(filepath.Dir(opts.Output), 0o755); err != nil {
 		return "", err
 	}
+	// The executable is a function of the objects, the runtime, and the tools
+	// that put them together, so an unchanged program links once and the
+	// result is copied to wherever the caller asked for it: the output path
+	// does not change what the executable is.
+	if c != nil {
+		key, err := s.linkKey(t, objects, opts)
+		if err != nil {
+			return "", err
+		}
+		if published, ok := c.Lookup(key); ok {
+			return opts.Output, copyFile(filepath.Join(published, cacheExecutableName(s.Loader.Target)), opts.Output)
+		}
+		release, err := c.Lock(key)
+		if err == nil {
+			defer release()
+			if published, ok := c.Lookup(key); ok {
+				return opts.Output, copyFile(filepath.Join(published, cacheExecutableName(s.Loader.Target)), opts.Output)
+			}
+			if entry, err := c.New(key); err == nil {
+				name := cacheExecutableName(s.Loader.Target)
+				if err := t.Link(s.Loader.Target, objects, filepath.Join(entry.Out(), name), opts.Libs, opts.LibDirs); err == nil {
+					if err := entry.Add(name); err == nil {
+						if published, won, err := entry.Publish(); err == nil && won {
+							return opts.Output, copyFile(filepath.Join(published, name), opts.Output)
+						}
+					}
+				}
+				entry.Discard()
+			}
+		}
+	}
 	if err := t.Link(s.Loader.Target, objects, opts.Output, opts.Libs, opts.LibDirs); err != nil {
 		return "", err
 	}
 	return opts.Output, nil
+}
+
+// executableName returns the name an executable takes in the cache, which is
+// the target's own name for one.
+func cacheExecutableName(target toolchain.Target) string {
+	return "app" + target.ExecutableSuffix()
+}
+
+// linkKey returns the key of the executable: the objects, the runtime, and
+// the tools that put them together. The output path is not part of it.
+func (s *Session) linkKey(t *toolchain.Toolchain, objects []string, opts BackendOptions) (string, error) {
+	key := cache.NewKey()
+	key.Add("link", opts.Compiler, t.Identity(), s.Loader.Target.Triple,
+		strconv.FormatBool(opts.Freestanding))
+	for _, object := range objects {
+		hash, err := cache.HashFile(object)
+		if err != nil {
+			return "", err
+		}
+		key.Add(hash)
+	}
+	key.Add("libs", strings.Join(opts.Libs, ","), "libdirs", strings.Join(opts.LibDirs, ","))
+	return key.Sum(), nil
+}
+
+// copyFile copies a file, publishing it the way every other artifact is
+// published: a reader sees the whole file or none of it.
+func copyFile(from, to string) error {
+	data, err := os.ReadFile(from)
+	if err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(to), "."+filepath.Base(to)+"-")
+	if err != nil {
+		return err
+	}
+	name := temp.Name()
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		os.Remove(name)
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		os.Remove(name)
+		return err
+	}
+	if err := os.Chmod(name, 0o755); err != nil {
+		os.Remove(name)
+		return err
+	}
+	if err := os.Rename(name, to); err != nil {
+		os.Remove(name)
+		return err
+	}
+	return nil
 }
 
 // packageObject returns the object file of one package, compiling it when the
