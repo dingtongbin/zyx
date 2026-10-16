@@ -50,14 +50,14 @@ func (g *generator) globalValue(module string, n *zyxc.Node, id, name string) {
 			g.fail(fmt.Errorf("llvmgen: the type of global %s is not settled", name))
 			return
 		}
-		fmt.Fprintf(&g.m.funcs, "@%s = internal global %s %s\n", llvmName(id), g.llType(typ), g.zero(typ))
+		fmt.Fprintf(&g.m.funcs, "@%s = %sglobal %s %s\n", llvmName(id), globalLinkage(name), g.llType(typ), g.zero(typ))
 		return
 	}
 	if typ == nil {
 		g.fail(fmt.Errorf("llvmgen: the type of global %s is not settled", name))
 		return
 	}
-	fmt.Fprintf(&g.m.funcs, "@%s = internal global %s %s\n", llvmName(id), g.llType(typ), g.zero(typ))
+	fmt.Fprintf(&g.m.funcs, "@%s = %sglobal %s %s\n", llvmName(id), globalLinkage(name), g.llType(typ), g.zero(typ))
 	g.m.globalInits = append(g.m.globalInits, globalInit{module: module, id: id, typ: typ, init: init})
 }
 
@@ -69,13 +69,23 @@ type globalInit struct {
 	init   *zyxc.Node
 }
 
-// emitGlobalInits defines the function that initializes the top-level
-// bindings whose initializer is not a constant. The entry point calls it
-// before the language main runs.
-func (g *generator) emitGlobalInits() {
-	g.fn = &funcState{symbol: "@zyx.globals", vars: map[string]*varSlot{}}
-	g.fn.entry = g.newLabel("globals")
-	g.fn.ret = g.newLabel("globals.done")
+// initSymbol returns the name of the function that initializes a package's
+// top-level bindings.
+func initSymbol(path string) string {
+	if path == "" {
+		return "@zyx.init"
+	}
+	return "@" + llvmName("zyx.init."+path)
+}
+
+// emitPackageInit defines the function that initializes the top-level
+// bindings this module holds. Every package gets one, because a binding the
+// package keeps to itself cannot be written from anywhere else, and the entry
+// module calls each without having to know which packages have initializers.
+func (g *generator) emitPackageInit() {
+	g.fn = &funcState{symbol: initSymbol(g.pkg), vars: map[string]*varSlot{}}
+	g.fn.entry = g.newLabel("init")
+	g.fn.ret = g.newLabel("init.done")
 	for _, init := range g.m.globalInits {
 		v := g.expr(init.module, init.init, init.typ)
 		if v == nil {
@@ -85,13 +95,46 @@ func (g *generator) emitGlobalInits() {
 	}
 	g.terminator("  ret void")
 	var out strings.Builder
-	out.WriteString("define internal void @zyx.globals() {\n")
+	fmt.Fprintf(&out, "define void %s() {\n", initSymbol(g.pkg))
 	out.WriteString(g.fn.entry + ":\n")
 	out.WriteString(g.fn.allocas.String())
 	out.WriteString(g.fn.body.String())
 	out.WriteString("}\n")
 	g.m.funcs.WriteString(out.String())
 	g.fn = nil
+}
+
+// emitGlobalInits defines the function that runs every package's
+// initializers in dependency order. The entry point calls it before the
+// language main runs.
+func (g *generator) emitGlobalInits() {
+	var body strings.Builder
+	if g.pkg == "" {
+		// One module holds every package, so one function holds every
+		// initializer.
+		fmt.Fprintf(&body, "  call void %s()\n", initSymbol(""))
+	} else {
+		for _, path := range g.prog.Order {
+			if g.prog.Files[path] == nil {
+				continue
+			}
+			symbol := initSymbol(path)
+			if path != g.pkg {
+				g.declareVoid(symbol)
+			}
+			fmt.Fprintf(&body, "  call void %s()\n", symbol)
+		}
+	}
+	fmt.Fprintf(&g.m.funcs, "define internal void @zyx.globals() {\n%s  ret void\n}\n", body.String())
+}
+
+// declareVoid declares a function that takes nothing and answers nothing.
+func (g *generator) declareVoid(symbol string) {
+	if g.m.declared[symbol] {
+		return
+	}
+	g.m.declared[symbol] = true
+	fmt.Fprintf(&g.m.funcs, "declare void %s()\n", symbol)
 }
 
 // entryPoint emits the C main that runs the language main.

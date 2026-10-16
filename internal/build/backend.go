@@ -143,10 +143,9 @@ func (s *Session) Link(entry string, results []*Result, opts BackendOptions) (st
 	return opts.Output, nil
 }
 
-// IRText returns the LLVM IR of an entry package without compiling it. The
-// trees pass through monomorphization first, so the backend sees only
-// concrete declarations.
-func (s *Session) IRText(entry string, results []*Result) ([]byte, error) {
+// monoProgram returns the trees of a program after monomorphization, which is
+// what the backend generates from.
+func (s *Session) monoProgram(entry string, results []*Result) (*llvmgen.Program, error) {
 	prog := &mono.Program{
 		Target: s.Loader.Target.Triple,
 		Entry:  entry,
@@ -166,5 +165,16 @@ func (s *Session) IRText(entry string, results []*Result) ([]byte, error) {
 	if _, err := mono.Instantiate(prog); err != nil {
 		return nil, err
 	}
-	return llvmgen.Generate(&llvmgen.Program{Entry: prog.Entry, Order: prog.Order, Files: prog.Files}, s.Loader.Target)
+	return &llvmgen.Program{Entry: prog.Entry, Order: prog.Order, Files: prog.Files}, nil
+}
+
+// IRText returns the LLVM IR of an entry package without compiling it. The
+// trees pass through monomorphization first, so the backend sees only
+// concrete declarations.
+func (s *Session) IRText(entry string, results []*Result) ([]byte, error) {
+	prog, err := s.monoProgram(entry, results)
+	if err != nil {
+		return nil, err
+	}
+	return llvmgen.Generate(prog, "", s.Loader.Target)
 }

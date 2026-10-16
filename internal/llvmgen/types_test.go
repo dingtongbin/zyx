@@ -138,7 +138,7 @@ func TestPassTypeOfAnAggregateIsAReference(t *testing.T) {
 func TestGenerateEmitsTheEntryPoint(t *testing.T) {
 	p := testProgram()
 	target := linuxAMD64(t)
-	ir, err := Generate(p, target)
+	ir, err := Generate(p, "", target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestGenerateEmitsTheEntryPoint(t *testing.T) {
 }
 
 func TestGenerateNeedsAnEntryPackage(t *testing.T) {
-	if _, err := Generate(&Program{}, linuxAMD64(t)); err == nil {
+	if _, err := Generate(&Program{}, "", linuxAMD64(t)); err == nil {
 		t.Fatal("a program without an entry package must fail")
 	}
 }

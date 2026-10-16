@@ -4,12 +4,14 @@ import (
 	"archive/zip"
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 
 	"zyx/internal/diag"
+	"zyx/internal/llvmgen"
 	"zyx/internal/mod"
 	"zyx/internal/toolchain"
 )
@@ -438,6 +440,80 @@ func TestReplacementResolvesToADirectory(t *testing.T) {
 	}
 	if _, err := l.Load("example.com/app"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestEachPackageBecomesItsOwnModule(t *testing.T) {
+	tc, err := toolchain.Locate()
+	if err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	root := t.TempDir()
+	write(t, root, map[string]string{
+		"zyx.mod":  "module example.com/app\n\nzyx 0.1\n",
+		"main.zyx": "package main\n\nimport \"example.com/app/greet\"\n\nfunc main() -> i32 {\n    return i32(greet.Total())\n}\n",
+		"greet/greet.zyx": "package greet\n\nvar Count: i64 = 7\n\nvar hidden: i64 = 1\n\n" +
+			"func Total() -> i64 {\n    return Count + hidden\n}\n",
+	})
+	s := &Session{Loader: &Loader{Root: root, ModulePath: "example.com/app", Target: toolchain.HostTarget()}}
+	results, err := s.FrontEnd("example.com/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, res := range results {
+		for _, d := range res.Diags {
+			t.Errorf("%s: %s: %s", res.Package.ImportPath, d.Code, d.Message)
+		}
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+	prog, err := s.monoProgram("example.com/app", results)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Each package becomes a module of its own and the two link into one
+	// program, so a binding that crosses between them and a binding that stays
+	// where it lives both have to work.
+	dir := t.TempDir()
+	copts := toolchain.CompileOptions{Target: s.Loader.Target, Level: "-O0"}
+	var objects []string
+	for _, pkg := range []string{"example.com/app/greet", "example.com/app"} {
+		ir, err := llvmgen.Generate(prog, pkg, s.Loader.Target)
+		if err != nil {
+			t.Fatalf("generating %s: %v", pkg, err)
+		}
+		out := filepath.Join(dir, strings.ReplaceAll(pkg, "/", "_")+".o")
+		if err := tc.CompileIR(ir, out, copts); err != nil {
+			t.Fatalf("compiling %s: %v", pkg, err)
+		}
+		objects = append(objects, out)
+	}
+	lib, err := tc.RuntimeLibrary(s.Loader.Target, copts, nil, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects = append(objects, lib)
+	exe := filepath.Join(dir, "app")
+	if err := tc.Link(s.Loader.Target, objects, exe, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// The program answers 8: seven from the binding that crosses between the
+	// packages and one from the binding the package keeps to itself, so both
+	// initializers ran and both were seen where they belong.
+	run := exec.Command(exe)
+	err = run.Run()
+	if err == nil {
+		t.Fatal("the program exited 0, want 8")
+	}
+	exit, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatal(err)
+	}
+	if code := exit.ExitCode(); code != 8 {
+		t.Errorf("the program exited %d, want 8", code)
 	}
 }
 

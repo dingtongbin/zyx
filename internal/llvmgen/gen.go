@@ -4,20 +4,26 @@ package llvmgen
 import (
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"zyx/internal/toolchain"
 	"zyx/internal/types"
 	"zyx/internal/zyxc"
 )
 
-// Generate lowers a program to LLVM IR text. Every fact it uses comes from
-// the trees of the program and from the layout algorithm; it never reads
-// source and never resolves a name.
-func Generate(p *Program, target toolchain.Target) ([]byte, error) {
+// Generate lowers one package of a program to LLVM IR text. The package is
+// defined in the module; every other package the program reaches is declared,
+// so the module can call it and the linker brings the two together. An empty
+// package defines everything, which is one module for the whole program.
+//
+// Every fact it uses comes from the trees of the program and from the layout
+// algorithm; it never reads source and never resolves a name.
+func Generate(p *Program, pkg string, target toolchain.Target) ([]byte, error) {
 	if p.Entry == "" {
 		return nil, fmt.Errorf("llvmgen: no entry package")
 	}
-	g := &generator{prog: p, target: target, m: newModule(llvmTriple(target))}
+	g := &generator{prog: p, pkg: pkg, target: target, m: newModule(llvmTriple(target))}
 	g.tab = newTypeTable(p)
 	g.run()
 	if g.err != nil {
@@ -32,6 +38,9 @@ type generator struct {
 	tab    *typeTable
 	target toolchain.Target
 	m      *module
+	// pkg is the package this module holds, empty when it holds every package
+	// of the program.
+	pkg string
 	// err holds the first failure; emission continues so that one message
 	// reports the whole problem.
 	err error
@@ -153,18 +162,124 @@ func (g *generator) allocaSlots(ll string, n int) string {
 	return reg
 }
 
-// run emits every package of the program in dependency order.
+// run emits the package this module holds, and declares what the others hold.
 func (g *generator) run() {
 	for _, path := range g.prog.Order {
 		file := g.prog.Files[path]
 		if file == nil {
 			continue
 		}
+		if g.pkg == "" || path == g.pkg {
+			for _, decl := range file.Decls {
+				g.declaration(path, decl)
+			}
+			continue
+		}
 		for _, decl := range file.Decls {
-			g.declaration(path, decl)
+			g.foreignDeclaration(path, decl)
 		}
 	}
-	g.entryPoint()
+	// Every module carries the initializers of the bindings it holds, which
+	// the entry module then calls.
+	g.emitPackageInit()
+	if g.pkg == "" || g.pkg == g.prog.Entry {
+		g.entryPoint()
+	}
+}
+
+// foreignDeclaration declares one declaration of another package, so this
+// module can call it. A declaration the module never uses costs a line.
+func (g *generator) foreignDeclaration(module string, n *zyxc.Node) {
+	switch n.Kind {
+	case "func":
+		g.foreignFunc(module, n)
+	case "var":
+		for i := 0; i+1 < len(n.Payload); i += 2 {
+			g.foreignGlobal(module, n, n.Payload[i+1], n.Payload[i])
+		}
+	case "struct", "enum", "extern-struct", "extern-union":
+		for _, child := range n.Children {
+			switch child.Kind {
+			case "func":
+				g.foreignFunc(module, child)
+			case "impl":
+				for _, f := range child.Children {
+					if f.Kind == "func" {
+						g.foreignFunc(module, f)
+					}
+				}
+			}
+		}
+	}
+}
+
+// foreignFunc declares a function of another package. The declaration spells
+// its parameters the way the definition does, which is what lets the two
+// modules meet at the link.
+func (g *generator) foreignFunc(module string, n *zyxc.Node) {
+	if len(n.Payload) < 3 {
+		return
+	}
+	qual, sym := n.Payload[1], n.Payload[2]
+	if qual == "comptime" || qual == "extern" {
+		return
+	}
+	params, _, retLL := g.signature(module, n)
+	g.declareZyx(g.linkName(sym), params, retLL)
+}
+
+// foreignGlobal declares a top-level binding of another package, and takes
+// its initializer when this module is the one that runs the initializers.
+// A binding the package keeps to itself is not declared at all: the front end
+// does not let another package name it.
+func (g *generator) foreignGlobal(module string, n *zyxc.Node, id, name string) {
+	if !exported(name) {
+		return
+	}
+	typ := g.typeOfNode(n.First("type"), module)
+	if typ == nil {
+		return
+	}
+	if g.m.declared[id] {
+		return
+	}
+	g.m.declared[id] = true
+	fmt.Fprintf(&g.m.funcs, "@%s = external global %s\n", llvmName(id), g.llType(typ))
+}
+
+// declareZyx declares a function of this program, which the module calls
+// without defining it. Its parameters are spelled the way the definition
+// spells them, which is the shape the two sides have to agree on.
+func (g *generator) declareZyx(symbol string, params []paramInfo, retLL string) {
+	if g.m.declared[symbol] {
+		return
+	}
+	g.m.declared[symbol] = true
+	parts := make([]string, 0, len(params))
+	for _, p := range params {
+		parts = append(parts, p.lls...)
+	}
+	fmt.Fprintf(&g.m.funcs, "declare %s @%s(%s)\n", retLL, llvmName(symbol), strings.Join(parts, ", "))
+}
+
+// exported reports whether a name is visible outside its package, which the
+// language spells with a leading capital.
+func exported(name string) bool {
+	if name == "" {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(name)
+	return unicode.IsUpper(r)
+}
+
+// globalLinkage returns the linkage a top-level binding takes. A public name
+// can be reached by another module, so the linker names it; a private one is
+// only ever read by its own module, so the object file keeps it to itself.
+func globalLinkage(name string) string {
+	if exported(name) {
+		return ""
+	}
+	return "internal "
 }
 
 // declaration emits one top-level declaration.
