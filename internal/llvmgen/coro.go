@@ -15,10 +15,7 @@ import (
 // coroutine runs, and the runtime starts the coroutine in a region of its
 // own.
 func (g *generator) spawn(module string, n *zyxc.Node) *value {
-	if hasMark(n, "watched") {
-		g.fail(fmt.Errorf("llvmgen: spawn_watched is not lowered"))
-		return nil
-	}
+	watched := hasMark(n, "watched")
 	call := g.wrapped(n, "call")
 	if call == nil {
 		g.fail(fmt.Errorf("llvmgen: spawn needs a call"))
@@ -89,8 +86,24 @@ func (g *generator) spawn(module string, n *zyxc.Node) *value {
 	}
 
 	thunk := g.spawnThunk(sym, ptypes, blockLL, result)
-	g.declareRuntime("zyxrt_coro_spawn", "ptr", "ptr", "ptr")
 	handle := g.newReg()
+	if watched {
+		// The supervisor is a function value, so the code it carries and the
+		// receiver it carries are what the runtime calls.
+		watch := g.load(g.expr(module, g.wrapped(n, "watcher"), nil))
+		if watch == nil {
+			return nil
+		}
+		code := g.newReg()
+		g.emit("  %s = extractvalue %s %s, 0", code, watch.ll, watch.text)
+		recv := g.newReg()
+		g.emit("  %s = extractvalue %s %s, 1", recv, watch.ll, watch.text)
+		g.declareRuntime("zyxrt_coro_spawn_watched", "ptr", "ptr", "ptr", "ptr", "ptr")
+		g.emit("  %s = call ptr @zyxrt_coro_spawn_watched(ptr @%s, ptr %s, ptr %s, ptr %s)",
+			handle, thunk, base, code, recv)
+		return &value{text: handle, ll: "ptr", typ: types.JoinHandle.Instantiate(result)}
+	}
+	g.declareRuntime("zyxrt_coro_spawn", "ptr", "ptr", "ptr")
 	g.emit("  %s = call ptr @zyxrt_coro_spawn(ptr @%s, ptr %s)", handle, thunk, base)
 	return &value{text: handle, ll: "ptr", typ: types.JoinHandle.Instantiate(result)}
 }

@@ -57,6 +57,10 @@ typedef struct zyxrt_coro {
   struct zyxrt_defer *defers;
   /* panic holds the exception the coroutine raised, or NULL. */
   void *panic;
+  /* watch and watch_recv are the supervisor a watched coroutine reports its
+     exception to, or NULL when nothing supervises it. */
+  zyxrt_watch_fn watch;
+  void *watch_recv;
   /* root marks the coroutine that runs the language main function. */
   int root;
   int done;

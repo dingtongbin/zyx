@@ -82,6 +82,12 @@ void zyxrt_sched_suspend(zyxrt_coro *c) {
    the frames above the raise point are left where they are, because the
    coroutine's region is released as a whole. */
 void zyxrt_sched_abandon(zyxrt_coro *c) {
+  /* The supervisor sees the exception before the region that holds it is
+     released, because the exception lives in that region. */
+  if (c->watch != NULL) {
+    c->watch(c->watch_recv, c->panic);
+    c->watch = NULL;
+  }
   if (c->region != NULL) {
     zyxrt_region_free(c->region);
     c->region = NULL;
@@ -148,10 +154,16 @@ void zyxrt_sched_yield(void) {
 }
 
 void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg) {
+  return zyxrt_coro_spawn_watched(fn, arg, NULL, NULL);
+}
+
+void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, void *watch_recv) {
   zyxrt_coro *c = (zyxrt_coro *)calloc(1, sizeof(zyxrt_coro));
   if (!c) zyxrt_panic("out of memory", 13);
   c->fn = fn;
   c->arg = arg;
+  c->watch = watch;
+  c->watch_recv = watch_recv;
   c->stack_size = zyxrt_stack_size();
   c->stack = zyxrt_stack_map(c->stack_size);
   if (!c->stack) zyxrt_panic("out of memory", 13);
