@@ -3,6 +3,8 @@ package mod
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/ed25519"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -803,6 +805,128 @@ func TestImportMeta(t *testing.T) {
 	}
 	if _, ok := importMeta(`<meta name="zyx-import" content="example.com/dep svn https://x">`, "example.com/dep"); ok {
 		t.Error("a repository this build cannot read answered")
+	}
+}
+
+func TestNoteRoundTrip(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := &SumDB{Name: "sum.example.com"}
+	db.Key, db.KeyHash = pub, keyHash("sum.example.com", pub)
+
+	text := formatTreeHead(treeHead{Size: 3, Hash: tlogEmpty()})
+	note := SignNote(text, db, priv)
+	got, err := VerifyNote(note, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != text {
+		t.Errorf("verified text = %q, want %q", got, text)
+	}
+
+	// The signature covers the text and nothing else, so a changed text does
+	// not verify.
+	tampered := bytes.Replace(note, []byte("\n3\n"), []byte("\n4\n"), 1)
+	if _, err := VerifyNote(tampered, db); err == nil {
+		t.Error("a tampered note verified")
+	}
+	// A note signed by another key does not verify against this one.
+	otherKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := &SumDB{Name: "sum.example.com"}
+	other.Key, other.KeyHash = otherKey, keyHash("sum.example.com", otherKey)
+	if _, err := VerifyNote(note, other); err == nil {
+		t.Error("a note verified against a key that did not sign it")
+	}
+	// A message with no signature block is not a note.
+	if _, err := VerifyNote([]byte("a message\n"), db); err == nil {
+		t.Error("a message with no signature verified")
+	}
+}
+
+func TestKeyRoundTrips(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := EncodeKey("sum.example.com", pub)
+	key, hash, err := ParseKey("sum.example.com", encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(key, pub) {
+		t.Error("the key did not survive the round trip")
+	}
+	if !bytes.Equal(hash, keyHash("sum.example.com", pub)) {
+		t.Error("the key hash did not survive the round trip")
+	}
+	// The name is part of the key, so a key does not verify under another
+	// name.
+	if _, _, err := ParseKey("other.example.com", encoded); err == nil {
+		t.Error("a key was accepted under a name it was not made for")
+	}
+}
+
+func TestParseSumDB(t *testing.T) {
+	if db, err := ParseSumDB("off"); err != nil || db != nil {
+		t.Errorf("off = %v %v, want nothing", db, err)
+	}
+	if _, err := ParseSumDB("sum.example.com"); err == nil {
+		t.Error("a database with no public key was accepted")
+	}
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setting := "sum.example.com+" + EncodeKey("sum.example.com", pub) + " https://sum.example.com"
+	db, err := ParseSumDB(setting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db.Name != "sum.example.com" || db.Base != "https://sum.example.com" || !bytes.Equal(db.Key, pub) {
+		t.Errorf("parsed = %+v", db)
+	}
+	// A database named without a URL is reached at its own name.
+	plain, err := ParseSumDB("sum.example.com+" + EncodeKey("sum.example.com", pub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Base != "https://sum.example.com" {
+		t.Errorf("base = %q, want the database's own name", plain.Base)
+	}
+}
+
+func TestTreeHeadRoundTrips(t *testing.T) {
+	head := treeHead{Size: 12345, Hash: tlogEmpty()}
+	parsed, err := parseTreeHead(formatTreeHead(head))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Size != head.Size || !bytes.Equal(parsed.Hash, head.Hash) {
+		t.Errorf("parsed = %+v, want %+v", parsed, head)
+	}
+	if _, err := parseTreeHead("go.sum database tree\n"); err == nil {
+		t.Error("a description with no size was accepted")
+	}
+}
+
+func TestLogHashesFollowTheLogRules(t *testing.T) {
+	// The two hashes every transparency log starts from, which a reader can
+	// check against any other implementation of the same rules.
+	if got := fmt.Sprintf("%x", tlogEmpty()); got != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" {
+		t.Errorf("an empty log hashes to %s", got)
+	}
+	if got := fmt.Sprintf("%x", tlogLeaf(nil)); got != "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d" {
+		t.Errorf("an empty record hashes to %s", got)
+	}
+	// A record and an interior node are told apart by the byte in front of
+	// them, so no record can be made to stand in for a node.
+	if bytes.Equal(tlogLeaf([]byte("x")), tlogNode(tlogEmpty(), tlogEmpty())) {
+		t.Error("a record and a node hash alike")
 	}
 }
 
