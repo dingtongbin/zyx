@@ -142,17 +142,31 @@ func (g *generator) boolFrom(reg string) *value {
 
 // selectStmt lowers a select. The arms are checked in the order they are
 // written, and the first one that is ready runs, so the arm order is the
-// priority. With no arm ready and no default, the coroutine yields and tries
-// again.
+// priority. With no arm ready and no default, the coroutine parks on every
+// channel it watches until one of them becomes ready or the timeout passes.
 func (g *generator) selectStmt(module string, n *zyxc.Node) {
 	end := g.newLabel("select.end")
 	loop := g.newLabel("select.loop")
 
-	// A timeout arm bounds the wait, so its deadline is taken once, before
-	// the arms are first checked.
+	// The channels the arms watch are settled once: the select parks on them
+	// as a group, so an arm must not evaluate its channel a second time.
+	var handles []*value
+	var dirs []string
 	deadline, timeoutArm := "", (*zyxc.Node)(nil)
 	for _, arm := range n.Children {
-		if arm.Kind == "timeout-arm" {
+		switch arm.Kind {
+		case "recv-arm", "send-arm":
+			ch := g.load(g.expr(module, g.wrapped(arm, "chan"), nil))
+			if ch == nil {
+				return
+			}
+			handles = append(handles, ch)
+			dir := "0"
+			if arm.Kind == "recv-arm" {
+				dir = "1"
+			}
+			dirs = append(dirs, dir)
+		case "timeout-arm":
 			timeoutArm = arm
 			deadline = g.selectDeadline(module, arm)
 		}
@@ -163,41 +177,84 @@ func (g *generator) selectStmt(module string, n *zyxc.Node) {
 
 	g.terminator("  br label %%%s", loop)
 	g.label(loop)
-	hasDefault := false
+	at := 0
 	for _, arm := range n.Children {
 		switch arm.Kind {
 		case "recv-arm":
-			g.selectRecv(module, arm, end)
+			g.selectRecv(module, arm, handles[at], end)
+			at++
 		case "send-arm":
-			g.selectSend(module, arm, end)
+			g.selectSend(module, arm, handles[at], end)
+			at++
 		case "timeout-arm":
 			g.selectTimeout(module, arm, deadline, end)
 		case "default-arm":
-			hasDefault = true
 			g.stmt(module, g.wrapped(arm, "body"))
 			if !g.fn.terminated {
 				g.terminator("  br label %%%s", end)
 			}
 		}
 	}
-	if !hasDefault && timeoutArm == nil && !g.fn.terminated {
-		// Nothing bounds the wait and no arm is ready: let another coroutine
-		// run and try again.
-		g.declareRuntime("zyxrt_sched_yield", "void")
-		g.emit("  call void @zyxrt_sched_yield()")
-		g.terminator("  br label %%%s", loop)
-	} else if timeoutArm != nil && !g.fn.terminated {
-		// The deadline has not passed: wait for it rather than spin.
-		g.declareRuntime("zyxrt_sched_sleep", "void", g.ptrInt())
-		g.declareRuntime("zyxrt_now", g.ptrInt())
-		now := g.newReg()
-		g.emit("  %s = call %s @zyxrt_now()", now, g.ptrInt())
-		remaining := g.newReg()
-		g.emit("  %s = sub %s %s, %s", remaining, g.ptrInt(), deadline, now)
-		g.emit("  call void @zyxrt_sched_sleep(%s %s)", g.ptrInt(), remaining)
+	if !g.fn.terminated {
+		if len(handles) == 0 {
+			// A select with no channel arm waits for its deadline, or lets
+			// another coroutine run when it has none.
+			if timeoutArm != nil {
+				g.waitDeadline(deadline)
+			} else {
+				g.yieldOnce()
+			}
+		} else {
+			// The channels are watched as a group, and the deadline is the
+			// timeout arm's, so a channel that becomes ready wakes the select
+			// before the timeout passes.
+			g.parkSelect(handles, dirs, deadline)
+		}
 		g.terminator("  br label %%%s", loop)
 	}
 	g.label(end)
+}
+
+// parkSelect lowers the wait a select does when no arm is ready: the
+// coroutine parks on every channel it watches, so a channel that becomes
+// ready wakes it rather than leaving it to spin. A deadline of the empty
+// string means the select has no timeout.
+func (g *generator) parkSelect(handles []*value, dirs []string, deadline string) {
+	ptr := g.ptrInt()
+	size := g.target.Layout().PtrSize
+	base := g.allocaSlots("ptr", len(handles))
+	for i, h := range handles {
+		g.emit("  store ptr %s, ptr %s", h.text, g.gepOffset(base, uint64(i)*size))
+	}
+	dirBase := g.allocaSlots("i32", len(dirs))
+	for i, d := range dirs {
+		g.emit("  store i32 %s, ptr %s", d, g.gepOffset(dirBase, uint64(i)*4))
+	}
+	when := "0"
+	if deadline != "" {
+		when = deadline
+	}
+	g.declareRuntime("zyxrt_select_wait", "void", "ptr", "ptr", ptr, ptr)
+	g.emit("  call void @zyxrt_select_wait(ptr %s, ptr %s, %s %d, %s %s)",
+		base, dirBase, ptr, len(handles), ptr, when)
+}
+
+// waitDeadline waits for the deadline of a timeout arm rather than spinning.
+func (g *generator) waitDeadline(deadline string) {
+	g.declareRuntime("zyxrt_now", g.ptrInt())
+	g.declareRuntime("zyxrt_sched_sleep", "void", g.ptrInt())
+	now := g.newReg()
+	g.emit("  %s = call %s @zyxrt_now()", now, g.ptrInt())
+	remaining := g.newReg()
+	g.emit("  %s = sub %s %s, %s", remaining, g.ptrInt(), deadline, now)
+	g.emit("  call void @zyxrt_sched_sleep(%s %s)", g.ptrInt(), remaining)
+}
+
+// yieldOnce lets another ready coroutine run, which a select with no channel
+// arm does so the arms are re-checked rather than spun on.
+func (g *generator) yieldOnce() {
+	g.declareRuntime("zyxrt_sched_yield", "void")
+	g.emit("  call void @zyxrt_sched_yield()")
 }
 
 // selectDeadline returns the absolute deadline a timeout arm waits for.
@@ -235,12 +292,9 @@ func (g *generator) selectTimeout(module string, arm *zyxc.Node, deadline, end s
 
 // selectRecv lowers a receive arm. The readiness test is separate from the
 // receive itself, because a closed channel is ready and answers with the zero
-// value: taking the value is the arm body's job.
-func (g *generator) selectRecv(module string, arm *zyxc.Node, end string) {
-	ch := g.load(g.expr(module, g.wrapped(arm, "chan"), nil))
-	if ch == nil {
-		return
-	}
+// value: taking the value is the arm body's job. The channel is the value the
+// select settled once, so the arm does not evaluate it again.
+func (g *generator) selectRecv(module string, arm *zyxc.Node, ch *value, end string) {
 	elem := ch.typ.Elem
 	g.declareRuntime("zyxrt_chan_recv_ready", "i32", "ptr")
 	ready := g.newReg()
@@ -266,11 +320,7 @@ func (g *generator) selectRecv(module string, arm *zyxc.Node, end string) {
 // selectSend lowers a send arm. A send that cannot proceed is the panic the
 // language defines for a closed channel, so the arm is skipped rather than
 // taken: the test asks whether the send would block.
-func (g *generator) selectSend(module string, arm *zyxc.Node, end string) {
-	ch := g.load(g.expr(module, g.wrapped(arm, "chan"), nil))
-	if ch == nil {
-		return
-	}
+func (g *generator) selectSend(module string, arm *zyxc.Node, ch *value, end string) {
 	elem := ch.typ.Elem
 	arg := g.load(g.expr(module, g.wrapped(arm, "value"), elem))
 	if arg == nil {

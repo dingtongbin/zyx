@@ -24,6 +24,12 @@ void zyxrt_sched_shutdown(void) {
 zyxrt_coro *zyxrt_sched_current(void) { return current; }
 
 void zyxrt_sched_ready(zyxrt_coro *c) {
+  if (c->queued) {
+    /* A select waits on several lists, so more than one of them can wake it.
+       The queue holds it once. */
+    return;
+  }
+  c->queued = 1;
   c->wait_next = NULL;
   if (ready_tail) {
     ready_tail->wait_next = c;
@@ -40,6 +46,7 @@ static zyxrt_coro *take_ready(void) {
   ready_head = c->wait_next;
   if (!ready_head) ready_tail = NULL;
   c->wait_next = NULL;
+  c->queued = 0;
   return c;
 }
 
@@ -53,7 +60,7 @@ void zyxrt_sched_enter(void) {
   c->region = NULL;
   c->done = 1;
   current = NULL;
-  zyxrt_sched_wake(&c->waiters);
+  zyxrt_wait_wake(&c->waiters);
   zyxrt_ctx_switch(c->ctx, sched_ctx);
 }
 
@@ -81,40 +88,48 @@ void zyxrt_sched_abandon(zyxrt_coro *c) {
   }
   c->done = 1;
   current = NULL;
-  zyxrt_sched_wake(&c->waiters);
+  zyxrt_wait_wake(&c->waiters);
   zyxrt_ctx_switch(c->ctx, sched_ctx);
 }
 
-/* sleepers holds the coroutines waiting for a deadline, newest first. */
-static zyxrt_coro *sleepers;
+/* sleepers holds the waiters of the deadlines. */
+static zyxrt_waitlist sleepers;
+
+zyxrt_waitlist *zyxrt_sched_sleepers(void) { return &sleepers; }
+
+void zyxrt_sched_park(uint64_t deadline) {
+  zyxrt_coro *self = current;
+  if (!self) return;
+  self->wake_at = deadline;
+  zyxrt_waiter w = {self, NULL};
+  zyxrt_wait_add(&sleepers, &w);
+  zyxrt_sched_suspend(self);
+}
 
 void zyxrt_sched_sleep(uint64_t ns) {
   zyxrt_coro *self = current;
   if (!self) return;
-  self->wake_at = zyxrt_now() + ns;
-  self->wait_next = sleepers;
-  sleepers = self;
-  zyxrt_sched_suspend(self);
+  zyxrt_sched_park(zyxrt_now() + ns);
 }
 
 int64_t zyxrt_sched_wait(void) {
   uint64_t now = zyxrt_now();
   int64_t wait = -1;
   int readied = 0;
-  zyxrt_coro **link = &sleepers;
+  zyxrt_waiter **link = &sleepers.head;
   while (*link) {
-    zyxrt_coro *c = *link;
-    int64_t remaining = (int64_t)(c->wake_at - now);
+    zyxrt_waiter *w = *link;
+    int64_t remaining = (int64_t)(w->coro->wake_at - now);
     if (remaining <= 0) {
-      *link = c->wait_next;
-      zyxrt_sched_ready(c);
+      *link = w->next;
+      zyxrt_sched_ready(w->coro);
       readied = 1;
       continue;
     }
     if (wait < 0 || remaining < wait) {
       wait = remaining;
     }
-    link = &c->wait_next;
+    link = &w->next;
   }
   /* A coroutine that just became ready must run before the scheduler waits
      for anything else, so the caller is told to run again rather than to
@@ -170,8 +185,8 @@ void *zyxrt_coro_join(void *handle, void **panic) {
        the joiner again. */
     zyxrt_coro *self = current;
     if (!self) break;
-    self->wait_next = c->waiters;
-    c->waiters = self;
+    zyxrt_waiter w = {self, NULL};
+    zyxrt_wait_add(&c->waiters, &w);
     zyxrt_sched_suspend(self);
   }
   /* The exception is read before the coroutine is released. */
@@ -210,21 +225,39 @@ void zyxrt_region_wait(void *region) {
     }
     while (!child->done) {
       /* The joiner blocks on the child and is woken when it finishes. */
-      self->wait_next = child->waiters;
-      child->waiters = self;
+      zyxrt_waiter w = {self, NULL};
+      zyxrt_wait_add(&child->waiters, &w);
       zyxrt_sched_suspend(self);
     }
     free_coro(child);
   }
 }
 
-void zyxrt_sched_wake(zyxrt_coro **list) {
-  zyxrt_coro *c = *list;
-  *list = NULL;
-  while (c) {
-    zyxrt_coro *next = c->wait_next;
-    zyxrt_sched_ready(c);
-    c = next;
+/* The wait lists. A waiter puts a node on a list and suspends; a waker
+   readies every coroutine of a list and empties it. */
+void zyxrt_wait_add(zyxrt_waitlist *list, zyxrt_waiter *w) {
+  w->next = list->head;
+  list->head = w;
+}
+
+void zyxrt_wait_remove(zyxrt_waitlist *list, zyxrt_waiter *w) {
+  zyxrt_waiter **link = &list->head;
+  while (*link) {
+    if (*link == w) {
+      *link = w->next;
+      return;
+    }
+    link = &(*link)->next;
+  }
+}
+
+void zyxrt_wait_wake(zyxrt_waitlist *list) {
+  zyxrt_waiter *w = list->head;
+  list->head = NULL;
+  while (w) {
+    zyxrt_waiter *next = w->next;
+    zyxrt_sched_ready(w->coro);
+    w = next;
   }
 }
 

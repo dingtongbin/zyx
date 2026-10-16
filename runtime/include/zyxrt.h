@@ -194,6 +194,11 @@ int zyxrt_chan_try_recv(void *ch, void *out);
    defines, and a select arm that cannot proceed is skipped. */
 int zyxrt_chan_recv_ready(void *ch);
 int zyxrt_chan_send_ready(void *ch);
+/* zyxrt_select_wait parks the running coroutine until one of the watched
+   channels is ready or the deadline passes, so a select waits instead of
+   spinning. recv_arms marks which channels are watched for a receive; a
+   deadline of zero means the select has no timeout. */
+void zyxrt_select_wait(void *const *handles, const int *recv_arms, size_t n, uint64_t deadline);
 void zyxrt_chan_close(void *ch);
 
 #endif /* ZYXRUNTIME_H */

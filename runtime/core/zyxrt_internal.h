@@ -28,6 +28,22 @@ typedef struct zyxrt_defer {
   struct zyxrt_defer *next;
 } zyxrt_defer;
 
+/* A waiter is one coroutine's place in one wait list. A coroutine has a
+   single link field, which the ready queue uses, so waiting on several
+   things at once, which is what a select does, takes a node per list rather
+   than a link in the coroutine. A node lives on the waiter's stack while it
+   waits. */
+typedef struct zyxrt_waiter {
+  struct zyxrt_coro *coro;
+  struct zyxrt_waiter *next;
+} zyxrt_waiter;
+
+/* A wait list holds the waiters of one channel direction, one coroutine, one
+   region, or the sleepers. */
+typedef struct zyxrt_waitlist {
+  zyxrt_waiter *head;
+} zyxrt_waitlist;
+
 /* A coroutine. It runs on its own stack; the stack switch itself comes from
    the platform layer, which uses fibers on Windows and the ucontext
    primitives elsewhere. */
@@ -44,13 +60,17 @@ typedef struct zyxrt_coro {
   /* root marks the coroutine that runs the language main function. */
   int root;
   int done;
+  /* queued marks a coroutine that is already on the ready queue. Two wait
+     lists can wake one coroutine, because a select waits on several
+     channels, and the queue holds it once. */
+  int queued;
   void *stack;
   size_t stack_size;
-  /* wait_next links a coroutine into a wait list. */
+  /* wait_next links a coroutine into the ready queue. */
   struct zyxrt_coro *wait_next;
-  /* waiters holds the coroutines blocked on this one, newest first. They are
-     woken when it finishes, which is what a join waits for. */
-  struct zyxrt_coro *waiters;
+  /* waiters holds the waiters blocked on this one. They are woken when it
+     finishes, which is what a join waits for. */
+  zyxrt_waitlist waiters;
   /* wake_at is the monotonic deadline a sleeping coroutine waits for, in
      nanoseconds. It is meaningful only while the coroutine is asleep. */
   uint64_t wake_at;
@@ -126,7 +146,19 @@ uint64_t zyxrt_now(void);
 void zyxrt_sleep(uint64_t ns);
 int zyxrt_sched_run_once(void);
 zyxrt_coro *zyxrt_sched_current(void);
-void zyxrt_sched_wake(zyxrt_coro **list);
+/* The wait lists. zyxrt_wait_add puts a node at the head of a list, and
+   zyxrt_wait_remove takes it off, which a waiter does with the lists it did
+   not wake on. zyxrt_wait_wake readies every waiter of a list and empties
+   it. */
+void zyxrt_wait_add(zyxrt_waitlist *list, zyxrt_waiter *w);
+void zyxrt_wait_remove(zyxrt_waitlist *list, zyxrt_waiter *w);
+void zyxrt_wait_wake(zyxrt_waitlist *list);
+/* zyxrt_sched_sleepers is the list of deadlines, which a select puts its own
+   node on so the node lives on its frame. */
+zyxrt_waitlist *zyxrt_sched_sleepers(void);
+/* zyxrt_sched_park suspends the running coroutine on the deadline, which a
+   select uses together with its channel lists. */
+void zyxrt_sched_park(uint64_t deadline);
 
 /* The stack size every coroutine starts with. */
 #define ZYXXRT_STACK_MIN (2u * 1024u * 8u)

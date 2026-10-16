@@ -22,8 +22,8 @@ typedef struct zyxrt_bqueue {
   unsigned char *data;
   /* waiters_full holds the coroutines waiting for room, and waiters_empty
      those waiting for an element. */
-  zyxrt_coro *waiters_full;
-  zyxrt_coro *waiters_empty;
+  zyxrt_waitlist waiters_full;
+  zyxrt_waitlist waiters_empty;
 } zyxrt_bqueue;
 
 static unsigned char *slot(zyxrt_bqueue *q, size_t index) {
@@ -75,13 +75,13 @@ static void sift_down(zyxrt_bqueue *q, size_t index) {
 
 /* wait puts the running coroutine on a list and suspends it. A queue that
    blocks outside a coroutine has nobody to wake it, so that is a panic. */
-static void wait(zyxrt_coro **list) {
+static void wait(zyxrt_waitlist *list) {
   zyxrt_coro *self = zyxrt_sched_current();
   if (self == NULL) {
     zyxrt_panic("a queue blocks outside a coroutine", 34);
   }
-  self->wait_next = *list;
-  *list = self;
+  zyxrt_waiter w = {self, NULL};
+  zyxrt_wait_add(list, &w);
   zyxrt_sched_suspend(self);
 }
 
@@ -92,8 +92,8 @@ void *zyxrt_bqueue_new(size_t elem, size_t cap, void *less) {
   q->elem = elem == 0 ? 1 : elem;
   q->less = (zyxrt_less_fn)less;
   q->data = (unsigned char *)zyxrt_region_alloc_current(q->cap * q->elem, 8);
-  q->waiters_full = NULL;
-  q->waiters_empty = NULL;
+  q->waiters_full.head = NULL;
+  q->waiters_empty.head = NULL;
   return q;
 }
 
@@ -116,7 +116,7 @@ void zyxrt_bqueue_push(void *handle, const void *value) {
     wait(&q->waiters_full);
   }
   insert(q, value);
-  zyxrt_sched_wake(&q->waiters_empty);
+  zyxrt_wait_wake(&q->waiters_empty);
 }
 
 int zyxrt_bqueue_try_push(void *handle, const void *value) {
@@ -125,7 +125,7 @@ int zyxrt_bqueue_try_push(void *handle, const void *value) {
     return 0;
   }
   insert(q, value);
-  zyxrt_sched_wake(&q->waiters_empty);
+  zyxrt_wait_wake(&q->waiters_empty);
   return 1;
 }
 
@@ -141,7 +141,7 @@ void zyxrt_bqueue_pop(void *handle, void *out) {
     memcpy(slot(q, 0), slot(q, q->len), q->elem);
     sift_down(q, 0);
   }
-  zyxrt_sched_wake(&q->waiters_full);
+  zyxrt_wait_wake(&q->waiters_full);
 }
 
 int zyxrt_bqueue_try_pop(void *handle, void *out) {
@@ -155,6 +155,6 @@ int zyxrt_bqueue_try_pop(void *handle, void *out) {
     memcpy(slot(q, 0), slot(q, q->len), q->elem);
     sift_down(q, 0);
   }
-  zyxrt_sched_wake(&q->waiters_full);
+  zyxrt_wait_wake(&q->waiters_full);
   return 1;
 }

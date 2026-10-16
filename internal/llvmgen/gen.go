@@ -143,6 +143,16 @@ func (g *generator) alloca(t *types.Type) string {
 	return reg
 }
 
+// allocaSlots reserves an array of n slots of an LLVM type, in the entry
+// block. A select builds the handles and directions it watches this way: an
+// allocation inside a loop would be a dynamic one, which costs a stack probe
+// on some targets and is not what a fixed count of arms needs.
+func (g *generator) allocaSlots(ll string, n int) string {
+	reg := g.newReg()
+	fmt.Fprintf(&g.fn.allocas, "  %s = alloca [%d x %s]\n", reg, n, ll)
+	return reg
+}
+
 // run emits every package of the program in dependency order.
 func (g *generator) run() {
 	for _, path := range g.prog.Order {
