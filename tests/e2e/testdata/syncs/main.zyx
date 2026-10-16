@@ -2,6 +2,7 @@ package main
 
 import "std/fmt"
 import "std/sync"
+
 // A wait group counts the coroutines a caller waits for. Each producer
 // records that it finished, and the sum the reader takes is the same
 // whichever order the coroutines ran in.
@@ -10,16 +11,22 @@ func produce(out: chan<i64>, n: i64, wg: sync.WaitGroup) {
     defer wg.Done()
     out.Send(n)
 }
+
 // Note runs once however many callers ask for it.
 
 func Note() {
     fmt.PrintI64(7)
 }
+
 // Quiet returns nothing, so its handle carries no value to report.
 
 func Quiet() { }
+
 // A static sync object lives in static storage rather than in a region, so a
 // top-level binding can hold one. Its constructor runs before the program.
+/* The statics below live in static storage rather than in a region, so they
+   outlive every region. A block comment may span lines and may hold
+   /* a nested one */ as well. */
 
 var sharedGroup = sync.StaticWaitGroup()
 
@@ -28,6 +35,7 @@ var sharedOnce = sync.StaticOnce()
 var sharedCounter = sync.StaticAtomic(7)
 
 var sharedGuard = sync.StaticMutex(41)
+
 // waitFor holds the lock until the guarded data changes. A monitor wait
 // releases the lock while it waits, so the notifier can take it.
 
@@ -38,6 +46,7 @@ func waitFor(m: sync.Mutex<i64>) {
     }
     m.Unlock()
 }
+
 // notify changes the guarded data and wakes one waiter.
 
 func notify(m: sync.Mutex<i64>, done: chan<i64>) {
@@ -129,7 +138,7 @@ func main() {
     fmt.PrintNl()
     // A top-level binding holds a static sync object: it outlives every
     // region and was built before the program started.
-    sharedGroup.Add(1)
+    sharedGroup.Add(1 /* one coroutine */)
     sharedGroup.Done()
     sharedGroup.Wait()
     fmt.PrintI64(1)

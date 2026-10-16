@@ -94,6 +94,9 @@ type Token struct {
 	Suffix NumSuffix
 	// Doc reports whether a Comment token is a doc comment.
 	Doc bool
+	// Block reports whether a Comment token is a block comment, which ends
+	// where its closing marker is rather than at the end of the line.
+	Block bool
 }
 
 // Text returns the source text covered by the token.

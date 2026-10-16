@@ -161,3 +161,19 @@ func TestFormatKeepsATrailingComment(t *testing.T) {
 		t.Errorf("format is not idempotent:\n--- first ---\n%s\n--- second ---\n%s", got, again)
 	}
 }
+
+// TestFormatKeepsABlockComment checks that a block comment is kept where it
+// was written: a multi-line one stays multi-line, an inline one stays on its
+// line, and a nested one is one comment rather than two.
+func TestFormatKeepsABlockComment(t *testing.T) {
+	src := "package main\n/* one\n   /* nested */\n   two */\nfunc f() {\nvar x = 1 /* inline */ + 2\n/* own line */\nvar y = 3\n}\n"
+	got := format(src)
+	for _, want := range []string{"/* one", "/* nested */", "var x = 1 /* inline */ + 2", "/* own line */\n"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the formatted source lost %q:\n%s", want, got)
+		}
+	}
+	if again := format(got); again != got {
+		t.Errorf("format is not idempotent:\n--- first ---\n%s\n--- second ---\n%s", got, again)
+	}
+}

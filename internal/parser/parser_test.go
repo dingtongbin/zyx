@@ -776,10 +776,21 @@ func TestCommentsBetweenTokensAreIgnored(t *testing.T) {
 	}
 }
 
-func TestBlockCommentsAreRejected(t *testing.T) {
-	_, diags := parseSrc(t, "package main\nfunc f(/* nope */) {}\n")
-	if len(diags) == 0 {
-		t.Fatal("block comment accepted")
+// TestBlockCommentSeparates checks that a block comment stands between tokens
+// without becoming one, so a comment inside a parameter list is nothing at
+// all rather than a syntax error.
+func TestBlockCommentSeparates(t *testing.T) {
+	f, diags := parseSrc(t, "package main\nfunc f(/* nope */) {}\n")
+	assertClean(t, diags)
+	var params int
+	ast.Walk(f, func(n ast.Node) bool {
+		if _, ok := n.(*ast.Param); ok {
+			params++
+		}
+		return true
+	})
+	if params != 0 {
+		t.Errorf("a block comment became %d parameters", params)
 	}
 }
 

@@ -108,7 +108,11 @@ func (p *printer) token(toks []token.Token, i int) {
 			p.space()
 		}
 		p.write(text)
-		p.newline()
+		if !t.Block {
+			// A line comment ends the line it is written on; a block comment
+			// ends where its closing marker is, so the line goes on.
+			p.newline()
+		}
 		p.prev = &toks[i]
 		p.prevText = text
 		p.line = line
