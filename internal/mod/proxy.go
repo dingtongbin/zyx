@@ -11,14 +11,19 @@ package mod
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -180,6 +185,305 @@ func escapePath(path string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// HashTree returns the hash of a module's content computed over a directory
+// rather than an archive. The names are the ones an archive would use, so the
+// same module fetched from a repository and from a proxy hash alike, and a
+// checksum file records one hash for both.
+func HashTree(path, version, dir string) (string, error) {
+	var names []string
+	err := filepath.WalkDir(dir, func(entry string, info fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, entry)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		// A repository keeps its own history beside the files, which is not
+		// part of the module.
+		if rel == ".git" || strings.HasPrefix(rel, ".git/") {
+			if info.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+		names = append(names, path+"@"+version+"/"+rel)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	sort.Strings(names)
+	summary := sha256.New()
+	for _, name := range names {
+		rel := strings.TrimPrefix(name, path+"@"+version+"/")
+		content := sha256.New()
+		file, err := os.Open(filepath.Join(dir, filepath.FromSlash(rel)))
+		if err != nil {
+			return "", err
+		}
+		_, err = io.Copy(content, file)
+		file.Close()
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(summary, "%x  %s\n", content.Sum(nil), name)
+	}
+	return hashOf(summary.Sum(nil)), nil
+}
+
+// repoAddress returns where the repository of a module path is. A server that
+// serves the module answers the query with a meta tag naming the repository,
+// which is how a module whose path is not its repository root is served; a
+// module whose path is its repository root answers nothing, and the path is
+// the address. The query is tried over https first and over http second: the
+// content is checked against the checksum file either way, so a plain
+// connection cannot change what a build reads, only whether it can read it.
+func (f *Fetcher) repoAddress(path string) string {
+	client := f.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	for _, scheme := range []string{"https", "http"} {
+		response, err := client.Get(scheme + "://" + path + "?zyx-get=1")
+		if err != nil {
+			continue
+		}
+		body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		response.Body.Close()
+		if err != nil || response.StatusCode != http.StatusOK {
+			continue
+		}
+		if repo, ok := importMeta(string(body), path); ok {
+			return repo
+		}
+	}
+	return "https://" + path
+}
+
+// metaTag matches one meta tag of a page, which is all of the HTML a module
+// path lookup reads.
+var metaTag = regexp.MustCompile(`(?is)<meta\s+[^>]*>`)
+
+// nameAttr and contentAttr read the two attributes a meta tag carries.
+var (
+	nameAttr    = regexp.MustCompile(`(?is)\bname\s*=\s*"([^"]*)"`)
+	contentAttr = regexp.MustCompile(`(?is)\bcontent\s*=\s*"([^"]*)"`)
+)
+
+// importMeta returns the repository a page names for a module path, which is
+// what a server writes in a zyx-import meta tag:
+//
+//	<meta name="zyx-import" content="example.com/dep git https://example.com/dep.git">
+func importMeta(body, path string) (string, bool) {
+	for _, tag := range metaTag.FindAllString(body, -1) {
+		name := nameAttr.FindStringSubmatch(tag)
+		content := contentAttr.FindStringSubmatch(tag)
+		if len(name) < 2 || len(content) < 2 || !strings.EqualFold(name[1], "zyx-import") {
+			continue
+		}
+		fields := strings.Fields(content[1])
+		if len(fields) != 3 || fields[0] != path || fields[1] != "git" {
+			continue
+		}
+		return fields[2], true
+	}
+	return "", false
+}
+
+// FetchDirect reads a module version straight from the version control
+// system, which is what a source list naming direct asks for. The repository
+// is the module path itself, which is where a module whose path is its
+// repository root lives, and the version names a tag in it. The hashes are
+// checked against what the checksum file recorded before anything is stored,
+// so a repository and a proxy are held to the same standard.
+func (f *Fetcher) FetchDirect(cache *ModuleCache, path, version, wantContent, wantManifest string) (content, manifest string, err error) {
+	if cache == nil {
+		return "", "", fmt.Errorf("module %s %s: there is no cache to store it in", path, version)
+	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		return "", "", fmt.Errorf("module %s %s: fetching from a repository needs git", path, version)
+	}
+	work, err := os.MkdirTemp("", "zyx-vcs-")
+	if err != nil {
+		return "", "", err
+	}
+	defer os.RemoveAll(work)
+
+	// The repository is the module path, with or without the suffix a server
+	// writes for one. A clone of one tag is enough: a module version is
+	// immutable, so no history is needed.
+	checkout := filepath.Join(work, "repo")
+	address := f.repoAddress(path)
+	clone := func(target string) error {
+		return runGit(git, work, "clone", "--quiet", "--depth", "1",
+			"--branch", version, "--single-branch", target, checkout)
+	}
+	if err := clone(address); err != nil {
+		if err := clone(address + ".git"); err != nil {
+			return "", "", fmt.Errorf("module %s %s: no repository serves it: %w", path, version, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(checkout, "zyx.mod")); err != nil {
+		return "", "", fmt.Errorf("module %s %s: the repository holds no zyx.mod at its root", path, version)
+	}
+	content, err = HashTree(path, version, checkout)
+	if err != nil {
+		return "", "", err
+	}
+	data, err := os.ReadFile(filepath.Join(checkout, "zyx.mod"))
+	if err != nil {
+		return "", "", err
+	}
+	manifest = HashManifest(path, version, data)
+	if wantContent != "" && content != wantContent {
+		return "", "", fmt.Errorf("module %s %s: the repository content hash is %s, and zyx.sum records %s", path, version, content, wantContent)
+	}
+	if wantManifest != "" && manifest != wantManifest {
+		return "", "", fmt.Errorf("module %s %s: the repository manifest hash is %s, and zyx.sum records %s", path, version, manifest, wantManifest)
+	}
+	if err := cache.PutTree(path, version, content, checkout); err != nil {
+		return "", "", err
+	}
+	return content, manifest, nil
+}
+
+// directVersions returns the tags a repository holds for a module, which is
+// what a version query asks of a repository rather than of a proxy.
+func (f *Fetcher) directVersions(path string) ([]string, error) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		return nil, fmt.Errorf("module %s: fetching from a repository needs git", path)
+	}
+	out, err := runGitOutput(git, "ls-remote", "--tags", f.repoAddress(path))
+	if err != nil {
+		return nil, err
+	}
+	var versions []string
+	for _, line := range strings.Split(string(out), "\n") {
+		_, ref, ok := strings.Cut(line, "refs/tags/")
+		if !ok {
+			continue
+		}
+		// An annotated tag names the commit it points at on a second line,
+		// and the tag itself is what a version is.
+		if ref = strings.TrimSuffix(strings.TrimSpace(ref), "^{}"); ref != "" {
+			versions = append(versions, ref)
+		}
+	}
+	return versions, nil
+}
+
+// runGit runs one git command in a directory, answering what it said when it
+// fails.
+func runGit(git, dir string, args ...string) error {
+	cmd := exec.Command(git, args...)
+	cmd.Dir = dir
+	var message bytes.Buffer
+	cmd.Stderr = &message
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s", gitMessage(&message, err))
+	}
+	return nil
+}
+
+// runGitOutput runs one git command and answers what it wrote.
+func runGitOutput(git string, args ...string) ([]byte, error) {
+	cmd := exec.Command(git, args...)
+	var message bytes.Buffer
+	cmd.Stderr = &message
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("%s", gitMessage(&message, err))
+	}
+	return out, nil
+}
+
+// gitMessage returns what a git command said, or the error when it said
+// nothing.
+func gitMessage(message *bytes.Buffer, err error) string {
+	if text := strings.TrimSpace(message.String()); text != "" {
+		return text
+	}
+	return err.Error()
+}
+
+// PutTree stores a module version from a directory rather than an archive,
+// which is what a fetch from a repository has. The content hash is checked
+// against what the checksum file recorded, and the tree is moved into place,
+// so a reader sees either nothing or the whole module.
+func (c *ModuleCache) PutTree(path, version, content, dir string) error {
+	got, err := HashTree(path, version, dir)
+	if err != nil {
+		return err
+	}
+	if content != "" && got != content {
+		return fmt.Errorf("module %s %s: content hash is %s, and zyx.sum records %s", path, version, got, content)
+	}
+	dest := c.Dir(path, version)
+	temp, err := os.MkdirTemp(c.root, ".tmp-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(temp)
+	if err := copyTreeInto(dir, temp); err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(temp, "zyx.mod")); err != nil {
+		return fmt.Errorf("module %s %s: the tree holds no zyx.mod", path, version)
+	}
+	if err := os.RemoveAll(dest); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	return os.Rename(temp, dest)
+}
+
+// copyTreeInto copies the files of a directory into another, without the
+// history a repository keeps beside them.
+func copyTreeInto(from, to string) error {
+	return filepath.WalkDir(from, func(entry string, info fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(from, entry)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		if rel == ".git" || strings.HasPrefix(filepath.ToSlash(rel), ".git/") {
+			if info.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		target := filepath.Join(to, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if !info.Type().IsRegular() {
+			return nil
+		}
+		data, err := os.ReadFile(entry)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0o644)
+	})
 }
 
 // A Proxy is one source of modules, speaking the proxy protocol go uses: a
@@ -405,23 +709,16 @@ func ParsePatterns(list string) []string {
 // eachSource asks each source in turn for a module version, moving on the way
 // the list says to. It answers the error of the last source when none served
 // it.
-func (f *Fetcher) eachSource(path, version string, use func(*Proxy) error) error {
+func (f *Fetcher) eachSource(path, version string, use func(Source) error) error {
 	if MatchPatterns(f.Private, path) || MatchPatterns(f.NoProxy, path) {
-		return fmt.Errorf("module %s is private, so it is not fetched from a proxy", path)
+		return fmt.Errorf("module %s is private, so it is not fetched from a source", path)
 	}
 	var last error
 	for _, source := range f.Sources {
 		if source.Off {
 			return fmt.Errorf("module fetching is off")
 		}
-		if source.Direct {
-			last = fmt.Errorf("module %s %s: fetching straight from the version control system is not implemented", path, version)
-			if source.FallbackOnAny {
-				continue
-			}
-			return last
-		}
-		err := use(&Proxy{Base: source.Proxy, Client: f.Client})
+		err := use(source)
 		if err == nil {
 			return nil
 		}
@@ -440,8 +737,14 @@ func (f *Fetcher) eachSource(path, version string, use func(*Proxy) error) error
 // Latest returns the highest release a source lists for a module.
 func (f *Fetcher) Latest(path string) (string, error) {
 	latest := ""
-	err := f.eachSource(path, "latest", func(proxy *Proxy) error {
-		versions, err := proxy.Versions(path)
+	err := f.eachSource(path, "latest", func(source Source) error {
+		var versions []string
+		var err error
+		if source.Direct {
+			versions, err = f.directVersions(path)
+		} else {
+			versions, err = (&Proxy{Base: source.Proxy, Client: f.Client}).Versions(path)
+		}
 		if err != nil {
 			return err
 		}
@@ -458,7 +761,7 @@ func (f *Fetcher) Latest(path string) (string, error) {
 // FetchInto reads a module version from the first source that serves it,
 // checks it against the hashes the checksum file records, and stores it in
 // the cache. A module whose hashes the file does not record is refused rather
-// than trusted: what a proxy serves is only usable once something has fixed
+// than trusted: what a source serves is only usable once something has fixed
 // it.
 func (f *Fetcher) FetchInto(cache *ModuleCache, sum *Sum, path, version string) error {
 	if cache == nil {
@@ -473,7 +776,12 @@ func (f *Fetcher) FetchInto(cache *ModuleCache, sum *Sum, path, version string) 
 	if wantContent == "" || wantManifest == "" {
 		return fmt.Errorf("module %s %s has no recorded hash in zyx.sum", path, version)
 	}
-	return f.eachSource(path, version, func(proxy *Proxy) error {
+	return f.eachSource(path, version, func(source Source) error {
+		if source.Direct {
+			_, _, err := f.FetchDirect(cache, path, version, wantContent, wantManifest)
+			return err
+		}
+		proxy := &Proxy{Base: source.Proxy, Client: f.Client}
 		manifest, err := proxy.Manifest(path, version)
 		if err != nil {
 			return err
@@ -497,7 +805,13 @@ func (f *Fetcher) FetchNew(cache *ModuleCache, path, version string) (content, m
 	if cache == nil {
 		return "", "", fmt.Errorf("module %s %s: there is no cache to store it in", path, version)
 	}
-	err = f.eachSource(path, version, func(proxy *Proxy) error {
+	err = f.eachSource(path, version, func(source Source) error {
+		if source.Direct {
+			var err error
+			content, manifest, err = f.FetchDirect(cache, path, version, "", "")
+			return err
+		}
+		proxy := &Proxy{Base: source.Proxy, Client: f.Client}
 		served, err := proxy.Manifest(path, version)
 		if err != nil {
 			return err

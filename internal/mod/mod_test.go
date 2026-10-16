@@ -714,6 +714,98 @@ func TestParseModulesTxtRejectsMalformedText(t *testing.T) {
 	}
 }
 
+func TestHashTreeMatchesTheArchive(t *testing.T) {
+	// A module fetched from a repository and the same module fetched from a
+	// proxy must hash alike, or a checksum file could not record one hash for
+	// both and switching a source would look like tampering.
+	files := map[string]string{
+		"zyx.mod":       "module example.com/dep\n\nzyx 0.1\n",
+		"util/util.zyx": "package util\n\nfunc Use() {\n}\n",
+	}
+	archive := zipOf(t, map[string]string{
+		"example.com/dep@v1.0.0/zyx.mod":       files["zyx.mod"],
+		"example.com/dep@v1.0.0/util/util.zyx": files["util/util.zyx"],
+	})
+	dir := t.TempDir()
+	for name, body := range files {
+		full := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A repository keeps its history beside the files, which is not part of
+	// the module and must not enter the hash.
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fromArchive, err := HashContent(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromTree, err := HashTree("example.com/dep", "v1.0.0", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fromArchive != fromTree {
+		t.Errorf("the archive hashes to %s and the tree to %s", fromArchive, fromTree)
+	}
+}
+
+func TestPutTreeStoresAModule(t *testing.T) {
+	cache, err := OpenModuleCache(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "zyx.mod"), []byte("module example.com/dep\n\nzyx 0.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	content, err := HashTree("example.com/dep", "v1.0.0", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.PutTree("example.com/dep", "v1.0.0", content, dir); err != nil {
+		t.Fatal(err)
+	}
+	if !cache.Has("example.com/dep", "v1.0.0") {
+		t.Fatal("the module is not in the cache after a put")
+	}
+	// A tree that does not match the recorded hash is refused, the same way an
+	// archive is.
+	if err := cache.PutTree("example.com/dep", "v1.0.1", "h1:wrong=", dir); err == nil {
+		t.Error("a tree that does not match the recorded hash was stored")
+	}
+	if cache.Has("example.com/dep", "v1.0.1") {
+		t.Error("a refused tree reached the cache")
+	}
+}
+
+func TestImportMeta(t *testing.T) {
+	page := `<html><head>` +
+		`<meta name="zyx-import" content="example.com/dep git https://example.com/dep.git">` +
+		`</head></html>`
+	repo, ok := importMeta(page, "example.com/dep")
+	if !ok || repo != "https://example.com/dep.git" {
+		t.Errorf("importMeta = %q %v, want the repository", repo, ok)
+	}
+	if _, ok := importMeta(page, "example.com/other"); ok {
+		t.Error("a page answered for a module it does not serve")
+	}
+	if _, ok := importMeta("<html></html>", "example.com/dep"); ok {
+		t.Error("a page with no meta tag answered")
+	}
+	if _, ok := importMeta(`<meta name="zyx-import" content="example.com/dep svn https://x">`, "example.com/dep"); ok {
+		t.Error("a repository this build cannot read answered")
+	}
+}
+
 func TestCompareVersions(t *testing.T) {
 	cases := []struct {
 		a, b string
