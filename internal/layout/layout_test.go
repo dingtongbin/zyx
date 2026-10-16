@@ -53,7 +53,9 @@ func TestScalarSizes(t *testing.T) {
 		{types.Duration, 8},
 		{types.Usize, 8},
 		{types.Raw, 8},
-		{types.FuncOf(types.Bool, types.Int64), 8},
+		// A function value carries the function and the receiver a method
+		// value was taken from, so it is a pair rather than a pointer.
+		{types.FuncOf(types.Bool, types.Int64), 16},
 		{types.Str, 16},
 		{types.SliceOf(types.Uint8), 16},
 		{types.Eq, 16},
@@ -216,6 +218,30 @@ func TestEnumLayout(t *testing.T) {
 	}
 	if align != 8 {
 		t.Errorf("align = %d, want 8", align)
+	}
+}
+
+// The shape is what the backend needs to mirror: the tag, and the union that
+// follows it. The backend lays the union out itself, so it must agree with
+// the size and alignment reported here.
+func TestEnumShape(t *testing.T) {
+	e := named(types.KindEnum, "Msg")
+	p := testProvider{variants: map[string][]Variant{
+		e.ID: {
+			{Name: "Ping"},
+			{Name: "Text", Payload: []*types.Type{types.Str}},
+			{Name: "Pair", Payload: []*types.Type{types.Int32, types.Int32}},
+		},
+	}}
+	shape, err := Enum(e, p, target64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shape.TagSize != 1 || shape.TagAlign != 1 {
+		t.Errorf("tag = %d/%d, want 1/1", shape.TagSize, shape.TagAlign)
+	}
+	if shape.PayloadSize != 16 || shape.PayloadAlign != 8 {
+		t.Errorf("payload = %d/%d, want 16/8", shape.PayloadSize, shape.PayloadAlign)
 	}
 }
 

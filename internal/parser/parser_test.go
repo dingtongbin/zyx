@@ -644,6 +644,29 @@ var h: Array<i64> = [1]
 	}
 }
 
+func TestUnitType(t *testing.T) {
+	// `()` is the unit type, which is what a Result whose success carries
+	// nothing is parameterized by.
+	src := "package main\nfunc f() -> Result<(), str> {\n\treturn Result.Ok()\n}\n"
+	f, diags := parseSrc(t, src)
+	assertClean(t, diags)
+	named, ok := findNode(f, isType[*ast.TypeName]).(*ast.TypeName)
+	if !ok {
+		t.Fatal("no type name in the tree")
+	}
+	if named.Name.Name != "Result" || len(named.Args) != 2 {
+		t.Fatalf("%s has %d arguments, want Result with 2", named.Name.Name, len(named.Args))
+	}
+	unit, ok := named.Args[0].(*ast.TypeName)
+	if !ok || unit.Name.Name != "void" {
+		t.Fatalf("the first argument is %v, want the unit type", named.Args[0])
+	}
+	fail, ok := named.Args[1].(*ast.TypeName)
+	if !ok || fail.Name.Name != "str" {
+		t.Fatalf("the second argument is %v, want str", named.Args[1])
+	}
+}
+
 func TestExternUnion(t *testing.T) {
 	src := "package main\nimport c \"sys/epoll.h\"\nextern union epoll_data_t {\n\tptr: raw\n\tfd: i32\n\tu64v: u64\n}\n"
 	f, diags := parseSrc(t, src)
@@ -691,20 +714,29 @@ func TestTryCallAsStatement(t *testing.T) {
 
 func TestExternAndCAbiFunctions(t *testing.T) {
 	src := `package main
-import c "stdio.h"
+import c "stdio.h" {
+	fast printf
+}
 extern func strlen(s: str) -> usize
+fast extern func fwrite(p: raw, n: usize) -> usize
 extern func printf(fmt: str, ...)
 c func OnAccept(fd: i32) { }
 func use() {
 	c.printf("hello\n")
-	fast c.printf("fast\n")
+	fwrite(nil, 0)
 }
 `
 	f, diags := parseSrc(t, src)
 	assertClean(t, diags)
-	var variadic, cAbi, extern, cCall, fast bool
+	var variadic, cAbi, extern, fast, fastList bool
 	ast.Walk(f, func(n ast.Node) bool {
 		switch v := n.(type) {
+		case *ast.ImportDecl:
+			for _, id := range v.Fast {
+				if id.Name == "printf" {
+					fastList = true
+				}
+			}
 		case *ast.Param:
 			if v.Variadic {
 				variadic = true
@@ -716,18 +748,15 @@ func use() {
 			if v.Quals.Extern {
 				extern = true
 			}
-		case *ast.SelectorExpr:
-			if id, ok := v.X.(*ast.Ident); ok && id.Name == "c" {
-				cCall = true
+			if v.Quals.Fast {
+				fast = true
 			}
-		case *ast.FastExpr:
-			fast = true
 		}
 		return true
 	})
 	for name, ok := range map[string]bool{
 		"variadic param": variadic, "c ABI func": cAbi, "extern func": extern,
-		"c call": cCall, "fast call": fast,
+		"fast extern func": fast, "fast name in an import": fastList,
 	} {
 		if !ok {
 			t.Errorf("no %s in the tree", name)
@@ -770,9 +799,86 @@ func TestCommentsBetweenTokensAreIgnored(t *testing.T) {
 	}
 }
 
-func TestBlockCommentsAreRejected(t *testing.T) {
-	_, diags := parseSrc(t, "package main\nfunc f(/* nope */) {}\n")
-	if len(diags) == 0 {
-		t.Fatal("block comment accepted")
+// TestBlockCommentSeparates checks that a block comment stands between tokens
+// without becoming one, so a comment inside a parameter list is nothing at
+// all rather than a syntax error.
+func TestBlockCommentSeparates(t *testing.T) {
+	f, diags := parseSrc(t, "package main\nfunc f(/* nope */) {}\n")
+	assertClean(t, diags)
+	var params int
+	ast.Walk(f, func(n ast.Node) bool {
+		if _, ok := n.(*ast.Param); ok {
+			params++
+		}
+		return true
+	})
+	if params != 0 {
+		t.Errorf("a block comment became %d parameters", params)
 	}
+}
+
+// TestFuncRefNames checks the names a function value reference accepts. The C
+// namespace is a keyword, so it has to be accepted where it qualifies a name,
+// and a package name is a plain identifier.
+func TestFuncRefNames(t *testing.T) {
+	src := "package main\nfunc use() {\n\tvar a = func lib.Fn\n\tvar b = func c.printf\n}\n"
+	f, diags := parseSrc(t, src)
+	assertClean(t, diags)
+	var qualified, cQualified bool
+	ast.Walk(f, func(n ast.Node) bool {
+		if ref, ok := n.(*ast.FuncRefExpr); ok && ref.Qualifier != nil {
+			switch ref.Qualifier.Name {
+			case "lib":
+				qualified = true
+			case "c":
+				cQualified = true
+			}
+		}
+		return true
+	})
+	for name, ok := range map[string]bool{
+		"a package-qualified reference": qualified,
+		"a reference through c":         cQualified,
+	} {
+		if !ok {
+			t.Errorf("no %s in the tree", name)
+		}
+	}
+}
+
+// TestGenericAggregateLiteral checks that a literal of a type with type
+// arguments parses, and that a comparison that looks the same does not.
+func TestGenericAggregateLiteral(t *testing.T) {
+	src := "package main\n\nstruct Box<T> {\n\tv: T\n}\n\nfunc f(a: i64, b: i64) -> i64 {\n\tvar box = Box<i64> { v: 5 }\n\tif a < b {\n\t\treturn box.v\n\t}\n\treturn a\n}\n"
+	f, diags := parseSrc(t, src)
+	assertClean(t, diags)
+	var literal bool
+	ast.Walk(f, func(n ast.Node) bool {
+		if v, ok := n.(*ast.AggregateLitExpr); ok {
+			if v.Type != nil && v.Type.Name != nil && v.Type.Name.Name == "Box" && len(v.Type.Args) == 1 {
+				literal = true
+			}
+		}
+		return true
+	})
+	if !literal {
+		t.Error("a literal of a type with type arguments did not parse")
+	}
+}
+
+// TestChainedComparisonIsNotATypeArgumentList checks the lookahead: a brace
+// must follow the type arguments, so `a < Box > b` stays a comparison and is
+// reported as one rather than read as a literal.
+func TestChainedComparisonIsNotATypeArgumentList(t *testing.T) {
+	src := "package main\n\nfunc f(a: i64, b: i64) -> bool {\n\treturn a < Box > b\n}\n"
+	f, diags := parseSrc(t, src)
+	if len(diags) == 0 {
+		t.Fatal("a chained comparison was accepted")
+	}
+	ast.Walk(f, func(n ast.Node) bool {
+		if _, ok := n.(*ast.AggregateLitExpr); ok {
+			t.Error("a chained comparison parsed as a literal")
+		}
+		return true
+	})
 }

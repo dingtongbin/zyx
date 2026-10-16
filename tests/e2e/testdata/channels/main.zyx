@@ -1,0 +1,63 @@
+package main
+
+import "std/fmt"
+
+func take(ch: chan<i64>) -> i64 {
+    select {
+        recv (ch) -> v, ok {
+            if ok {
+                return v
+            }
+            return- 1
+        }
+        default {
+            return- 2
+        }
+    }
+}
+
+func put(ch: chan<i64>, v: i64) -> i64 {
+    select {
+        send (ch, v) {
+            return 0
+        }
+        default {
+            return- 3
+        }
+    }
+}
+// A closed channel is ready in the receive direction: the arm runs, and the
+// receive answers with the zero value and false. An arm that is never ready
+// would leave this select waiting for something that cannot happen.
+
+func drain(ch: chan<i64>) -> i64 {
+    select {
+        recv (ch) -> v, ok {
+            if ok {
+                return v
+            }
+            return- 4
+        }
+    }
+}
+
+func main() {
+    var ch = new chan<i64>(1)
+    ch.Send(7)
+    var v, ok = ch.Recv()
+    fmt.PrintI64(v)
+    fmt.PrintBool(ok)
+    fmt.PrintNl()
+    var sent = ch.TrySend(9)
+    fmt.PrintBool(sent)
+    fmt.PrintNl()
+    var got, ok2 = ch.TryRecv()
+    fmt.PrintI64(got)
+    fmt.PrintBool(ok2)
+    fmt.PrintNl()
+    ch.Close()
+    fmt.PrintI64(put(ch, 1))
+    fmt.PrintI64(take(ch))
+    fmt.PrintI64(drain(ch))
+    fmt.PrintNl()
+}

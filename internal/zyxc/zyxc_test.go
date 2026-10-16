@@ -1,6 +1,7 @@
 package zyxc
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"zyx/internal/resolve"
 	"zyx/internal/source"
 	"zyx/internal/toolchain"
+	"zyx/internal/types"
 )
 
 // buildSource runs the front end on one package and returns its tree.
@@ -27,7 +29,7 @@ func buildSource(t *testing.T, src string) *File {
 		t.Fatalf("resolve: %v", rdiags)
 	}
 	target := toolchain.HostTarget()
-	cpkg, cdiags := check.Check(pkg, rinfo, nil, target)
+	cpkg, cdiags := check.Check(pkg, rinfo, nil, target, nil)
 	if len(cdiags) != 0 {
 		t.Fatalf("check: %v", cdiags)
 	}
@@ -36,11 +38,22 @@ func buildSource(t *testing.T, src string) *File {
 	if len(mdiags) != 0 {
 		t.Fatalf("marks: %v", mdiags)
 	}
-	ir, err := Build(pkg, rinfo, cpkg, minfo, cinfo, target.Triple)
+	ir, err := Build(pkg, rinfo, cpkg, minfo, cinfo, target.Triple, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return ir
+}
+
+func TestTypeArgumentOfAnotherPackage(t *testing.T) {
+	// A type the package does not declare is qualified wherever it appears,
+	// including as the argument of a type every package shares.
+	b := &builder{pkg: &resolve.Package{Path: "example.com/app/server"}}
+	entry := types.Named(types.KindStruct, "example.com/app/store", "", "Entry", 0)
+	got := b.typeText(types.Result.Instantiate(types.Void, entry))
+	if got != "Result<void, store.Entry>" {
+		t.Errorf("type = %q, want Result<void, store.Entry>", got)
+	}
 }
 
 func TestFormatHeader(t *testing.T) {
@@ -129,7 +142,7 @@ func TestMarkArgumentsSurviveARoundTrip(t *testing.T) {
 	file := &File{Target: "amd64-unknown-linux-gnu", Module: "example.com/app"}
 	file.Decls = []*Node{
 		New("func", "f", "plain", "example.com/app.f").
-			Mark("mono-rule", "eval meta.size_of(T)").
+			Mark("move", "r1").
 			Mark("home", "r0").
 			Mark("coro:region", "c0").
 			Mark("coro:spawn", "").
@@ -147,7 +160,7 @@ func TestMarkArgumentsSurviveARoundTrip(t *testing.T) {
 		{Name: "coro:region", Arg: "c0"},
 		{Name: "coro:spawn"},
 		{Name: "home", Arg: "r0"},
-		{Name: "mono-rule", Arg: "eval meta.size_of(T)"},
+		{Name: "move", Arg: "r1"},
 	}
 	marks := back.Decls[0].Marks
 	if len(marks) != len(want) {
@@ -157,6 +170,32 @@ func TestMarkArgumentsSurviveARoundTrip(t *testing.T) {
 		if marks[i] != m {
 			t.Errorf("mark %d = %+v, want %+v", i, marks[i], m)
 		}
+	}
+}
+
+// A testResolver knows no declarations, which is enough for a text that names
+// only tuples and predeclared types.
+type testResolver struct{}
+
+func (testResolver) ImportPath(string) (string, bool) { return "", false }
+
+func (testResolver) KindOf(string) (types.Kind, error) {
+	return types.Invalid, fmt.Errorf("no declarations")
+}
+
+// A one-element list is a tuple, which is how an enum variant with a single
+// payload type writes it. Reading it as the element alone would leave that
+// variant's payload unreadable.
+func TestParseTypeReadsAOneElementTuple(t *testing.T) {
+	got, err := ParseType("example.com/app", "(f64)", testResolver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != types.KindTuple || len(got.Elems) != 1 {
+		t.Fatalf("(f64) = %s, want a one-element tuple", got)
+	}
+	if got.Elems[0].Kind != types.KindFloat64 {
+		t.Errorf("the element is %s, want f64", got.Elems[0])
 	}
 }
 

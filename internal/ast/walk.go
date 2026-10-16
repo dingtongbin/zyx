@@ -270,8 +270,6 @@ func walk(n Node, f func(Node) bool) {
 	case *AggregateEntry:
 		Walk(v.Key, f)
 		Walk(v.Value, f)
-	case *FastExpr:
-		Walk(v.X, f)
 
 	// Type expressions.
 	case *TypeName:

@@ -7,11 +7,36 @@ import (
 	"os"
 	"path/filepath"
 
+	"zyx/internal/cache"
 	"zyx/internal/llvmgen"
 	"zyx/internal/mono"
 	"zyx/internal/toolchain"
 	"zyx/internal/zyxc"
 )
+
+// openCache opens the cache a build reuses artifacts from. An empty
+// directory means the build neither reads nor writes one, and a cache that
+// cannot be opened only costs speed, so the build goes on without it.
+func openCache(root string) *cache.Cache {
+	if root == "" {
+		return nil
+	}
+	c, err := cache.Open(root)
+	if err != nil {
+		return nil
+	}
+	return c
+}
+
+// buildScratch returns the directory the intermediates of one build go in. It
+// lives under the cache when there is one, so a build keeps its files in one
+// place, and the caller removes it when the build is done.
+func buildScratch(c *cache.Cache) (string, error) {
+	if c != nil {
+		return c.Scratch()
+	}
+	return os.MkdirTemp("", "zyx-build-")
+}
 
 // BackendOptions carries the settings of one link.
 type BackendOptions struct {
@@ -45,13 +70,12 @@ func (s *Session) Link(entry string, results []*Result, opts BackendOptions) (st
 	if err != nil {
 		return "", err
 	}
-	dir := opts.CacheDir
-	if dir == "" {
-		dir = filepath.Join(s.Loader.Root, "build", ".cache")
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	c := openCache(opts.CacheDir)
+	dir, err := buildScratch(c)
+	if err != nil {
 		return "", err
 	}
+	defer os.RemoveAll(dir)
 	copts := toolchain.CompileOptions{
 		Target:   s.Loader.Target,
 		Level:    opts.Level,
@@ -84,20 +108,36 @@ func (s *Session) Link(entry string, results []*Result, opts BackendOptions) (st
 		return "", err
 	}
 	objects := []string{object}
-	if !opts.Freestanding {
-		sources := t.Sources(s.Loader.Target)
-		for i, src := range sources {
-			out := filepath.Join(dir, fmt.Sprintf("runtime%d.o", i))
+	// A package's own C sources are translation units of their own: a header
+	// declares what a C file defines, and the two meet at the link.
+	at := 0
+	for _, res := range results {
+		for _, src := range res.Package.CSources {
+			out := filepath.Join(dir, fmt.Sprintf("c%d.o", at))
+			at++
+			copts.Includes = []string{res.Package.Dir}
 			if err := t.CompileC(src, out, copts); err != nil {
 				return "", err
 			}
 			objects = append(objects, out)
 		}
 	}
+	if !opts.Freestanding {
+		// The runtime is one library for every program of a module, so it is
+		// built once and reused rather than recompiled for each program. It
+		// comes last, because a linker searches an archive once, at the
+		// position it holds: a reference from an object after it would find
+		// nothing.
+		lib, err := t.RuntimeLibrary(s.Loader.Target, copts, c, dir)
+		if err != nil {
+			return "", err
+		}
+		objects = append(objects, lib)
+	}
 	if err := os.MkdirAll(filepath.Dir(opts.Output), 0o755); err != nil {
 		return "", err
 	}
-	if err := t.Link(objects, opts.Output, opts.Libs, opts.LibDirs); err != nil {
+	if err := t.Link(s.Loader.Target, objects, opts.Output, opts.Libs, opts.LibDirs); err != nil {
 		return "", err
 	}
 	return opts.Output, nil

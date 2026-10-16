@@ -1,1 +1,258 @@
 package sync
+
+// The sync entry points park the calling coroutine rather than the thread, so
+// they must run on the scheduler's thread: the linkage declares them fast, and
+// a call to one never goes through the blocking pool.
+
+import c "zyxrt.h" {
+    fast zyxrt_wg_new, zyxrt_wg_add, zyxrt_wg_wait
+    fast zyxrt_once_new, zyxrt_once_enter, zyxrt_once_leave
+    fast zyxrt_sem_new, zyxrt_sem_acquire, zyxrt_sem_try_acquire, zyxrt_sem_release
+    fast zyxrt_mutex_new, zyxrt_mutex_lock, zyxrt_mutex_try_lock, zyxrt_mutex_unlock
+    fast zyxrt_mutex_wait, zyxrt_mutex_notify_one, zyxrt_mutex_notify_all
+    fast zyxrt_atomic_new, zyxrt_atomic_load, zyxrt_atomic_store, zyxrt_atomic_add
+    fast zyxrt_atomic_sub, zyxrt_atomic_swap, zyxrt_atomic_cas, zyxrt_atomic_fence
+    fast zyxrt_static_wg, zyxrt_static_once, zyxrt_static_mutex, zyxrt_static_atomic
+}
+
+// The sync primitives the language builds in. Each one is a handle to an
+// object the runtime owns, and each wait parks the calling coroutine rather
+// than occupying a scheduler thread.
+//
+// A handle is a value: copying one names the same object, so the lock
+// discipline is the program's, as the language intends.
+
+// A WaitGroup waits for a set of coroutines to finish.
+extern struct WaitGroup {
+    handle: raw
+
+    // init builds a wait group.
+    func init() -> WaitGroup {
+        return WaitGroup { handle: c.zyxrt_wg_new() }
+    }
+
+    // Add records n coroutines the group waits for. A negative count records
+    // that coroutines have finished.
+    func Add(n: i64) {
+        c.zyxrt_wg_add(self.handle, n)
+    }
+
+    // Done records that one coroutine the group waits for has finished.
+    func Done() {
+        c.zyxrt_wg_add(self.handle, 0 - 1)
+    }
+
+    // Wait parks the calling coroutine until the group's count reaches zero.
+    func Wait() {
+        c.zyxrt_wg_wait(self.handle)
+    }
+}
+
+// Once runs one function exactly once. The callers that do not run it wait
+// for it to finish, so what the function builds is visible to all of them.
+extern struct Once {
+    handle: raw
+
+    // init builds a once.
+    func init() -> Once {
+        return Once { handle: c.zyxrt_once_new() }
+    }
+
+    // Do runs f if no caller has run it, and otherwise waits for the caller
+    // that did to finish.
+    func Do(f: func()) {
+        if c.zyxrt_once_enter(self.handle) != 0 {
+            f()
+            c.zyxrt_once_leave(self.handle)
+        }
+    }
+}
+
+// A Semaphore holds a count of permits.
+extern struct Semaphore {    handle: raw
+
+    // init builds a semaphore that holds n permits.
+    func init(n: i64) -> Semaphore {
+        return Semaphore { handle: c.zyxrt_sem_new(n) }
+    }
+
+    // Acquire takes one permit, parking the calling coroutine until one is
+    // free.
+    func Acquire() {
+        c.zyxrt_sem_acquire(self.handle)
+    }
+
+    // TryAcquire takes one permit if one is free, and answers whether it did.
+    func TryAcquire() -> bool {
+        return c.zyxrt_sem_try_acquire(self.handle) != 0
+    }
+
+    // Release returns one permit.
+    func Release() {
+        c.zyxrt_sem_release(self.handle)
+    }
+}
+
+// Order is the memory order an atomic operation uses. The numbers the runtime
+// sees are the order of these variants.
+
+enum Order {
+    SeqCst
+    Relaxed
+    Acquire
+    Release
+    AcqRel
+}
+
+// Fence is a standalone memory barrier, for lock-free structures and for
+// ordering that no single operation carries.
+
+func Fence(order: Order) {
+    c.zyxrt_atomic_fence(i64(order))
+}
+
+// An Atomic is a value one coroutine at a time reads and writes, with the
+// operation itself atomic rather than locked: the runtime keeps the cell as
+// the target's atomic type, so every access is a target atomic instruction.
+//
+// The type argument must be a width the target has atomics for: an integer or
+// an address.
+
+struct Atomic<T> {
+    handle: raw
+
+    // init builds an atomic holding v.
+    func init(v: T) -> Self {
+        return Atomic<T> { handle: c.zyxrt_atomic_new(meta.size_of(T), u64(v)) }
+    }
+
+    // Load answers the value.
+    func Load(order: Order = Order.SeqCst) -> T {
+        return T(c.zyxrt_atomic_load(self.handle, i64(order)))
+    }
+
+    // Store replaces the value.
+    func Store(v: T, order: Order = Order.SeqCst) {
+        c.zyxrt_atomic_store(self.handle, u64(v), i64(order))
+    }
+
+    // Add adds v and answers the value before the addition.
+    func Add(v: T, order: Order = Order.SeqCst) -> T {
+        return T(c.zyxrt_atomic_add(self.handle, u64(v), i64(order)))
+    }
+
+    // Sub subtracts v and answers the value before the subtraction.
+    func Sub(v: T, order: Order = Order.SeqCst) -> T {
+        return T(c.zyxrt_atomic_sub(self.handle, u64(v), i64(order)))
+    }
+
+    // Swap replaces the value and answers the value before it.
+    func Swap(v: T, order: Order = Order.SeqCst) -> T {
+        return T(c.zyxrt_atomic_swap(self.handle, u64(v), i64(order)))
+    }
+
+    // Cas replaces the value if it is expect, and answers whether it did.
+    func Cas(expect: T, v: T, order: Order = Order.SeqCst) -> bool {
+        return c.zyxrt_atomic_cas(self.handle, u64(expect), u64(v), i64(order)) != 0
+    }
+}
+
+// StaticWaitGroup builds a wait group in static storage, for a top-level
+// binding. It lives as long as the program does rather than in a region.
+
+func StaticWaitGroup() -> WaitGroup {
+    return WaitGroup { handle: c.zyxrt_static_wg() }
+}
+
+// StaticOnce builds a once in static storage, for a top-level binding.
+
+func StaticOnce() -> Once {
+    return Once { handle: c.zyxrt_static_once() }
+}
+
+// StaticMutex builds a mutex in static storage, for a top-level binding.
+
+func StaticMutex<T>(v: T) -> Mutex<T> {
+    return Mutex<T> { handle: c.zyxrt_static_mutex(), Data: v }
+}
+
+// StaticAtomic builds an atomic in static storage, for a top-level binding.
+
+func StaticAtomic<T>(v: T) -> Atomic<T> {
+    return Atomic<T> { handle: c.zyxrt_static_atomic(meta.size_of(T), u64(v)) }
+}
+
+// A Mutex is held by one coroutine at a time. The data it guards is the Data
+// field, which the holder reads and writes directly: the language provides no
+// implicit locking, so the discipline is the program's.
+struct Mutex<T> {
+    handle: raw
+    Data: T
+
+    // init builds a mutex that guards v.
+    func init(v: T) -> Self {
+        return Mutex { handle: c.zyxrt_mutex_new(), Data: v }
+    }
+
+    // Lock takes the mutex, parking the calling coroutine while another holds
+    // it.
+    func Lock() {
+        c.zyxrt_mutex_lock(self.handle)
+    }
+
+    // TryLock takes the mutex if it is free, and answers whether it did.
+    func TryLock() -> bool {
+        return c.zyxrt_mutex_try_lock(self.handle) != 0
+    }
+
+    // Unlock releases the mutex.
+    func Unlock() {
+        c.zyxrt_mutex_unlock(self.handle)
+    }
+
+    // Wait releases the mutex and parks the calling coroutine until a
+    // notification arrives, then takes the mutex again. The caller must hold
+    // the mutex.
+    func Wait() {
+        c.zyxrt_mutex_wait(self.handle)
+    }
+
+    // NotifyOne wakes one coroutine waiting on the mutex. The caller must
+    // hold the mutex.
+    func NotifyOne() {
+        c.zyxrt_mutex_notify_one(self.handle)
+    }
+
+    // NotifyAll wakes every coroutine waiting on the mutex. The caller must
+    // hold the mutex.
+    func NotifyAll() {
+        c.zyxrt_mutex_notify_all(self.handle)
+    }
+}
+
+// A Shared is a value one coroutine at a time reads and writes, with the lock
+// inside: Get and Set take it themselves.
+struct Shared<T> {
+    handle: raw
+    Data: T
+
+    // init builds a shared value holding v.
+    func init(v: T) -> Self {
+        return Shared { handle: c.zyxrt_mutex_new(), Data: v }
+    }
+
+    // Get answers the value.
+    func Get() -> T {
+        c.zyxrt_mutex_lock(self.handle)
+        var out = self.Data
+        c.zyxrt_mutex_unlock(self.handle)
+        return out
+    }
+
+    // Set replaces the value.
+    func Set(v: T) {
+        c.zyxrt_mutex_lock(self.handle)
+        self.Data = v
+        c.zyxrt_mutex_unlock(self.handle)
+    }
+}

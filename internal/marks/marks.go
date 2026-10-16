@@ -126,9 +126,6 @@ type builder struct {
 	lastUse map[*allocation]ast.Node
 	// escapes records how each allocation leaves the function.
 	escapes map[*allocation]escapeKind
-	// fast marks the operand of a `fast` C call, which runs on the current
-	// coroutine rather than through the blocking pool.
-	fast bool
 }
 
 // run walks every declaration of the package.
@@ -349,8 +346,11 @@ func (b *builder) expr(e ast.Expr) {
 		b.call(v)
 	case *ast.SelectorExpr:
 		b.expr(v.X)
-		if b.isChannelCall(v) {
-			b.info.Add(v, "chan:"+channelVerb(v.Name.Name), "")
+		// A method taken as a value carries its receiver, so the receiver is
+		// shared with the value rather than released at its last use. A
+		// field read takes nothing, so it leaves the object alone.
+		if b.cpkg.MethodValues[v] {
+			b.escapesTo(v.X, escapeStore)
 		}
 	case *ast.TupleIndexExpr:
 		b.expr(v.X)
@@ -367,15 +367,6 @@ func (b *builder) expr(e ast.Expr) {
 		b.expr(v.X)
 	case *ast.SpawnExpr:
 		b.spawn(v)
-	// A C call reached through `fast` runs on the current coroutine, so it
-	// takes the fast mark instead of the blocking one.
-	case *ast.FastExpr:
-		prev := b.fast
-		b.fast = true
-		b.expr(v.X)
-		b.fast = prev
-		b.info.Add(v.X, "c-fast", "")
-		return
 	case *ast.LambdaExpr:
 		b.stmt(v.Body)
 		b.expr(v.BodyExpr)
@@ -388,24 +379,65 @@ func (b *builder) expr(e ast.Expr) {
 
 // call walks a call and marks a C call with its blocking classification.
 func (b *builder) call(v *ast.CallExpr) {
-	if b.isCCall(v) && !b.fast {
-		b.info.Add(v, "c-blocking", "")
+	if b.isCCall(v) {
+		if b.cFast(v) {
+			b.info.Add(v, "c-fast", "")
+		} else {
+			b.info.Add(v, "c-blocking", "")
+		}
 	}
-	for _, a := range v.Args {
+	// A default the call leaves out is evaluated here, so it is walked here.
+	for _, a := range ast.WithDefaults(v.Args, b.calleeParams(v)) {
 		b.expr(a)
+	}
+	if sel, ok := v.Fn.(*ast.SelectorExpr); ok {
+		// A called selector reaches a method, so the receiver is walked and
+		// the method is not taken as a value. A channel operation is the call
+		// the program writes, so the mark names that call.
+		b.expr(sel.X)
+		if b.isChannelCall(sel) {
+			b.info.Add(v, "chan:"+channelVerb(sel.Name.Name), "")
+		}
+		return
 	}
 	b.expr(v.Fn)
 }
 
-// isCCall reports whether a call reaches the C namespace, which decides
-// whether it runs on the current coroutine or through the blocking pool.
+// isCCall reports whether a call crosses to C, which decides whether it runs
+// on the current coroutine or through the blocking pool. A call reaches C
+// either through the c namespace or by naming an extern function, whose
+// symbol is the C function itself.
 func (b *builder) isCCall(v *ast.CallExpr) bool {
-	sel, ok := v.Fn.(*ast.SelectorExpr)
-	if !ok {
+	switch fn := v.Fn.(type) {
+	case *ast.SelectorExpr:
+		id, ok := fn.X.(*ast.Ident)
+		return ok && b.cNamespace(id)
+	case *ast.Ident:
+		sym := b.rinfo.Defs[fn]
+		if sym == nil {
+			return false
+		}
+		decl, ok := sym.Decl.(*ast.FuncDecl)
+		return ok && decl.Quals.Extern
+	}
+	return false
+}
+
+// cFast reports whether a call runs on the calling coroutine rather than
+// through the blocking pool. The declaration that links the C function
+// settles it, so the answer comes from the package's own linkage
+// declarations rather than from the call site.
+func (b *builder) cFast(v *ast.CallExpr) bool {
+	if b.cpkg == nil {
 		return false
 	}
-	id, ok := sel.X.(*ast.Ident)
-	return ok && b.cNamespace(id)
+	switch fn := v.Fn.(type) {
+	case *ast.SelectorExpr:
+		return b.cpkg.FastC[fn.Name.Name]
+	case *ast.Ident:
+		return b.cpkg.FastC[fn.Name]
+	}
+	return false
 }
 
 // spawn walks a coroutine start: it opens the coroutine's private region
@@ -546,6 +578,36 @@ func (b *builder) escapesTo(value ast.Expr, kind escapeKind) {
 		return
 	}
 	b.escapes[a] = kind
+}
+
+// calleeParams returns the parameters of the declaration a call names, or nil
+// when the callee is a value rather than a function or a method.
+func (b *builder) calleeParams(v *ast.CallExpr) []*ast.Param {
+	switch fn := v.Fn.(type) {
+	case *ast.Ident:
+		if sym := b.rinfo.Defs[fn]; sym != nil {
+			if decl, ok := sym.Decl.(*ast.FuncDecl); ok {
+				return decl.Params
+			}
+		}
+	case *ast.SelectorExpr:
+		recv := b.cpkg.Nodes[fn.X]
+		if recv == nil {
+			return nil
+		}
+		d := b.cpkg.Decl(recv)
+		if d == nil {
+			return nil
+		}
+		sym := d.MethodSyms[fn.Name.Name]
+		if sym == nil {
+			return nil
+		}
+		if decl, ok := sym.Decl.(*ast.FuncDecl); ok {
+			return decl.Params
+		}
+	}
+	return nil
 }
 
 // isChannelCall reports whether a selector names a channel operation.

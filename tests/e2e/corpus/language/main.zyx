@@ -46,10 +46,10 @@ func main() {
     var s = Shape.Circle(2.0)
     fmt.PrintF64(s.Area())
     fmt.PrintNl()
-    var p: Pair<i64> = Pair { first: 1, second: 2}
+    var p: Pair<i64> = Pair { first: 1, second: 2 }
     fmt.PrintI64(p.first + p.second)
     fmt.PrintNl()
-    var d = Dog { name: "rex"}
+    var d = Dog { name: "rex" }
     fmt.Println(d.Speak())
     var q = divide(10, 2)
     match q {

@@ -1,0 +1,31 @@
+package main
+
+import "std/fmt"
+
+func main() {
+    var r = new Ring<i64>(3)
+    r.Push(1)
+    r.Push(2)
+    r.Push(3)
+    fmt.PrintI64(i64(r.Len()))
+    fmt.PrintI64(i64(r.Cap()))
+    fmt.PrintNl()
+    // The ring is full, so this drops the oldest element.
+    r.Push(4)
+    fmt.PrintI64(i64(r.Len()))
+    fmt.PrintNl()
+    var i = 0
+    for i < 3 {
+        match r.Pop() {
+            Some(v) => fmt.PrintI64(v)
+            None => fmt.PrintI64(- 1)
+        }
+        i += 1
+    }
+    fmt.PrintNl()
+    match r.Pop() {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.PrintI64(- 1)
+    }
+    fmt.PrintNl()
+}

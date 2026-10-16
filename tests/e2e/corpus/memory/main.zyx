@@ -1,0 +1,72 @@
+package main
+
+import c "stdio.h" {
+    fast printf
+}
+
+struct Holder {
+    slot: str
+}
+
+struct Shelf {
+    items: Array<i64>}
+
+func shelved() -> i64 {
+    var shelf = Shelf { items: new Array<i64>(2) }
+    var spare = new Array<i64>(4)
+    shelf.items = spare
+    return 1
+}
+
+struct Bag {
+    total: i64
+}
+
+func local() -> usize {
+    var xs = new Array<i64>(4)
+    xs.Push(1)
+    return xs.Len()
+}
+
+func stored() -> i64 {
+    var h = Holder { slot: "a" }
+    var s = "b"
+    h.slot = s
+    return 1
+}
+
+func fastCall() {
+    c.printf("fast\n")
+}
+
+func use(bag: Bag) {
+    bag.total += 1
+}
+
+func moved() -> i64 {
+    region {
+        var bag = Bag { total: 1 }
+        spawn use(bag)
+    }
+    return 0
+}
+
+func blocked(ch: chan<i64>) -> i64 {
+    select {
+        recv (ch) -> v, ok {
+            if ok {
+                return v
+            }
+            return 0
+        }
+        send (ch, 1) {
+            return 1
+        }
+    }
+}
+
+func main() {
+    var ch = new chan<i64>(1)
+    var total = i64(local()) + stored() + moved() + blocked(ch) + shelved()
+    fastCall()
+}

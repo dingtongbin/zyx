@@ -44,6 +44,12 @@ type generator struct {
 	thunks int
 }
 
+// A pendingRelease is one object the analysis marked as no longer used.
+type pendingRelease struct {
+	typ  *types.Type
+	slot string
+}
+
 // A funcState carries the state of one function's emission.
 type funcState struct {
 	symbol  string
@@ -59,6 +65,15 @@ type funcState struct {
 	resultSlot string
 	// terminated marks a block that already ends in a terminator.
 	terminated bool
+	// regions maps the name a region carries, such as r0 or r1, onto the
+	// local that holds its handle. An object is created in the region the
+	// analysis settled as its home.
+	regions map[string]string
+	// pending holds the objects the current statement has finished with,
+	// which are released when the statement ends. It belongs to the
+	// function, because a release must land in the function that made the
+	// object.
+	pending []pendingRelease
 }
 
 // A varSlot is one local variable.
@@ -86,8 +101,11 @@ func (g *generator) emit(format string, args ...any) {
 	fmt.Fprintf(&g.fn.body, format+"\n", args...)
 }
 
-// terminator writes a line that ends a basic block.
+// terminator writes a line that ends a basic block. The objects the block
+// finished with are released first, so no release lands after a terminator,
+// where it could never run.
 func (g *generator) terminator(format string, args ...any) {
+	g.flushReleases(0)
 	g.emit(format, args...)
 	g.fn.terminated = true
 }
@@ -104,6 +122,14 @@ func (g *generator) newLabel(prefix string) string {
 	return fmt.Sprintf("%s%d", prefix, g.labels)
 }
 
+// branch writes a line that ends a basic block inside an expression. A
+// release the statement is still holding belongs to the statement, so it is
+// not flushed here the way a statement-level terminator flushes it.
+func (g *generator) branch(format string, args ...any) {
+	g.emit(format, args...)
+	g.fn.terminated = true
+}
+
 // label starts a basic block.
 func (g *generator) label(name string) {
 	g.emit("%s:", name)
@@ -114,6 +140,16 @@ func (g *generator) label(name string) {
 func (g *generator) alloca(t *types.Type) string {
 	reg := g.newReg()
 	fmt.Fprintf(&g.fn.allocas, "  %s = alloca %s\n", reg, g.llPass(t))
+	return reg
+}
+
+// allocaSlots reserves an array of n slots of an LLVM type, in the entry
+// block. A select builds the handles and directions it watches this way: an
+// allocation inside a loop would be a dynamic one, which costs a stack probe
+// on some targets and is not what a fixed count of arms needs.
+func (g *generator) allocaSlots(ll string, n int) string {
+	reg := g.newReg()
+	fmt.Fprintf(&g.fn.allocas, "  %s = alloca [%d x %s]\n", reg, n, ll)
 	return reg
 }
 
@@ -138,7 +174,7 @@ func (g *generator) declaration(module string, n *zyxc.Node) {
 		g.function(module, n)
 	case "const", "var":
 		g.global(module, n)
-	case "struct", "enum":
+	case "struct", "enum", "extern-struct", "extern-union":
 		// The type is emitted on first use; the members may hold methods.
 		for _, child := range n.Children {
 			switch child.Kind {

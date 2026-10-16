@@ -1,0 +1,57 @@
+package main
+
+import "std/fmt"
+
+func main() {
+    // A literal may name the smallest value of a signed type as well as the
+    // largest, so both ends of every width are writable.
+    var low8: i8 =- 128
+    fmt.PrintI64(i64(low8))
+    fmt.PrintNl()
+    var high8: i8 = 127
+    fmt.PrintI64(i64(high8))
+    fmt.PrintNl()
+    var highU8: u8 = 255
+    fmt.PrintU64(u64(highU8))
+    fmt.PrintNl()
+    var low32: i32 =- 2147483648
+    fmt.PrintI64(i64(low32))
+    fmt.PrintNl()
+    var low64: i64 =- 9223372036854775808
+    fmt.PrintI64(low64)
+    fmt.PrintNl()
+    var highU64: u64 = 18446744073709551615
+    fmt.PrintU64(highU64)
+    fmt.PrintNl()
+    var low128: i128 =- 170141183460469231731687303715884105728
+    fmt.PrintI64(i64(low128))
+    fmt.PrintNl()
+    var highU128: u128 = 340282366920938463463374607431768211455
+    fmt.PrintU64(u64(highU128))
+    fmt.PrintNl()
+    // A literal written in another base, with digit separators, or with a
+    // suffix names the same value.
+    var hex: u8 = 0xFF
+    fmt.PrintU64(u64(hex))
+    fmt.PrintNl()
+    var binary: u8 = 0b1010
+    fmt.PrintU64(u64(binary))
+    fmt.PrintNl()
+    var octal: u8 = 0o17
+    fmt.PrintU64(u64(octal))
+    fmt.PrintNl()
+    var grouped: i64 = 1_000_000
+    fmt.PrintI64(grouped)
+    fmt.PrintNl()
+    var suffixed: u64 = 42u64
+    fmt.PrintU64(suffixed)
+    fmt.PrintNl()
+    var floaty: f64 = 2.5f64
+    fmt.PrintF64(floaty)
+    fmt.PrintNl()
+    // A literal written inside a conversion takes the type the conversion
+    // names.
+    var converted: u64 = u64(18446744073709551615)
+    fmt.PrintU64(converted)
+    fmt.PrintNl()
+}

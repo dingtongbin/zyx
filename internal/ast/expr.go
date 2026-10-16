@@ -310,16 +310,3 @@ type AggregateEntry struct {
 
 // Span returns the entry source range.
 func (n *AggregateEntry) Span() source.Span { return n.Sp }
-
-// FastExpr marks a C call that runs directly on the current coroutine:
-// `fast c.f(...)`.
-type FastExpr struct {
-	Sp source.Span
-	// X is the marked call.
-	X Expr
-}
-
-// Span returns the expression source range.
-func (n *FastExpr) Span() source.Span { return n.Sp }
-
-func (n *FastExpr) exprNode() {}

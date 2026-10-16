@@ -329,3 +329,37 @@ func TestCKeywordOutsideBlocks(t *testing.T) {
 		})
 	}
 }
+
+// TestBlockComment checks that a block comment is one token, that it may span
+// lines, and that it nests: a comment that holds another ends where the outer
+// one closes, which is what makes a block of code commentable.
+func TestBlockComment(t *testing.T) {
+	toks, diags := lexSrc(t, "package main\n/* one */\n/* two\n   /* three */\n   four */\n")
+	if len(diags) != 0 {
+		t.Fatalf("a block comment was reported: %v", diags)
+	}
+	comments := 0
+	for _, tok := range toks {
+		if tok.Kind == token.Comment {
+			comments++
+			if !tok.Block {
+				t.Error("a block comment is not marked as one")
+			}
+		}
+	}
+	if comments != 2 {
+		t.Errorf("the stream holds %d comments, want 2", comments)
+	}
+}
+
+// TestUnclosedBlockCommentIsReported checks that a block comment with no
+// closing marker is reported rather than swallowing the rest of the file.
+func TestUnclosedBlockCommentIsReported(t *testing.T) {
+	_, diags := lexSrc(t, "package main\n/* open\n")
+	if len(diags) == 0 {
+		t.Fatal("an unclosed block comment was accepted")
+	}
+	if !strings.Contains(diags[0].Message, "block comment") {
+		t.Errorf("the diagnostic does not name the mistake: %s", diags[0].Message)
+	}
+}

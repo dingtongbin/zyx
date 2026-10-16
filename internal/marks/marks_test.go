@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"zyx/internal/ast"
+	"zyx/internal/cheader"
 	"zyx/internal/check"
 	"zyx/internal/coro"
 	"zyx/internal/diag"
@@ -27,7 +28,9 @@ func marksOf(t *testing.T, src string) (*Info, []diag.Diagnostic) {
 	if len(rdiags) != 0 {
 		t.Fatalf("resolve: %v", rdiags)
 	}
-	cpkg, cdiags := check.Check(pkg, rinfo, nil, toolchain.HostTarget())
+	cpkg, cdiags := check.Check(pkg, rinfo, nil, toolchain.HostTarget(), map[string]*cheader.Table{"test.h": {Functions: map[string]*cheader.Func{
+		"printf": {Name: "printf", Variadic: true},
+	}}})
 	if len(cdiags) != 0 {
 		t.Fatalf("check: %v", cdiags)
 	}
@@ -174,11 +177,16 @@ func Work(ch: chan<i32>) -> i32 {
 func TestCMarks(t *testing.T) {
 	src := `package server
 
-import c "stdio.h"
+import c "test.h" {
+	fast printf
+}
+extern func strlen(s: str) -> usize
+fast extern func puts(s: str) -> i32
 
 func Work() {
 	c.printf(0)
-	fast c.printf(0)
+	puts("")
+	strlen("")
 }
 `
 	info, diags := marksOf(t, src)
@@ -248,8 +256,9 @@ func Work(h: Holder) {
 	info, diags := marksOf(t, src)
 	wantClean(t, diags)
 	wantMark(t, info, "shared-ref")
-	// The region that dominates every use needs the whole program.
-	wantMark(t, info, "mono-rule:home server.Work#2")
+	// An object stored where it outlives its binding binds to the region
+	// that contains every use, which here is the function body.
+	wantMark(t, info, "shared-bind:r0")
 }
 
 func TestViewStoredIsRejected(t *testing.T) {

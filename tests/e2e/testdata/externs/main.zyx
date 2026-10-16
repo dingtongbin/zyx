@@ -1,0 +1,57 @@
+package main
+
+import "std/fmt"
+import c "zyxrt.h"
+// A C layout: the fields keep the order and the alignment C gives them, and
+// no field is rearranged.
+
+extern struct Pair {
+    left: i32
+    right: i32
+}
+
+extern union Bits {
+    whole: u64
+    half: u32
+}
+// A C symbol can also be linked by a declaration of its own, which names the
+// symbol the C side defines rather than a name the compiler builds. The fast
+// qualifier states that calls to it run on the calling coroutine.
+
+fast extern func zyxrt_hash_bytes(p: raw, n: usize) -> u64
+
+extern func abs(x: i32) -> i32
+
+extern func zyxrt_str_eq(a: str, b: str) -> i32
+
+func main() {
+    var pair = Pair { left: 3, right: 4 }
+    fmt.PrintI64(i64(pair.left) + i64(pair.right))
+    fmt.PrintNl()
+    pair.right = 9
+    fmt.PrintI64(i64(pair.right))
+    fmt.PrintNl()
+    // Every member of a union starts at the same offset, so the narrow one
+    // reads the low bytes of the wide one.
+    var bits = Bits { whole: 4294967301 }
+    fmt.PrintU64(u64(bits.half))
+    fmt.PrintNl()
+    // The address of a value is an argument of a C call, and the same value
+    // hashes the same way twice.
+    var one: u8 = 7
+    var two: u8 = 7
+    fmt.PrintBool(c.zyxrt_hash_bytes(& one, 1) == c.zyxrt_hash_bytes(& two, 1))
+    fmt.PrintNl()
+    // The same symbol reached by its own declaration is the same function.
+    fmt.PrintBool(zyxrt_hash_bytes(& one, 1) == c.zyxrt_hash_bytes(& two, 1))
+    fmt.PrintNl()
+    // A C symbol declared by its own linkage can be taken as a value, which is
+    // a C function pointer: the value carries a thunk that calls the symbol
+    // the way C calls it.
+    var magnitude = func abs
+    fmt.PrintI64(i64(magnitude(- 9)))
+    fmt.PrintNl()
+    var length = func zyxrt_str_eq
+    fmt.PrintBool(length("abcd", "abcd") != 0)
+    fmt.PrintNl()
+}

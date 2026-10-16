@@ -1,0 +1,72 @@
+package main
+
+import "std/fmt"
+
+import c "mine.h" {
+    fast add
+}
+import c "zyxrt.h"
+
+func main() {
+    var a = "abc"
+    var b = "abc"
+    var other = "abd"
+    // A str crosses as the pointer and the length it is, so it fills the two
+    // C parameters of one text, and the result is the one the header
+    // declares.
+    fmt.PrintBool(c.zyxrt_str_eq(a, b) != 0)
+    fmt.PrintNl()
+    fmt.PrintBool(c.zyxrt_str_eq(a, other) != 0)
+    fmt.PrintNl()
+    // A C function with no result is a statement.
+    c.zyxrt_print_str(a)
+    c.zyxrt_print_nl()
+    // A function the package's own C file defines is reached the same way:
+    // the header declares it, and the two meet at the link.
+    fmt.PrintI64(i64(c.add(2, 3)))
+    fmt.PrintNl()
+    // An enumerator is an integer constant, folded where it is written.
+    fmt.PrintI64(i64(c.High))
+    fmt.PrintNl()
+    // A global object is read where the C side keeps it.
+    fmt.PrintI64(i64(c.counter))
+    fmt.PrintNl()
+    // A record crosses by value, placed the way the target places one.
+    var point = Point { x: 3, y: 4 }
+    fmt.PrintI64(i64(c.sum(point)))
+    fmt.PrintNl()
+    // The linkage declaration lists add as fast, so its calls run on the
+    // calling coroutine rather than through the blocking pool.
+    fmt.PrintI64(i64(c.add(4, 5)))
+    fmt.PrintNl()
+    // A call that is not declared fast runs on a pool thread, so two
+    // coroutines can be inside one at the same time. The sum is the same
+    // whichever order they finish in.
+    var results = new chan<i64>(2)
+    region {
+        var a = spawn addInto(1, results)
+        var b = spawn addInto(2, results)
+        a.Join()
+        b.Join()
+    }
+    var total = 0
+    for i in 0 .. 2 {
+        var v, ok = results.Recv()
+        total += v
+    }
+    fmt.PrintI64(total)
+    fmt.PrintNl()
+}
+
+// addInto adds one through the C side and hands the result over.
+
+func addInto(n: i64, out: chan<i64>) {
+    out.Send(i64(c.add(i32(n), 1)))
+}
+
+// The header's own tag and a declaration of the same name are one type.
+
+extern struct Point {
+    x: i32
+    y: i32
+}

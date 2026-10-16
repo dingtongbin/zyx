@@ -112,6 +112,9 @@ const (
 	// CodeCNamespace reports use of the `c` namespace in a file that does
 	// not import a C header.
 	CodeCNamespace Code = "E3015"
+	// CodeCHeader reports a C header that clang does not accept, so the
+	// declarations it would expose cannot be read.
+	CodeCHeader Code = "E3016"
 	// CodeUppercaseLocal reports a local binding or parameter whose name
 	// starts with an uppercase letter. Only package-level names may be
 	// exported.
@@ -224,6 +227,12 @@ const (
 	// CodeEmptyCLayout reports a C value type with no members, which has no
 	// C layout to match.
 	CodeEmptyCLayout Code = "E4038"
+	// CodeKeyType reports a map or set key type that implements no equality
+	// and hash, which the container reaches through.
+	CodeKeyType Code = "E4039"
+	// CodeLiteralRange reports an integer literal whose value does not fit
+	// the type it is written with.
+	CodeLiteralRange Code = "E4040"
 )
 
 // Memory and region diagnostics occupy the E5001-E5099 range.

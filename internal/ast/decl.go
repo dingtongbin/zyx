@@ -31,6 +31,30 @@ type ImportDecl struct {
 	Path string
 	// PathSp covers the string literal.
 	PathSp source.Span
+	// Fast names the C functions of the header whose calls run on the
+	// calling coroutine. The list is the import's own linkage declaration,
+	// so a package states the blocking behavior of the functions it links.
+	Fast []*Ident
+}
+
+// WithDefaults returns a call's arguments with the default expressions of the
+// parameters it leaves out appended, in order. The language fills a default
+// at the call site, so every pass that walks a call sees one argument list. A
+// call that leaves out a parameter with no default is left as it is, because
+// the check reports that.
+func WithDefaults(args []Expr, params []*Param) []Expr {
+	if len(params) <= len(args) {
+		return args
+	}
+	out := make([]Expr, len(params))
+	copy(out, args)
+	for i := len(args); i < len(params); i++ {
+		if params[i].Default == nil {
+			return args
+		}
+		out[i] = params[i].Default
+	}
+	return out
 }
 
 // Span returns the declaration source range.
@@ -100,6 +124,11 @@ type FuncQualifiers struct {
 	Extern bool
 	// CAbi marks `c func`, a C ABI definition.
 	CAbi bool
+	// Fast marks `fast extern func`, a C symbol whose calls run on the
+	// calling coroutine instead of through the blocking pool. Whether a C
+	// function blocks is a property of the function, so it is declared with
+	// the linkage rather than written at each call.
+	Fast bool
 }
 
 // Param is one function parameter.

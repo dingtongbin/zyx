@@ -2,17 +2,27 @@ package main
 
 import "std/fmt"
 
-func report(job: i64, label: str) {
-    fmt.PrintI64(job)
-    fmt.Print(label)
-    fmt.PrintNl()
+// Each worker reports its job through a channel, so what the program prints
+// does not depend on how the coroutines interleave: a C call parks the
+// coroutine that made it, which is what the language does for output.
+
+func report(job: i64, out: chan<i64>) {
+    out.Send(job)
 }
 
 func main() {
     fmt.Println("start")
+    var out = new chan<i64>(2)
     region {
-        spawn report(1, " one")
-        spawn report(2, " two")
+        spawn report(1, out)
+        spawn report(2, out)
     }
+    var total = 0
+    for i in 0 .. 2 {
+        var v, ok = out.Recv()
+        total += v
+    }
+    fmt.PrintI64(total)
+    fmt.PrintNl()
     fmt.Println("end")
 }

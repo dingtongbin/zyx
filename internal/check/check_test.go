@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"zyx/internal/ast"
+	"zyx/internal/cheader"
 	"zyx/internal/diag"
 	"zyx/internal/parser"
 	"zyx/internal/resolve"
@@ -48,7 +49,18 @@ func checkSource(t *testing.T, path string, rimports resolve.Imports, cimports I
 	if len(rdiags) != 0 {
 		t.Fatalf("resolve diagnostics: %v", rdiags)
 	}
-	return Check(pkg, info, cimports, toolchain.HostTarget())
+	return Check(pkg, info, cimports, toolchain.HostTarget(), cTestTable())
+}
+
+// cTestTable is the C surface the checker tests call through. It declares the
+// functions they name as variadic, so any argument fits: the tests walk a C
+// call, and a header's own signatures are checked by their own test.
+func cTestTable() map[string]*cheader.Table {
+	return map[string]*cheader.Table{"test.h": {Functions: map[string]*cheader.Func{
+		"printf": {Name: "printf", Variadic: true},
+		"scanf":  {Name: "scanf", Variadic: true},
+		"fwrite": {Name: "fwrite", Variadic: true},
+	}}}
 }
 
 // checkedDep resolves and checks a dependency package.
@@ -59,7 +71,7 @@ func checkedDep(t *testing.T, path, src string) (*resolve.Interface, *Interface)
 	if len(rdiags) != 0 {
 		t.Fatalf("resolve %s: %v", path, rdiags)
 	}
-	out, cdiags := Check(pkg, info, nil, toolchain.HostTarget())
+	out, cdiags := Check(pkg, info, nil, toolchain.HostTarget(), nil)
 	if len(cdiags) != 0 {
 		t.Fatalf("check %s: %v", path, cdiags)
 	}
@@ -586,12 +598,62 @@ func TestShowImpl(t *testing.T) {
 struct Server {
 	host: str
 	impl Show {
-		func Show() -> str => "server"
+		func Show(w: Buf) {
+			w.WriteStr("server")
+		}
 	}
 }
 `
 	_, diags := checkSource(t, "server", nil, nil, src)
 	wantClean(t, diags)
+}
+
+// TestIntegerLiteralRange checks that an integer literal must fit the type it
+// is written with, and that a negated literal may reach the magnitude of the
+// smallest negative value, which is the one value a signed type holds that has
+// no positive counterpart.
+func TestIntegerLiteralRange(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		code diag.Code
+	}{
+		{"i8 maximum", "func f() -> i8 => 127", ""},
+		{"i8 minimum", "func f() -> i8 => -128", ""},
+		{"i8 overflows", "func f() -> i8 => 128", diag.CodeLiteralRange},
+		{"i8 underflows", "func f() -> i8 => -129", diag.CodeLiteralRange},
+		{"u8 maximum", "func f() -> u8 => 255", ""},
+		{"u8 overflows", "func f() -> u8 => 256", diag.CodeLiteralRange},
+		{"i32 minimum", "func f() -> i32 => -2147483648", ""},
+		{"i64 minimum", "func f() -> i64 => -9223372036854775808", ""},
+		{"i64 overflows", "func f() -> i64 => 9223372036854775808", diag.CodeLiteralRange},
+		{"u64 maximum", "func f() -> u64 => 18446744073709551615", ""},
+		{"u64 overflows", "func f() -> u64 => 18446744073709551616", diag.CodeLiteralRange},
+		{"i128 minimum", "func f() -> i128 => -170141183460469231731687303715884105728", ""},
+		{"i128 overflows", "func f() -> i128 => 170141183460469231731687303715884105728", diag.CodeLiteralRange},
+		{"u128 maximum", "func f() -> u128 => 340282366920938463463374607431768211455", ""},
+		{"u128 overflows", "func f() -> u128 => 340282366920938463463374607431768211456", diag.CodeLiteralRange},
+		{"a suffix names the type", "func f() -> i8 => 127i8", ""},
+		{"a suffixed literal overflows", "func f() -> i8 => 300i8", diag.CodeLiteralRange},
+		{"digit separators fit", "func f() -> i32 => 1_000_000", ""},
+		{"hexadecimal fits", "func f() -> u8 => 0xFF", ""},
+		{"hexadecimal overflows", "func f() -> u8 => 0x100", diag.CodeLiteralRange},
+		{"binary fits", "func f() -> u8 => 0b1111_1111", ""},
+		{"octal fits", "func f() -> u8 => 0o377", ""},
+		{"a conversion names the type", "func f() -> u64 => u64(18446744073709551615)", ""},
+		{"a conversion holds its literal to the type", "func f() -> i8 => i8(300)", diag.CodeLiteralRange},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			src := "package server\n\n" + c.body + "\n"
+			_, diags := checkSource(t, "server", nil, nil, src)
+			if c.code == "" {
+				wantClean(t, diags)
+				return
+			}
+			wantCode(t, diags, c.code)
+		})
+	}
 }
 
 func TestExternFuncBody(t *testing.T) {
@@ -1257,6 +1319,33 @@ func Work(s: str) -> Result<i32, PanicError> {
 	wantCode(t, diags, diag.CodeTryResult)
 }
 
+func TestUnitPayloadResult(t *testing.T) {
+	// A Result whose success carries nothing is written with the unit type and
+	// built without an argument.
+	src := `package server
+
+func Wait(fd: i32) -> Result<(), str> {
+	if fd < 0 {
+		return Result.Err("bad")
+	}
+	return Result.Ok()
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+func TestUnitPayloadIsTheOnlyOneWithoutAnArgument(t *testing.T) {
+	src := `package server
+
+func Bad() -> Result<i32, str> {
+	return Result.Ok()
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeArgCount)
+}
+
 func TestSpawnNeedsRegion(t *testing.T) {
 	src := `package server
 
@@ -1506,7 +1595,9 @@ func f(p: Point) -> str => f"point = {p}"
 struct Point {
 	x: i32
 	impl Show {
-		func Show() -> str => "point"
+		func Show(w: Buf) {
+			w.WriteStr("point")
+		}
 	}
 }
 
@@ -1757,6 +1848,26 @@ struct Buffer {
 	}
 	if got := out.Consts["Greeting"]; got == nil || got.Str != "hi server 4" {
 		t.Errorf("Greeting = %v, want hi server 4", got)
+	}
+}
+
+// TestAnnotatedConstIsAValue checks that a constant written with a type names
+// a value of that type. Only the unannotated form used to record a type, so
+// every use of an annotated constant read as nothing and a call that took one
+// reported its argument as missing.
+func TestAnnotatedConstIsAValue(t *testing.T) {
+	src := `package server
+
+const n: i64 = 5
+
+func takes(v: i64) -> i64 => v
+
+func f() -> i64 => takes(n)
+`
+	out, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	if got := out.Consts["n"]; got == nil || got.Int != 5 {
+		t.Errorf("n = %v, want 5", got)
 	}
 }
 
@@ -2271,7 +2382,9 @@ struct Server {
 	conns: Array<net.Conn>
 	func IsLocal() -> bool => self.host == "127.0.0.1"
 	impl Show {
-		func Show() -> str => "server"
+		func Show(w: Buf) {
+			w.WriteStr("server")
+		}
 	}
 	const Tag: str = "server/1.0"
 }
@@ -2294,4 +2407,56 @@ func Serve(s: Server, jobs: chan<i32>) -> Result<i32, PanicError> {
 	_, diags := checkSource(t, "server",
 		resolveDeps{"std/net": rdep}, checkDeps{"std/net": cdep}, src)
 	wantClean(t, diags)
+}
+
+func TestCFastDeclarations(t *testing.T) {
+	src := `package server
+
+import c "test.h" {
+	fast printf
+}
+fast extern func getpid() -> i32
+extern func scanf(fmt: str, ...)
+
+func Work() {
+	c.printf(0)
+	c.scanf("")
+	getpid()
+}
+`
+	pkg, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+	for _, name := range []string{"printf", "getpid"} {
+		if !pkg.FastC[name] {
+			t.Errorf("%s was declared fast, but it is not in the fast set", name)
+		}
+	}
+	if pkg.FastC["scanf"] {
+		t.Errorf("scanf was declared blocking, but it is in the fast set")
+	}
+}
+
+func TestCFastOnADefinedFunction(t *testing.T) {
+	src := `package server
+
+fast func Work() {
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeUnexpectedToken)
+}
+
+func TestCFastNameNotInTheHeader(t *testing.T) {
+	src := `package server
+
+import c "test.h" {
+	fast nosuch
+}
+
+func Work() {
+	c.printf(0)
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeUndefinedName)
 }

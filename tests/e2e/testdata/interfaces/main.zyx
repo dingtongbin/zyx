@@ -1,0 +1,44 @@
+package main
+
+import "std/fmt"
+
+interface Speaker {
+    func Speak() -> str
+}
+
+struct Dog {
+    name: str
+    impl Speaker {
+        func Speak() -> str {
+            return "woof"
+        }
+    }
+}
+
+struct Cat {
+    name: str
+    impl Speaker {
+        func Speak() -> str {
+            return "meow"
+        }
+    }
+}
+
+func greet(s: Speaker) -> str {
+    return s.Speak()
+}
+
+func main() {
+    var d = Dog { name: "rex" }
+    var speaker: Speaker = d
+    fmt.Println(greet(speaker))
+    fmt.Println(speaker.Speak())
+    fmt.PrintBool(speaker is Dog)
+    fmt.PrintBool(speaker is Cat)
+    fmt.PrintNl()
+    var cat: Speaker = Cat { name: "tom" }
+    fmt.Println(cat.Speak())
+    fmt.PrintBool(cat is Dog)
+    fmt.PrintBool(cat is Cat)
+    fmt.PrintNl()
+}

@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 )
 
-// clean removes the build tree of the module, and with --cache the cache
-// the module's intermediates went to.
+// clean removes the build tree of the module and the cache its intermediates
+// went to, and with --cache the whole cache directory, which may be shared.
 func (s *Session) clean(args []string) int {
 	o, err := s.parseOptions(args)
 	if err != nil {
@@ -19,7 +19,10 @@ func (s *Session) clean(args []string) int {
 	if err != nil {
 		return s.usageError(err)
 	}
-	dirs := []string{filepath.Join(m.Root, "build")}
+	dirs := []string{
+		filepath.Join(m.Root, "build"),
+		filepath.Join(m.Root, ".zyx-cache"),
+	}
 	if o.cacheDir != "" {
 		dirs = append(dirs, o.cacheDir)
 	}

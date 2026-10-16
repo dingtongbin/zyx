@@ -1,1 +1,80 @@
 package rt
+
+// The runtime's own entries: the event loop a program reaches through the
+// waits below, and the picture of the runtime a program prints when it is
+// looking for a problem. A descriptor a program waits on must be non-blocking
+// and pollable; everything else goes through the blocking pool.
+
+import c "zyxrt.h" {
+    fast zyxrt_loop_wait, zyxrt_loop_release
+}
+
+// ErrorKind is what went wrong. Every system package reports failures in
+// this shape, so one program reads them the same way wherever they come
+// from.
+enum ErrorKind {
+    NotFound
+    Permission
+    Exists
+    NotDir
+    IsDir
+    Invalid
+    Closed
+    Timeout
+    Interrupted
+    WouldBlock
+    Eof
+    AddrInUse
+    AddrNotAvailable
+    Refused
+    Reset
+    Unreachable
+    Other
+}
+
+// Error is one failure of a runtime entry.
+struct Error {
+    Kind: ErrorKind
+    Errno: i32
+    Msg: str
+
+    impl Show {
+        func Show(w: Buf) {
+            w.WriteStr(f"rt: {self.Msg}")
+        }
+    }
+}
+
+// WaitReadable parks the calling coroutine until the descriptor can be read
+// from, which is what a coroutine does instead of blocking a scheduler
+// thread.
+func WaitReadable(fd: i32) -> Result<(), Error> {
+    return wait(fd, 1)
+}
+
+// WaitWritable parks the calling coroutine until the descriptor can be
+// written to.
+func WaitWritable(fd: i32) -> Result<(), Error> {
+    return wait(fd, 2)
+}
+
+// wait parks the calling coroutine until the descriptor is ready for the
+// events asked for, and turns the answer of the runtime into the result the
+// caller reads.
+func wait(fd: i32, events: i32) -> Result<(), Error> {
+    var code = c.zyxrt_loop_wait(fd, events)
+    if code == 0 {
+        return Result.Ok()
+    }
+    if code == 1 {
+        return Result.Err(Error { Kind: ErrorKind.Closed, Errno: 0, Msg: "the descriptor was released" })
+    }
+    return Result.Err(Error { Kind: ErrorKind.Other, Errno: 0, Msg: "the target has no event loop for this descriptor" })
+}
+
+// Release unregisters a descriptor and wakes everyone waiting on it, so the
+// program can close it without leaving a coroutine waiting forever. It is
+// idempotent, and a descriptor it released is done with.
+func Release(fd: i32) {
+    c.zyxrt_loop_release(fd)
+}

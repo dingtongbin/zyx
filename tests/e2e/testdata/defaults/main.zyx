@@ -1,0 +1,50 @@
+package main
+
+import "std/fmt"
+// A default fills the argument the call leaves out, and the default
+// expression is evaluated where the call stands.
+
+func Add(a: i64, b: i64 = 10) -> i64 {
+    return a + b
+}
+// Greet takes a default that is not a literal, which is still a compile-time
+// constant.
+
+func Greet(name: str, loud: bool = 1 < 2) -> str {
+    if loud {
+        return name
+    }
+    return "quiet"
+}
+
+struct Box {
+    v: i64
+    // Get scales by a default the caller may replace.
+    func Get(scale: i64 = 3) -> i64 {
+        return self.v * scale
+    }
+    // Shift moves the value by a default, so a call and its default agree.
+    func Shift(by: i64 = 1, times: i64 = 2) -> i64 {
+        return self.v + by * times
+    }
+}
+
+func main() {
+    fmt.PrintI64(Add(1))
+    fmt.PrintNl()
+    fmt.PrintI64(Add(1, 2))
+    fmt.PrintNl()
+    fmt.Println(Greet("loud"))
+    fmt.Println(Greet("loud", false))
+    var b = Box { v: 5 }
+    fmt.PrintI64(b.Get())
+    fmt.PrintNl()
+    fmt.PrintI64(b.Get(4))
+    fmt.PrintNl()
+    fmt.PrintI64(b.Shift())
+    fmt.PrintNl()
+    fmt.PrintI64(b.Shift(10))
+    fmt.PrintNl()
+    fmt.PrintI64(b.Shift(10, 3))
+    fmt.PrintNl()
+}

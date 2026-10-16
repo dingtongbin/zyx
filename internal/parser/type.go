@@ -49,6 +49,64 @@ func (p *parser) parseNamedType(start source.Span) ast.TypeExpr {
 	return t
 }
 
+// namedTypeFrom continues a type name whose first identifier is already
+// consumed, which is what an aggregate literal of a generic type needs.
+func (p *parser) namedTypeFrom(id *ast.Ident, start source.Span) *ast.TypeName {
+	t := &ast.TypeName{Name: id}
+	if p.accept(token.Dot) {
+		t.Qual = t.Name
+		t.Name = p.name()
+	}
+	if p.at(token.Lt) {
+		t.Args = p.parseTypeArgs()
+	}
+	t.Sp = p.spanFrom(start)
+	return t
+}
+
+// aggregateAhead reports whether a balanced type argument list starts here
+// and a brace follows it, which is what tells a literal of a type with type
+// arguments from a comparison.
+func (p *parser) aggregateAhead() bool {
+	depth := 0
+	for i := p.pos; i < len(p.toks); i++ {
+		switch p.toks[i].Kind {
+		case token.Comment, token.Newline:
+			continue
+		case token.Lt:
+			depth++
+		case token.Gt:
+			depth--
+			if depth == 0 {
+				return p.braceAfter(i + 1)
+			}
+		case token.Shr:
+			depth -= 2
+			if depth <= 0 {
+				return p.braceAfter(i + 1)
+			}
+		}
+		if depth == 0 {
+			// The list closed before this token, so nothing follows it.
+			return false
+		}
+	}
+	return false
+}
+
+// braceAfter reports whether the next token that carries text at or after i
+// opens a brace.
+func (p *parser) braceAfter(i int) bool {
+	for ; i < len(p.toks); i++ {
+		switch p.toks[i].Kind {
+		case token.Comment, token.Newline:
+			continue
+		}
+		return p.toks[i].Kind == token.LBrace
+	}
+	return false
+}
+
 // parseTypeArgs parses `<Type, ...>`.
 func (p *parser) parseTypeArgs() []ast.TypeExpr {
 	p.advance() // <
@@ -86,6 +144,13 @@ func (p *parser) parseBracketType(start source.Span) ast.TypeExpr {
 // tuple type.
 func (p *parser) parseTupleType(start source.Span) ast.TypeExpr {
 	p.advance() // (
+	if p.at(token.RParen) {
+		// `()` is the unit type: the type of a value that carries nothing,
+		// which is what a variant with no payload has and what a Result whose
+		// success carries nothing is parameterized by.
+		p.advance()
+		return &ast.TypeName{Sp: p.spanFrom(start), Name: &ast.Ident{Sp: start, Name: "void"}}
+	}
 	t := &ast.TupleType{Elems: []ast.TypeExpr{p.parseType()}}
 	for p.accept(token.Comma) {
 		if p.at(token.RParen) {

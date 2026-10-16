@@ -21,6 +21,13 @@ typedef struct zyxrt_region {
   size_t classes;
   /* big holds the runs the pool does not serve. */
   zyxrt_big *big;
+  /* free_objects holds the objects released before the region exits, one
+     list per size class. The next free object is stored in the released
+     object itself, which is why an object never needs a header. */
+  void **free_objects;
+  /* children holds the coroutines started in this region, which it waits
+     for before it releases anything. */
+  zyxrt_coro *children;
   /* bootstrap marks the region the runtime made before the pools were
      ready, which allocates from the system throughout. */
   int bootstrap;
@@ -65,6 +72,10 @@ void *zyxrt_region_new(void) {
   if (r->slabs == NULL) {
     zyxrt_panic("out of memory", 13);
   }
+  r->free_objects = (void **)calloc(r->classes, sizeof(void *));
+  if (r->free_objects == NULL) {
+    zyxrt_panic("out of memory", 13);
+  }
   return r;
 }
 
@@ -98,8 +109,26 @@ void zyxrt_region_free(void *region) {
     free(run);
     run = next;
   }
+  free(r->free_objects);
   free(r->slabs);
   free(r);
+}
+
+/* zyxrt_region_release returns one object to its region before the region
+   exits, which is what a static release point does. The size names the class,
+   so no object carries a header. A run the pool does not serve, or an object
+   of the bootstrap region, is left for the region to release whole. */
+void zyxrt_region_release(void *region, void *object, size_t size) {
+  zyxrt_region *r = (zyxrt_region *)region;
+  if (r == NULL || object == NULL || r->bootstrap) {
+    return;
+  }
+  size_t class = zyxrt_pool_class(size);
+  if (class >= r->classes) {
+    return;
+  }
+  *(void **)object = r->free_objects[class];
+  r->free_objects[class] = object;
 }
 
 void *zyxrt_region_alloc(void *region, size_t size, size_t align) {
@@ -109,6 +138,13 @@ void *zyxrt_region_alloc(void *region, size_t size, size_t align) {
   size_t class = zyxrt_pool_class(size);
   if (align > 16 || class >= r->classes || r->bootstrap) {
     return alloc_big(r, size, align);
+  }
+  /* An object released before the region exits is handed out again, so the
+     space a program gives up is reused within the same region. */
+  void *released = r->free_objects[class];
+  if (released != NULL) {
+    r->free_objects[class] = *(void **)released;
+    return released;
   }
   zyxrt_slab *slab = r->slabs[class];
   if (slab == NULL || slab->used == slab->count) {
@@ -136,3 +172,81 @@ void *zyxrt_region_current(void) {
 void *zyxrt_region_alloc_current(size_t size, size_t align) {
   return zyxrt_region_alloc(zyxrt_region_current(), size, align);
 }
+
+/* zyxrt_region_enter makes an explicit region block the one new objects
+   belong to. The region the coroutine was running in is saved, so leaving
+   the block restores it. */
+void zyxrt_region_enter(void *region) {
+  zyxrt_coro *c = zyxrt_sched_current();
+  if (!c || region == NULL) {
+    return;
+  }
+  if (c->region_depth == c->region_cap) {
+    size_t cap = c->region_cap == 0 ? 8 : c->region_cap * 2;
+    void **grown = (void **)realloc(c->regions, cap * sizeof(void *));
+    if (grown == NULL) {
+      zyxrt_panic("out of memory", 13);
+    }
+    c->regions = grown;
+    c->region_cap = cap;
+  }
+  c->regions[c->region_depth++] = c->region;
+  c->region = region;
+}
+
+void zyxrt_region_leave(void) {
+  zyxrt_coro *c = zyxrt_sched_current();
+  if (!c || c->region_depth == 0) {
+    return;
+  }
+  c->region = c->regions[--c->region_depth];
+}
+
+/* zyxrt_region_adopt records that a coroutine was started in a region, so
+   the region waits for it before it releases its memory. */
+void zyxrt_region_adopt(void *region, void *coro) {
+  zyxrt_region *r = (zyxrt_region *)region;
+  zyxrt_coro *c = (zyxrt_coro *)coro;
+  if (r == NULL || c == NULL) {
+    return;
+  }
+  c->region_next = r->children;
+  c->owner_region = r;
+  r->children = c;
+}
+
+/* zyxrt_region_detach removes a coroutine from the region that was waiting
+   for it, which is what releasing it does. A coroutine a caller joined is
+   already released, so the region must not release it again. */
+void zyxrt_region_detach(void *region, void *coro) {
+  zyxrt_region *r = (zyxrt_region *)region;
+  zyxrt_coro *c = (zyxrt_coro *)coro;
+  if (r == NULL || c == NULL) {
+    return;
+  }
+  zyxrt_coro **link = &r->children;
+  while (*link != NULL) {
+    if (*link == c) {
+      *link = c->region_next;
+      c->region_next = NULL;
+      c->owner_region = NULL;
+      return;
+    }
+    link = &(*link)->region_next;
+  }
+}
+
+/* zyxrt_region_take_child returns one coroutine the region still waits for,
+   or NULL. */
+void *zyxrt_region_take_child(void *region) {
+  zyxrt_region *r = (zyxrt_region *)region;
+  if (r == NULL || r->children == NULL) {
+    return NULL;
+  }
+  zyxrt_coro *c = r->children;
+  r->children = c->region_next;
+  c->region_next = NULL;
+  return c;
+}
+
+

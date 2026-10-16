@@ -1,0 +1,72 @@
+package main
+
+import "std/fmt"
+
+func work(n: i64) -> i64 {
+    var total = 0
+    for i in 0 .. n {
+        total += i
+    }
+    return total
+}
+
+func boom() -> i64 {
+    panic("boom")
+}
+// A supervised coroutine reports its exception to the supervisor as well as
+// to the handle, and the report is never the only trace of it.
+
+func OnPanic(e: PanicError) {
+    fmt.PrintI64(77)
+    fmt.PrintNl()
+}
+
+func main() {
+    region {
+        var h = spawn work(5)
+        match h.Join() {
+            Ok(v) => fmt.PrintI64(v)
+            Err(e) => fmt.PrintI64(- 1)
+        }
+        // A handle is a value, so a copy of it names the same coroutine.
+        // Joining again answers the same way rather than reaching freed
+        // memory.
+        var again = h
+        match again.Join() {
+            Ok(v) => fmt.PrintI64(v)
+            Err(e) => fmt.PrintI64(- 1)
+        }
+        // A try after the join finds the same answer.
+        match h.TryJoin() {
+            Some(r) => match r {
+                Ok(v) => fmt.PrintI64(v)
+                Err(e) => fmt.PrintI64(- 1)
+            }
+            None => fmt.PrintI64(- 1)
+        }
+    }
+    fmt.PrintNl()
+    region {
+        var h = spawn boom()
+        match h.Join() {
+            Ok(v) => fmt.PrintI64(v)
+            Err(e) => fmt.PrintI64(- 2)
+        }
+        match h.TryJoin() {
+            Some(r) => match r {
+                Ok(v) => fmt.PrintI64(v)
+                Err(e) => fmt.PrintI64(- 2)
+            }
+            None => fmt.PrintI64(- 2)
+        }
+    }
+    fmt.PrintNl()
+    region {
+        var h = spawn_watched boom(), func OnPanic
+        match h.Join() {
+            Ok(v) => fmt.PrintI64(v)
+            Err(e) => fmt.PrintI64(- 3)
+        }
+    }
+    fmt.PrintNl()
+}

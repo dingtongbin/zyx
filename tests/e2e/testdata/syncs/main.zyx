@@ -1,0 +1,155 @@
+package main
+
+import "std/fmt"
+import "std/sync"
+
+// A wait group counts the coroutines a caller waits for. Each producer
+// records that it finished, and the sum the reader takes is the same
+// whichever order the coroutines ran in.
+
+func produce(out: chan<i64>, n: i64, wg: sync.WaitGroup) {
+    defer wg.Done()
+    out.Send(n)
+}
+
+// Note runs once however many callers ask for it.
+
+func Note() {
+    fmt.PrintI64(7)
+}
+
+// Quiet returns nothing, so its handle carries no value to report.
+
+func Quiet() { }
+
+// A static sync object lives in static storage rather than in a region, so a
+// top-level binding can hold one. Its constructor runs before the program.
+/* The statics below live in static storage rather than in a region, so they
+   outlive every region. A block comment may span lines and may hold
+   /* a nested one */ as well. */
+
+var sharedGroup = sync.StaticWaitGroup()
+
+var sharedOnce = sync.StaticOnce()
+
+var sharedCounter = sync.StaticAtomic(7)
+
+var sharedGuard = sync.StaticMutex(41)
+
+// waitFor holds the lock until the guarded data changes. A monitor wait
+// releases the lock while it waits, so the notifier can take it.
+
+func waitFor(m: sync.Mutex<i64>) {
+    m.Lock()
+    for m.Data == 0 {
+        m.Wait()
+    }
+    m.Unlock()
+}
+
+// notify changes the guarded data and wakes one waiter.
+
+func notify(m: sync.Mutex<i64>, done: chan<i64>) {
+    m.Lock()
+    m.Data = 1
+    m.NotifyOne()
+    m.Unlock()
+    done.Send(1)
+}
+
+func main() {
+    var wg = new sync.WaitGroup()
+    var out = new chan<i64>(4)
+    region {
+        for i in 1 .. 4 {
+            wg.Add(1)
+            // A coroutine that returns nothing is started for its effect,
+            // and its handle is discarded.
+            spawn produce(out, i, wg)
+        }
+        wg.Wait()
+    }
+    var total = 0
+    for i in 0 .. 3 {
+        var v, ok = out.Recv()
+        total += v
+    }
+    fmt.PrintI64(total)
+    fmt.PrintNl()
+    // A semaphore holds a count of permits.
+    var sem = new sync.Semaphore(1)
+    sem.Acquire()
+    fmt.PrintBool(sem.TryAcquire())
+    sem.Release()
+    fmt.PrintBool(sem.TryAcquire())
+    sem.Release()
+    fmt.PrintNl()
+    // A once runs its function exactly once, and the second caller waits for
+    // the first rather than running it again.
+    var once = new sync.Once()
+    once.Do(func Note)
+    once.Do(func Note)
+    fmt.PrintNl()
+    // A coroutine that returns nothing is still joinable: the handle reports
+    // how it ended, and there is no value beside it.
+    region {
+        var h = spawn Quiet()
+        match h.Join() {
+            Ok(_) => fmt.PrintI64(5)
+            Err(e) => fmt.PrintI64(- 5)
+        }
+    }
+    fmt.PrintNl()
+    // A mutex guards its Data field. The waiter is started first, so it takes
+    // the lock and waits; the notifier then changes the data and wakes it.
+    var m = new sync.Mutex<i64>(0)
+    var done = new chan<i64>(1)
+    region {
+        spawn waitFor(m)
+        spawn notify(m, done)
+        var v, ok = done.Recv()
+    }
+    m.Lock()
+    fmt.PrintI64(m.Data)
+    m.Unlock()
+    fmt.PrintNl()
+    // A shared value takes its lock inside Get and Set.
+    var sh = new sync.Shared<i64>(7)
+    sh.Set(sh.Get() + 1)
+    fmt.PrintI64(sh.Get())
+    fmt.PrintNl()
+    // An atomic maps to the target's atomic instructions, and the memory
+    // order defaults to sequential consistency.
+    var counter = new sync.Atomic<i64>(5)
+    fmt.PrintI64(counter.Load())
+    fmt.PrintI64(counter.Add(3))
+    fmt.PrintI64(counter.Load())
+    fmt.PrintI64(counter.Swap(9))
+    fmt.PrintBool(counter.Cas(9, 11))
+    fmt.PrintI64(counter.Load())
+    fmt.PrintBool(counter.Cas(9, 12))
+    fmt.PrintI64(counter.Load())
+    fmt.PrintNl()
+    counter.Store(0, sync.Order.Relaxed)
+    fmt.PrintI64(counter.Load(sync.Order.Relaxed))
+    fmt.PrintNl()
+    sync.Fence(sync.Order.Acquire)
+    fmt.PrintI64(7)
+    fmt.PrintNl()
+    // A top-level binding holds a static sync object: it outlives every
+    // region and was built before the program started.
+    sharedGroup.Add(1 /* one coroutine */)
+    sharedGroup.Done()
+    sharedGroup.Wait()
+    fmt.PrintI64(1)
+    fmt.PrintNl()
+    sharedOnce.Do(func Note)
+    fmt.PrintI64(sharedCounter.Load())
+    fmt.PrintI64(sharedCounter.Add(1))
+    fmt.PrintNl()
+    sharedGuard.Lock()
+    sharedGuard.Data = 42
+    fmt.PrintI64(sharedGuard.Data)
+    sharedGuard.Unlock()
+    fmt.PrintNl()
+}

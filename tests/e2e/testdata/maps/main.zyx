@@ -1,0 +1,27 @@
+package main
+
+import "std/fmt"
+
+func main() {
+    var m: Map<str, i64> = Map { "a": 1, "b": 2 }
+    fmt.PrintI64(i64(m.Len()))
+    fmt.PrintNl()
+    m.Insert("c", 3)
+    fmt.PrintI64(i64(m.Len()))
+    fmt.PrintNl()
+    match m.Get("b") {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.PrintI64(- 1)
+    }
+    fmt.PrintNl()
+    fmt.PrintBool(m.Contains("c"))
+    fmt.PrintBool(m.Contains("z"))
+    fmt.PrintNl()
+    match m.Remove("a") {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.PrintI64(- 1)
+    }
+    fmt.PrintNl()
+    fmt.PrintI64(i64(m.Len()))
+    fmt.PrintNl()
+}

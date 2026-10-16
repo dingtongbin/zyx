@@ -133,8 +133,6 @@ func (c *checker) eval(e ast.Expr) *Value {
 		return c.evalIs(v)
 	case *ast.NewExpr:
 		return c.evalNew(v)
-	case *ast.FastExpr:
-		return c.eval(v.X)
 	}
 	return nil
 }
@@ -356,6 +354,18 @@ func (c *checker) evalTypeConst(v *ast.SelectorExpr) *Value {
 
 // evalSelector evaluates a field access on a constant struct.
 func (c *checker) evalSelector(v *ast.SelectorExpr) *Value {
+	// A variant with no payload is a value of its enum, which is what makes
+	// `Order.SeqCst` usable where a constant is required.
+	if id, ok := v.X.(*ast.Ident); ok {
+		if sym := c.symOf(id); sym != nil && sym.Kind == resolve.KindType {
+			if enum := c.typeOfSymbol(sym); enum != nil && enum.Kind == types.KindEnum {
+				if d := c.declOf(enum); d != nil && d.Variant(v.Name.Name) != nil {
+					c.out.Nodes[v.Name] = enum
+					return c.evalVariant(enum, v.Name.Name, nil)
+				}
+			}
+		}
+	}
 	recv := c.eval(v.X)
 	if recv == nil {
 		return nil
@@ -1067,7 +1077,7 @@ func (c *checker) metaAttr(v *ast.CallExpr) *Value {
 
 // reportLayout reports a layout query that failed. A query that depends on
 // a type parameter is not an error: the backend settles it once the type is
-// instantiated, and the node keeps a mono-rule:layout.
+// instantiated, so the node stays as it is.
 func (c *checker) reportLayout(err error, v *ast.CallExpr) {
 	if errors.Is(err, layout.ErrUnknown) {
 		return

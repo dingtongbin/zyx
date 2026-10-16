@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"zyx/internal/ast"
+	"zyx/internal/cheader"
 	"zyx/internal/check"
 	"zyx/internal/coro"
 	"zyx/internal/diag"
@@ -42,6 +43,10 @@ type Package struct {
 	Imports []string
 	// CHeaders lists the C header paths, sorted and deduplicated.
 	CHeaders []string
+	// CSources lists the C sources of the package, as full paths in
+	// file-name byte order. Each is a translation unit of its own, compiled
+	// by the same compiler and linked beside the objects of the package.
+	CSources []string
 }
 
 // A Loader collects packages from a module tree.
@@ -121,10 +126,17 @@ func (l *Loader) LoadPackage(importPath string) (*Package, error) {
 	if err != nil {
 		return nil, err
 	}
+	cnames, err := cSourceNames(dir, l.Target)
+	if err != nil {
+		return nil, err
+	}
 	pkg := &Package{ImportPath: importPath, Dir: dir}
+	for _, name := range cnames {
+		pkg.CSources = append(pkg.CSources, filepath.Join(dir, name))
+	}
 	if len(names) == 0 {
 		// A package whose every file is excluded by the target is empty,
-		// which the language allows.
+		// which the language allows. It may still carry C sources.
 		return pkg, nil
 	}
 	files, err := l.readFiles(dir, names)
@@ -313,6 +325,12 @@ func (s *Session) FrontEnd(entry string) ([]*Result, error) {
 func (s *Session) frontEndPackage(pkg *Package, resolveIfaces map[string]*resolve.Interface, checkIfaces map[string]*check.Interface) *Result {
 	res := &Result{Package: pkg}
 	res.Diags = append(res.Diags, pkg.Diags...)
+	if len(pkg.Diags) != 0 {
+		// A file the lexer or the parser could not read leaves a tree that is
+		// only partly there, so the stages that read it are not run. The
+		// diagnostics already say what is wrong.
+		return res
+	}
 
 	rpkg := &resolve.Package{Path: pkg.ImportPath, Files: pkg.Syntax}
 	rinfo, rdiags := resolve.Resolve(rpkg, resolveDeps(resolveIfaces))
@@ -322,7 +340,13 @@ func (s *Session) frontEndPackage(pkg *Package, resolveIfaces map[string]*resolv
 		return res
 	}
 
-	checked, cdiags := check.Check(rpkg, rinfo, checkDeps(checkIfaces), s.Loader.Target)
+	cdecls, hdiags := s.cTables(pkg)
+	res.Diags = append(res.Diags, hdiags...)
+	if len(hdiags) != 0 {
+		return res
+	}
+
+	checked, cdiags := check.Check(rpkg, rinfo, checkDeps(checkIfaces), s.Loader.Target, cdecls)
 	res.Checked = checked
 	res.Diags = append(res.Diags, cdiags...)
 	if len(cdiags) != 0 {
@@ -337,7 +361,7 @@ func (s *Session) frontEndPackage(pkg *Package, resolveIfaces map[string]*resolv
 		return res
 	}
 
-	ir, err := zyxc.Build(rpkg, rinfo, checked, model, cinfo, s.Loader.Target.Triple)
+	ir, err := zyxc.Build(rpkg, rinfo, checked, model, cinfo, s.Loader.Target.Triple, cdecls)
 	if err != nil {
 		res.Diags = append(res.Diags, diag.Diagnostic{Code: diag.CodeEmission, Message: err.Error()})
 		return res
@@ -345,6 +369,43 @@ func (s *Session) frontEndPackage(pkg *Package, resolveIfaces map[string]*resolv
 	res.IR = ir
 	res.Text = zyxc.Format(ir)
 	return res
+}
+
+// cTables reads the C headers a package imported. The declarations come from
+// clang, which owns the C language, so the checker sees what a header
+// actually declares rather than what a name suggests.
+func (s *Session) cTables(pkg *Package) (map[string]*cheader.Table, []diag.Diagnostic) {
+	if len(pkg.CHeaders) == 0 {
+		return nil, nil
+	}
+	tc, err := toolchain.Locate()
+	if err != nil {
+		return nil, []diag.Diagnostic{{Code: diag.CodeCHeader, Message: err.Error()}}
+	}
+	includes := append([]string{pkg.Dir}, s.runtimeIncludes()...)
+	out := map[string]*cheader.Table{}
+	for _, header := range pkg.CHeaders {
+		table, err := cheader.Parse(tc.Clang, header, includes)
+		if err != nil {
+			return nil, []diag.Diagnostic{{Code: diag.CodeCHeader, Message: err.Error()}}
+		}
+		out[header] = table
+	}
+	return out, nil
+}
+
+// runtimeIncludes returns the directories the C boundary searches for the
+// runtime's own headers.
+func (s *Session) runtimeIncludes() []string {
+	tc, err := toolchain.Locate()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, flag := range tc.IncludeFlags() {
+		out = append(out, strings.TrimPrefix(flag, "-I"))
+	}
+	return out
 }
 
 // resolveDeps adapts a table of resolved interfaces to the resolver.
@@ -419,6 +480,28 @@ func (l *Loader) All(prefix string) ([]string, error) {
 	return out, nil
 }
 
+// cSourceNames returns the C source names of a directory that take part in a
+// build for the target, in byte order. A C file follows the same platform
+// rule a zyx file does, so a package can keep one implementation per target.
+func cSourceNames(dir string, target toolchain.Target) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read %s: %w", dir, err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".c") {
+			continue
+		}
+		if include, _ := fileFor(entry.Name(), ".c", target); !include {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 // hasSource reports whether a directory holds at least one .zyx file.
 func hasSource(dir string) (bool, error) {
 	entries, err := os.ReadDir(dir)
@@ -445,7 +528,7 @@ func sourceNames(dir string, target toolchain.Target, testing bool) ([]string, e
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".zyx") {
 			continue
 		}
-		include, test := fileFor(entry.Name(), target)
+		include, test := fileFor(entry.Name(), ".zyx", target)
 		if !include || (test && !testing) {
 			continue
 		}
@@ -458,8 +541,8 @@ func sourceNames(dir string, target toolchain.Target, testing bool) ([]string, e
 // fileFor reports whether a source file takes part in a build for the
 // target and whether it is a test file. A name whose trailing segment is
 // neither a platform nor "test" is an ordinary file name.
-func fileFor(name string, target toolchain.Target) (include, test bool) {
-	stem := strings.TrimSuffix(name, ".zyx")
+func fileFor(name, ext string, target toolchain.Target) (include, test bool) {
+	stem := strings.TrimSuffix(name, ext)
 	i := strings.LastIndex(stem, "_")
 	if i < 0 {
 		return true, false

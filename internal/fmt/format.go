@@ -36,6 +36,9 @@ type printer struct {
 	// angles counts the open type-argument brackets, inside which `<`, `>`,
 	// and `,` attach to their neighbours.
 	angles int
+	// closedArgs marks a `>` that closed a type argument list, which the
+	// call parenthesis attaches to. A `>` that compares does not.
+	closedArgs bool
 	// brackets counts the open parentheses and square brackets, inside
 	// which a line break is not a statement separator.
 	brackets int
@@ -52,6 +55,9 @@ type printer struct {
 	// lastDecl is the last top-level declaration keyword written, which
 	// decides where a blank line separates declarations.
 	lastDecl token.Kind
+	// pending marks a line deferNewline left open, which a comment on the
+	// same line is written into before it ends.
+	pending bool
 }
 
 // run writes the whole token stream.
@@ -84,16 +90,35 @@ func (p *printer) token(toks []token.Token, i int) {
 		return
 	}
 	if t.Kind == token.Comment {
+		if p.pending && line == p.line {
+			// The comment stands on the line the printer has not ended yet,
+			// which is where the program wrote it.
+			p.pending = false
+		} else {
+			p.flushPending()
+		}
+		// A comment at the top level opens the run that belongs to the
+		// declaration below it, so the blank line goes before the run, and
+		// only when the comment starts a line of its own.
+		if p.lineStart && p.separates() && p.indent == 0 && p.lastDecl != token.Invalid &&
+			(p.prev == nil || p.prev.Kind != token.Comment) {
+			p.blankLine()
+		}
 		if !p.lineStart {
 			p.space()
 		}
 		p.write(text)
-		p.newline()
+		if !t.Block {
+			// A line comment ends the line it is written on; a block comment
+			// ends where its closing marker is, so the line goes on.
+			p.newline()
+		}
 		p.prev = &toks[i]
 		p.prevText = text
 		p.line = line
 		return
 	}
+	p.flushPending()
 
 	// A blank line in the source stays a blank line, and a top-level
 	// declaration is separated from the one before it by one blank line.
@@ -103,12 +128,16 @@ func (p *printer) token(toks []token.Token, i int) {
 		case p.line > 0 && line > p.line+1:
 			p.blankLine()
 		case isDeclKeyword(t.Kind) && p.lineStart && p.lastDecl != token.Invalid &&
+			(p.prev == nil || !p.prev.Doc) &&
 			!(p.lastDecl == token.Import && t.Kind == token.Import):
+			// A doc comment belongs to the declaration it precedes, so no
+			// blank line is written between them.
 			p.blankLine()
 		}
 	}
 	if t.Kind == token.RBrace && p.inBlock() && !p.emptyBody {
-		p.newline()
+		// The line is ended after the brace, and after any comment the
+		// program wrote beside it, which the switch below defers.
 		if p.indent > 0 {
 			p.indent--
 		}
@@ -137,7 +166,7 @@ func (p *printer) token(toks []token.Token, i int) {
 			break
 		}
 		p.indent++
-		p.newline()
+		p.deferNewline()
 	case token.RBrace:
 		block := p.inBlock()
 		if n := len(p.braces); n > 0 {
@@ -154,9 +183,13 @@ func (p *printer) token(toks []token.Token, i int) {
 			p.space()
 			break
 		}
-		p.newline()
+		p.deferNewline()
 	case token.Semicolon:
-		p.newline()
+		// A semicolon between statements ends a line; one inside brackets
+		// separates the parts of a type or a literal, which stay together.
+		if p.separates() {
+			p.deferNewline()
+		}
 	case token.Lt:
 		if p.angles > 0 || opensAType(p.prevKind(), p.prevText) {
 			p.angles++
@@ -164,9 +197,14 @@ func (p *printer) token(toks []token.Token, i int) {
 	case token.Gt:
 		if p.angles > 0 {
 			p.angles--
+			p.closedArgs = p.angles == 0
 		}
 	}
 
+	if t.Kind != token.Gt {
+		// The mark lasts for the token that follows the closing bracket.
+		p.closedArgs = false
+	}
 	p.prev = &toks[i]
 	p.prevText = text
 	p.line = line
@@ -179,7 +217,8 @@ func (p *printer) token(toks []token.Token, i int) {
 func isDeclKeyword(k token.Kind) bool {
 	switch k {
 	case token.Package, token.Import, token.Const, token.Var, token.Type,
-		token.Func, token.Struct, token.Enum, token.Interface, token.Extern:
+		token.Func, token.Struct, token.Enum, token.Interface, token.Extern,
+		token.Fast:
 		return true
 	}
 	return false
@@ -247,6 +286,10 @@ func (p *printer) needsSpace(toks []token.Token, i int, text string) bool {
 		return false
 	}
 	kind := toks[i].Kind
+	if kind == token.RBrace && !p.inBlock() && p.prevKind() != token.LBrace {
+		// A literal with members closes with a space before its brace.
+		return true
+	}
 	if noSpaceBefore(kind) {
 		return false
 	}
@@ -263,13 +306,25 @@ func (p *printer) needsSpace(toks []token.Token, i int, text string) bool {
 	}
 	switch kind {
 	case token.LParen:
-		// A call or a function type attaches to its name.
+		// A call or a function type attaches to its name, and a call on a
+		// type argument list attaches to the list it closes.
 		switch p.prev.Kind {
 		case token.Ident, token.RParen, token.RBrack, token.Func, token.SelfUpper:
 			return false
+		case token.Gt:
+			if p.closedArgs {
+				return false
+			}
 		}
 	case token.Lt:
 		if opensAType(p.prevKind(), p.prevText) {
+			return false
+		}
+	case token.LBrack:
+		// An index attaches to the expression it indexes; a type or a
+		// literal written after anything else keeps its space.
+		switch p.prev.Kind {
+		case token.Ident, token.RParen, token.RBrack, token.SelfUpper:
 			return false
 		}
 	case token.Minus:
@@ -316,6 +371,27 @@ func (p *printer) newline() {
 	if p.lineStart {
 		return
 	}
+	p.buf.WriteByte('\n')
+	p.lineStart = true
+	p.pending = false
+}
+
+// deferNewline ends the current line, unless a comment the program wrote on
+// the same line follows: the format keeps a trailing comment where it was
+// written, so the line is ended after that comment rather than before it.
+func (p *printer) deferNewline() {
+	if p.lineStart {
+		return
+	}
+	p.pending = true
+}
+
+// flushPending ends a line that deferNewline left open.
+func (p *printer) flushPending() {
+	if !p.pending {
+		return
+	}
+	p.pending = false
 	p.buf.WriteByte('\n')
 	p.lineStart = true
 }

@@ -142,6 +142,12 @@ type Type struct {
 	// Result is the result type of a function type; nil for a result-free
 	// function.
 	Result *Type
+
+	// Constraints holds the interfaces a type parameter requires. A
+	// parameter without constraints has none, and a body that uses the
+	// parameter as a value can call only the methods those interfaces
+	// declare.
+	Constraints []*Type
 }
 
 // SliceOf returns the read-only view type [elem].
@@ -179,7 +185,14 @@ func Named(kind Kind, pkg, qual, name string, arity int, args ...*Type) *Type {
 
 // Param returns a generic type parameter. id is the symbol id of the
 // parameter's declaration.
-func Param(id, name string) *Type { return &Type{Kind: KindTypeParam, ID: id, Name: name} }
+func Param(id, name string) *Type { return ParamOf(id, name, nil) }
+
+// ParamOf returns a generic type parameter with the interfaces it requires.
+// A body that uses the parameter as a value may call the methods those
+// interfaces declare.
+func ParamOf(id, name string, constraints []*Type) *Type {
+	return &Type{Kind: KindTypeParam, ID: id, Name: name, Constraints: constraints}
+}
 
 // String returns the canonical text of the type, in the form the .zyxc
 // layer writes: `[T; 4]`, `(i64, str)`, `func(i64) -> bool`, `Array<u8>`,
@@ -187,6 +200,11 @@ func Param(id, name string) *Type { return &Type{Kind: KindTypeParam, ID: id, Na
 func (t *Type) String() string {
 	if t == nil {
 		return "<nil>"
+	}
+	if t.ID == "void" {
+		// The result of a function that returns nothing is a type a handle
+		// or a container can carry as a type argument, so it has a name.
+		return "void"
 	}
 	switch t.Kind {
 	case KindTuple:
@@ -235,7 +253,10 @@ func joinTypes(list []*Type) string {
 // by declaration, so two structs with equal fields stay distinct.
 func Identical(a, b *Type) bool {
 	if a == nil || b == nil {
-		return false
+		// Two functions that return nothing have no result type to compare,
+		// so they match. A function that returns something does not match
+		// one that returns nothing.
+		return a == b
 	}
 	if a == b {
 		return true

@@ -1,0 +1,59 @@
+package main
+
+import "std/fmt"
+
+func main() {
+    var xs: [i64; 4] = [10, 20, 30, 40]
+    // A fixed-size array is indexed directly.
+    fmt.PrintI64(xs[0])
+    fmt.PrintNl()
+    fmt.PrintI64(xs[3])
+    fmt.PrintNl()
+    var at = 2
+    fmt.PrintI64(xs[usize(at)])
+    fmt.PrintNl()
+    // A view is indexed from its own first element.
+    var view = xs[1 .. 3]
+    fmt.PrintI64(view[0])
+    fmt.PrintNl()
+    fmt.PrintI64(view[1])
+    fmt.PrintNl()
+    // A tuple element is named by its position.
+    var pair = (7, "seven")
+    fmt.PrintI64(pair.0)
+    fmt.PrintNl()
+    fmt.Println(pair.1)
+    var nested = (pair, 9)
+    fmt.PrintI64(nested.1)
+    fmt.PrintNl()
+    // A second element is reached through parentheses, because a chain of
+    // digits after a dot reads as one number.
+    fmt.PrintI64((nested.0).0)
+    fmt.PrintNl()
+    fmt.Println((nested.0).1)
+    // A str is indexed by its bytes, so a multi-byte character reads as the
+    // bytes it is written with.
+    var text = "abc"
+    fmt.PrintU64(u64(text[1]))
+    fmt.PrintNl()
+    var accent = "\u{e9}"
+    fmt.PrintU64(u64(accent[0]))
+    fmt.PrintNl()
+    fmt.PrintU64(u64(accent[1]))
+    fmt.PrintNl()
+    // An element of a fixed-size array is written in place.
+    var slots: [i64; 3] = [1, 2, 3]
+    slots[1] = 99
+    fmt.PrintI64(slots[1])
+    fmt.PrintNl()
+    slots[2] += 7
+    fmt.PrintI64(slots[2])
+    fmt.PrintNl()
+    // A growable array is read through the runtime.
+    var count = 3
+    var grown = [5] * count
+    fmt.PrintI64(i64(grown.Len()))
+    fmt.PrintNl()
+    fmt.PrintI64(grown[2])
+    fmt.PrintNl()
+}

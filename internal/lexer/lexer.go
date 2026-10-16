@@ -67,6 +67,8 @@ func (l *lexer) run() {
 			l.pos++
 		case c == '/' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '/':
 			l.scanComment()
+		case c == '/' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '*':
+			l.scanBlockComment()
 		case c == '\'':
 			l.scanChar()
 		case c == '"':
@@ -104,7 +106,8 @@ func (l *lexer) emit(t token.Token) {
 }
 
 // emitSig appends a statement-significant token and records it as the last
-// token of the current line. Comments and newlines are not significant.
+// token of the current line. A line comment is not significant, because it
+// ends its own line; a block comment is, because the line goes on past it.
 func (l *lexer) emitSig(t token.Token) {
 	l.hasSig = true
 	l.lastSig = t.Kind

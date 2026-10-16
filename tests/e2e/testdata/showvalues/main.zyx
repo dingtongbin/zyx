@@ -1,0 +1,72 @@
+package main
+
+import "std/fmt"
+
+struct Point {
+    x: i64
+    y: i64
+    impl Show {
+        func Show(w: Buf) {
+            w.WriteStr("(")
+            w.WriteStr(f"{self.x}")
+            w.WriteStr(", ")
+            w.WriteStr(f"{self.y}")
+            w.WriteStr(")")
+        }
+    }
+}
+
+const delay: Duration = dur.ms(1500)
+
+const zero: Duration = dur.sec(0)
+// Render writes a value's text into a buffer the caller owns, so a caller
+// that gathers several values pays for one buffer rather than one string per
+// value.
+
+func Render<T: Show>(w: Buf, v: T) {
+    v.Show(w)
+}
+
+func main() {
+    var p = Point { x: 1, y: 2 }
+    fmt.PrintValue(p)
+    fmt.PrintNl()
+    fmt.PrintlnValue(42)
+    fmt.PrintlnValue(2.5)
+    fmt.PrintlnValue(true)
+    fmt.PrintlnValue('A')
+    fmt.PrintlnValue("hi")
+    fmt.Println(fmt.SprintValue(p))
+    // A duration is a count of nanoseconds and nothing else, so its text is
+    // that count.
+    fmt.PrintlnValue(delay)
+    fmt.PrintlnValue(zero)
+    fmt.Println(f"delay = {delay}")
+    // A value printed and a value written into a buffer read the same way,
+    // because both render it with one formatter.
+    fmt.PrintI64(- 7)
+    fmt.PrintNl()
+    fmt.PrintlnValue(i64(- 7))
+    fmt.PrintU64(18446744073709551615)
+    fmt.PrintNl()
+    fmt.PrintlnValue(u64(18446744073709551615))
+    fmt.PrintF64(2.5)
+    fmt.PrintNl()
+    fmt.PrintlnValue(2.5)
+    fmt.PrintBool(true)
+    fmt.PrintNl()
+    fmt.PrintlnValue(true)
+    fmt.PrintChar('A')
+    fmt.PrintNl()
+    fmt.PrintlnValue('A')
+    var w = new Buf(0)
+    Render(w, p)
+    fmt.Fprint(w, "|")
+    Render(w, 7)
+    fmt.Fprint(w, "|")
+    Render(w, delay)
+    fmt.Println(w.Str())
+    var direct = new Buf(0)
+    delay.Show(direct)
+    fmt.Println(direct.Str())
+}

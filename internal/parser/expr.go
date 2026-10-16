@@ -121,14 +121,6 @@ func (p *parser) parseUnary() ast.Expr {
 		p.advance()
 		x := p.parsePostfix()
 		return &ast.TryExpr{Sp: p.spanFrom(start), X: x}
-	case token.Fast:
-		p.advance()
-		x := p.parsePostfix()
-		if !isCallExpr(x) {
-			p.errorHelpSpan(x.Span(), diag.CodeUnexpectedToken,
-				"mark a C call with fast", "`fast` applies to a call")
-		}
-		return &ast.FastExpr{Sp: p.spanFrom(start), X: x}
 	case token.Spawn, token.SpawnWatched:
 		return p.parseSpawn()
 	}
@@ -238,6 +230,12 @@ func (p *parser) parsePrimary() ast.Expr {
 		if p.at(token.LBrace) && p.aggregateAllowed() {
 			return p.parseAggregate(&ast.TypeName{Sp: start, Name: id})
 		}
+		// A literal of a type with type arguments is written the same way,
+		// and the arguments are read only when a brace follows them: without
+		// that lookahead `a < B > c` would be a comparison.
+		if p.at(token.Lt) && p.aggregateAhead() {
+			return p.parseAggregate(p.namedTypeFrom(id, start))
+		}
 		return id
 	case token.SelfLower, token.C:
 		id := &ast.Ident{Sp: start, Name: p.tok.Text()}
@@ -258,15 +256,20 @@ func (p *parser) parsePrimary() ast.Expr {
 	return &ast.Ident{Sp: p.spanFrom(start)}
 }
 
-// literalValue returns the payload a literal node keeps: decoded text for
-// char, string, and byte string literals, source text for numbers and
-// booleans.
+// literalValue returns the text a literal carries: the decoded text of a
+// character, string, or byte string literal, and the source text of a number
+// or a boolean. A numeric suffix names the literal's type and is recorded on
+// its own, so the value is the digits that precede it.
 func literalValue(tok token.Token) string {
 	switch tok.Kind {
 	case token.Char, token.Str, token.ByteStr:
 		return tok.Str
 	}
-	return tok.Text()
+	text := tok.Text()
+	if tok.Suffix != token.SuffixNone {
+		text = strings.TrimSuffix(text, tok.Suffix.String())
+	}
+	return text
 }
 
 // parseParen parses `(expr)` or the tuple `(a, b)`. A single parenthesized
@@ -332,12 +335,24 @@ func (p *parser) parseNew() ast.Expr {
 	return e
 }
 
+// funcRefName consumes the first name of a function value reference. The C
+// namespace is a keyword, so it is accepted here the way it is accepted where
+// it opens an expression.
+func (p *parser) funcRefName() *ast.Ident {
+	if p.at(token.C) {
+		id := &ast.Ident{Sp: p.tok.Span, Name: p.tok.Text()}
+		p.advance()
+		return id
+	}
+	return p.name()
+}
+
 // parseFuncExpr parses a function value reference or a lambda.
 func (p *parser) parseFuncExpr() ast.Expr {
 	start := p.tok.Span
 	p.advance() // func
 	if !p.at(token.LParen) {
-		ref := &ast.FuncRefExpr{Name: p.name()}
+		ref := &ast.FuncRefExpr{Name: p.funcRefName()}
 		if p.accept(token.Dot) {
 			ref.Qualifier = ref.Name
 			ref.Name = p.name()
@@ -474,13 +489,11 @@ func isAssignTarget(x ast.Expr) bool {
 }
 
 // isExprStatement reports whether x may stand alone as a statement: a call,
-// a spawn, a `fast` call, or a `try` call.
+// a spawn, or a `try` call.
 func isExprStatement(x ast.Expr) bool {
 	switch v := x.(type) {
 	case *ast.CallExpr, *ast.SpawnExpr:
 		return true
-	case *ast.FastExpr:
-		return isCallExpr(v.X)
 	case *ast.TryExpr:
 		return isCallExpr(v.X)
 	}

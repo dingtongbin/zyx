@@ -3,7 +3,11 @@
 package check
 
 import (
+	"math/big"
+	"strings"
+
 	"zyx/internal/ast"
+	"zyx/internal/cheader"
 	"zyx/internal/diag"
 	"zyx/internal/resolve"
 	"zyx/internal/token"
@@ -66,8 +70,6 @@ func (c *checker) exprType(e ast.Expr, want *types.Type) *types.Type {
 		return c.arrayRepeatType(v, want)
 	case *ast.AggregateLitExpr:
 		return c.aggregateType(v, want)
-	case *ast.FastExpr:
-		return c.checkExpr(v.X, want)
 	}
 	return nil
 }
@@ -124,13 +126,15 @@ func (c *checker) checkStaticUse(sym *resolve.Symbol, id *ast.Ident) {
 func (c *checker) literalType(lit *ast.Literal, want *types.Type) *types.Type {
 	switch lit.Kind {
 	case token.Int:
-		if t := suffixType(lit.Suffix); t != nil {
-			return t
+		t := types.Int64
+		switch {
+		case suffixType(lit.Suffix) != nil:
+			t = suffixType(lit.Suffix)
+		case want != nil && (want.IsInteger() || want.IsFloat()):
+			t = want
 		}
-		if want != nil && (want.IsInteger() || want.IsFloat()) {
-			return want
-		}
-		return types.Int64
+		c.checkLiteralRange(lit, t)
+		return t
 	case token.Float:
 		if t := suffixType(lit.Suffix); t != nil {
 			return t
@@ -212,6 +216,55 @@ func (c *checker) showable(t *types.Type) bool {
 		return true
 	}
 	return c.implements(t, types.Show)
+}
+
+// checkLiteralRange reports an integer literal whose value does not fit the
+// type it is written with. A literal that a negation applies to may reach the
+// magnitude of the smallest negative value, which is the one value a signed
+// type holds that has no positive counterpart.
+func (c *checker) checkLiteralRange(lit *ast.Literal, t *types.Type) {
+	width := c.intBitWidth(t)
+	if width == 0 {
+		return
+	}
+	value, ok := new(big.Int).SetString(strings.ReplaceAll(lit.Value, "_", ""), 0)
+	if !ok {
+		return
+	}
+	limit := new(big.Int).Lsh(big.NewInt(1), uint(width))
+	if t.IsSigned() {
+		limit.Lsh(big.NewInt(1), uint(width-1))
+		if c.negations == 0 {
+			limit.Sub(limit, big.NewInt(1))
+		}
+	} else {
+		limit.Sub(limit, big.NewInt(1))
+	}
+	if value.Cmp(limit) > 0 {
+		c.errorHelp(diag.CodeLiteralRange, lit.Sp,
+			"write a literal that fits the type",
+			"%s does not fit in %s", lit.Value, t)
+	}
+}
+
+// intBitWidth returns the bit width of an integer type on the target, and zero
+// for a type that is not an integer.
+func (c *checker) intBitWidth(t *types.Type) int {
+	switch t.Kind {
+	case types.KindInt8, types.KindUint8:
+		return 8
+	case types.KindInt16, types.KindUint16:
+		return 16
+	case types.KindInt32, types.KindUint32:
+		return 32
+	case types.KindInt64, types.KindUint64:
+		return 64
+	case types.KindInt128, types.KindUint128:
+		return 128
+	case types.KindUsize:
+		return int(c.target.Layout().PtrSize * 8)
+	}
+	return 0
 }
 
 // binaryType checks a binary operator against the operand rules of the
@@ -322,6 +375,15 @@ func (c *checker) equalityOK(t *types.Type) bool {
 
 // unaryType checks a prefix operator.
 func (c *checker) unaryType(v *ast.UnaryExpr, want *types.Type) *types.Type {
+	// A negation of an integer literal is a constant, so its magnitude may
+	// reach the smallest negative value of its type, which is the one value a
+	// signed type holds that has no positive counterpart.
+	if v.Op == token.Minus {
+		if lit, ok := v.X.(*ast.Literal); ok && lit.Kind == token.Int {
+			c.negations++
+			defer func() { c.negations-- }()
+		}
+	}
 	t := c.checkExpr(v.X, want)
 	if t == nil || t.Kind == types.Invalid {
 		return t
@@ -381,6 +443,17 @@ func (c *checker) isType(v *ast.IsExpr) *types.Type {
 // selectorType checks `p.x`, `ctx.Handle`, and `net.Listen` in value
 // position.
 func (c *checker) selectorType(v *ast.SelectorExpr) *types.Type {
+	if inner, ok := v.X.(*ast.SelectorExpr); ok {
+		// A variant of an enum another package declares carries both
+		// qualifiers: the package, then the enum.
+		if id, ok := inner.X.(*ast.Ident); ok {
+			if pkg := c.symOf(id); pkg != nil && pkg.Kind == resolve.KindPackage {
+				if t := c.importedType(pkg, inner.Name.Name); t != nil {
+					return c.variantOf(v, t)
+				}
+			}
+		}
+	}
 	if id, ok := v.X.(*ast.Ident); ok {
 		if isNamespaceName(id.Name) {
 			return c.namespaceValue(v, id.Name)
@@ -407,6 +480,10 @@ func (c *checker) selectorType(v *ast.SelectorExpr) *types.Type {
 				"a built-in method cannot be used as a value")
 			return nil
 		}
+		// A method taken as a value carries the receiver it was taken from.
+		// The syntax cannot tell such a selector from a field read, so the
+		// check records it for the passes that need to know.
+		c.out.MethodValues[v] = true
 		c.out.Nodes[v.Name] = sig
 		return sig
 	}
@@ -479,10 +556,7 @@ func (c *checker) isBuiltinMethod(recv *types.Type, name string) bool {
 // qualifiedValue returns the type of `pkg.Name` in value position.
 func (c *checker) qualifiedValue(v *ast.SelectorExpr, pkg *resolve.Symbol) *types.Type {
 	if pkg.Name == "c" {
-		c.errorHelp(diag.CodeBuiltinMethodValue, v.Name.Sp,
-			"call the C function directly",
-			"a C symbol is not a value")
-		return nil
+		return c.cValue(v)
 	}
 	t := c.importedType(pkg, v.Name.Name)
 	if t == nil {
@@ -492,10 +566,58 @@ func (c *checker) qualifiedValue(v *ast.SelectorExpr, pkg *resolve.Symbol) *type
 	return t
 }
 
-// variantValue returns the type of `Type.Name` in value position: a variant
-// without a payload, or a constant the type body declares.
+// cValue returns the type of a name the c namespace exposes that is not a
+// call. An enumerator is an integer constant, a global object is a value of
+// its own type, and a type name denotes that type.
+func (c *checker) cValue(v *ast.SelectorExpr) *types.Type {
+	name := v.Name.Name
+	for _, header := range sortedKeys(c.cdecls) {
+		table := c.cdecls[header]
+		if value, ok := table.Constants[name]; ok {
+			c.out.Nodes[v.Name] = types.Int32
+			c.out.Consts[name] = intValue(types.Int32, uint64(value))
+			return types.Int32
+		}
+		if t, ok := table.Globals[name]; ok {
+			c.out.Nodes[v.Name] = t
+			return t
+		}
+		if t := cTypeOf(table, name); t != nil {
+			c.out.Nodes[v.Name] = t
+			return t
+		}
+	}
+	c.errorHelp(diag.CodeUndefinedName, v.Name.Sp,
+		"import the header that declares it",
+		"%s is not declared by an imported C header", name)
+	return nil
+}
+
+// cTypeOf returns the type a name a C header exposes denotes, or nil when the
+// header exposes no type under it.
+func cTypeOf(table *cheader.Table, name string) *types.Type {
+	if record, ok := table.Records[name]; ok {
+		kind := types.KindExternStruct
+		if record.Union {
+			kind = types.KindUnion
+		}
+		return types.Named(kind, "", "", name, 0)
+	}
+	if t, ok := table.Aliases[name]; ok {
+		return t
+	}
+	return nil
+}
+
+// variantValue returns the type of `Type.Name` in value position for a type
+// the package declares.
 func (c *checker) variantValue(v *ast.SelectorExpr, sym *resolve.Symbol) *types.Type {
-	typ := c.typeOfSymbol(sym)
+	return c.variantOf(v, c.typeOfSymbol(sym))
+}
+
+// variantOf returns the type of `Type.Name` in value position: a variant
+// without a payload, or a constant the type body declares.
+func (c *checker) variantOf(v *ast.SelectorExpr, typ *types.Type) *types.Type {
 	if typ == nil {
 		return nil
 	}
@@ -668,8 +790,11 @@ func (c *checker) spawnType(v *ast.SpawnExpr) *types.Type {
 	}
 	r := c.checkExpr(v.X, nil)
 	c.checkExpr(v.Watcher, nil)
-	if r == nil || r.Kind == types.Invalid {
-		return nil
+	if r == nil {
+		// A call that returns nothing reports no type, and a coroutine that
+		// returns nothing is still joinable: its handle carries no value to
+		// report, which is what void marks.
+		r = void
 	}
 	return types.JoinHandle.Instantiate(r)
 }
@@ -819,6 +944,8 @@ func (c *checker) newType(v *ast.NewExpr) *types.Type {
 	switch {
 	case typ.Kind == types.KindContainer:
 		return c.newContainer(v, typ)
+	case typ.Kind == types.KindChan:
+		return c.newChan(v, typ)
 	case typ.Kind == types.KindStruct || typ.Kind == types.KindExternStruct:
 		return c.newStruct(v, typ)
 	}
@@ -826,6 +953,21 @@ func (c *checker) newType(v *ast.NewExpr) *types.Type {
 		"build a struct through new, or use a construction literal",
 		"%s cannot be built with new", typ)
 	c.checkExprs(v.Args)
+	return typ
+}
+
+// newChan checks `new chan<T>(cap)`, which takes the buffer capacity. A
+// capacity of zero builds a rendezvous channel, so the argument may be
+// omitted.
+func (c *checker) newChan(v *ast.NewExpr, typ *types.Type) *types.Type {
+	if len(v.Args) > 1 {
+		c.errorHelp(diag.CodeArgCount, v.Sp,
+			"pass the buffer capacity, or nothing for a rendezvous channel",
+			"a channel takes at most one argument, got %d", len(v.Args))
+	}
+	for _, a := range v.Args {
+		c.checkExpr(a, types.Usize)
+	}
 	return typ
 }
 
@@ -862,6 +1004,20 @@ func (c *checker) newContainer(v *ast.NewExpr, typ *types.Type) *types.Type {
 		params = nil
 	case "PriorityQueue":
 		params = []*types.Type{less}
+	case "Ring":
+		params = []*types.Type{types.Usize}
+	case "Buf":
+		// The capacity is optional, so the argument is checked against it
+		// rather than required.
+		if len(v.Args) > 1 {
+			c.errorHelp(diag.CodeArgCount, v.Sp,
+				"pass the initial capacity, or nothing",
+				"a buffer takes at most one argument, got %d", len(v.Args))
+		}
+		for _, a := range v.Args {
+			c.checkExpr(a, types.Usize)
+		}
+		return typ
 	case "BlockingQueue":
 		params = []*types.Type{types.Usize, less}
 	default:
@@ -998,6 +1154,16 @@ func (c *checker) checkStructLiteral(v *ast.AggregateLitExpr, typ *types.Type, d
 				"assign a value of the field type",
 				"field %q is %s, want %s", fields[i].Name, values[i], want)
 		}
+	}
+	if typ.Kind == types.KindUnion {
+		// The members of a union start at the same offset, so a literal sets
+		// exactly one of them.
+		if len(seen) != 1 {
+			c.errorHelp(diag.CodeMissingField, v.Sp,
+				"set exactly one member of the union",
+				"a union literal sets one member, %d given", len(seen))
+		}
+		return typ
 	}
 	for _, f := range d.Fields {
 		if !seen[f.Name] {

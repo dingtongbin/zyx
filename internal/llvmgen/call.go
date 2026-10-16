@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"zyx/internal/toolchain"
 	"zyx/internal/types"
 	"zyx/internal/zyxc"
 )
@@ -19,18 +20,74 @@ func (g *generator) call(module string, n *zyxc.Node) *value {
 	}
 	sym := g.calleeSymbol(callee)
 	if sym == "" {
-		g.fail(fmt.Errorf("llvmgen: %s is not a callable reference", callee.Kind))
+		// The callee is not a named reference, so it is a value the call
+		// reaches through: a lambda, or a parameter of function type.
+		return g.indirectCall(module, n, callee)
+	}
+	if decl := g.tab.decl(sym); decl != nil && decl.Kind == "func" {
+		return g.directCall(module, n, sym, nil)
+	}
+	if _, ok := g.fn.vars[sym]; ok {
+		return g.indirectCall(module, n, callee)
+	}
+	g.fail(fmt.Errorf("llvmgen: %s: %s is not a function", n.Pos, sym))
+	return nil
+}
+
+// indirectCall lowers a call through a function value. The signature the call
+// records settles the parameter and result types, so the call needs no
+// inference.
+func (g *generator) indirectCall(module string, n *zyxc.Node, callee *zyxc.Node) *value {
+	// A callee that is not a child of the call carries its own signature; a
+	// call that reaches through a qualifier or a receiver records it in the
+	// callee-type child instead.
+	sig := g.typeOfNode(callee.First("type"), module)
+	if sig == nil || sig.Kind != types.KindFunc {
+		sig = g.typeOfNode(n.First("callee-type"), module)
+	}
+	if sig == nil || sig.Kind != types.KindFunc {
+		g.fail(fmt.Errorf("llvmgen: the signature of the call to %s is not settled", callee.Kind))
 		return nil
 	}
-	if decl := g.tab.decl(sym); decl == nil || decl.Kind != "func" {
-		g.fail(fmt.Errorf("llvmgen: %s: %s is not a function", n.Pos, sym))
+	fn := g.load(g.expr(module, callee, nil))
+	if fn == nil {
 		return nil
 	}
-	return g.directCall(module, n, sym, nil)
+	args := g.argNodes(n)
+	if len(args) != len(sig.Elems) {
+		g.fail(fmt.Errorf("llvmgen: the call takes %d arguments, %d given", len(sig.Elems), len(args)))
+		return nil
+	}
+	// A function value carries the function and a receiver, so the call
+	// reaches the function with that receiver as its own first parameter.
+	code := g.newReg()
+	g.emit("  %s = extractvalue %s %s, 0", code, fn.ll, fn.text)
+	recv := g.newReg()
+	g.emit("  %s = extractvalue %s %s, 1", recv, fn.ll, fn.text)
+	calleeText := code
+	parts := []string{"ptr " + recv}
+	for i, pt := range sig.Elems {
+		v := g.conform(g.load(g.expr(module, args[i], pt)), pt)
+		if v == nil {
+			return nil
+		}
+		parts = append(parts, g.llPass(pt)+" "+v.text)
+	}
+	if sig.Result == nil {
+		g.emit("  call void %s(%s)", calleeText, strings.Join(parts, ", "))
+		return &value{ll: "void"}
+	}
+	retLL := g.llPass(sig.Result)
+	reg := g.newReg()
+	g.emit("  %s = call %s %s(%s)", reg, retLL, calleeText, strings.Join(parts, ", "))
+	return &value{text: reg, ll: retLL, typ: sig.Result}
 }
 
 // calleeSymbol returns the symbol a callee expression names.
 func (g *generator) calleeSymbol(callee *zyxc.Node) string {
+	if callee == nil {
+		return ""
+	}
 	switch callee.Kind {
 	case "name":
 		if len(callee.Payload) >= 2 {
@@ -59,6 +116,36 @@ func (g *generator) methodCall(module string, n *zyxc.Node) *value {
 	recv := g.expr(module, g.wrapped(n, "recv"), nil)
 	if recv == nil {
 		return nil
+	}
+	if recv.typ.Kind == types.KindChan {
+		// A channel is an opaque runtime handle: its operations have no
+		// declaration in any tree.
+		return g.chanCall(module, n, g.load(recv), n.Payload[0])
+	}
+	if recv.typ.Kind == types.KindContainer {
+		// A container is an opaque runtime handle: its operations have no
+		// declaration in any tree.
+		return g.containerCall(module, n, g.load(recv), n.Payload[0])
+	}
+	if recv.typ.Kind == types.KindInterface {
+		// An interface method is reached through the method table the value
+		// carries.
+		return g.ifaceCall(module, n, recv, n.Payload[0])
+	}
+	if n.Payload[0] == "Show" && g.builtinShow(recv.typ) {
+		// The language gives a primitive or a str its Show from the fixed
+		// table the backend owns, so the call appends the value to the
+		// buffer it names rather than reaching a declaration.
+		return g.builtinShowCall(module, n, g.load(recv))
+	}
+	if n.Payload[0] == "Eq" && equatable(recv.typ) {
+		return g.builtinEqCall(module, n, g.load(recv))
+	}
+	if n.Payload[0] == "Hash" && hashable(recv.typ) {
+		return g.builtinHashCall(module, n, g.load(recv))
+	}
+	if v, ok := g.intBuiltin(module, n, g.load(recv), n.Payload[0]); ok {
+		return v
 	}
 	decl := g.tab.decl(sym)
 	if decl == nil || decl.Kind != "func" {
@@ -100,7 +187,9 @@ func (g *generator) directCall(module string, n *zyxc.Node, sym string, recv *va
 	cABI := qual == "extern" || qual == "c"
 
 	var ptypes []*types.Type
-	if recv := g.receiverType(decl); recv != nil {
+	if recv := g.receiverType(decl); recv != nil && !hasMark(decl, "init") {
+		// init constructs a value rather than reading one, so it has no
+		// receiver to pass, though it is written in a type body.
 		ptypes = append(ptypes, recv)
 	}
 	for _, child := range decl.Children {
@@ -129,6 +218,12 @@ func (g *generator) directCall(module string, n *zyxc.Node, sym string, recv *va
 		if v == nil {
 			return nil
 		}
+		if want != nil && want.Kind == types.KindInterface && v.typ.Kind != types.KindInterface {
+			// A concrete argument becomes an interface value at the call.
+			if v = g.ifaceValue(want, v); v == nil {
+				return nil
+			}
+		}
 		args = append(args, v)
 	}
 	if len(args) != len(ptypes) {
@@ -136,10 +231,7 @@ func (g *generator) directCall(module string, n *zyxc.Node, sym string, recv *va
 		return nil
 	}
 
-	symbol := sym
-	if qual == "c" {
-		symbol = decl.Payload[0]
-	}
+	symbol := g.linkName(sym)
 	if qual == "extern" {
 		params, res, retLL := g.signature(dm, decl)
 		g.declare(symbol, params, res, retLL)
@@ -155,7 +247,10 @@ func (g *generator) directCall(module string, n *zyxc.Node, sym string, recv *va
 			parts = append(parts, g.cArguments(a)...)
 			continue
 		}
-		v := g.load(a)
+		v := g.conform(g.load(a), a.typ)
+		if v == nil {
+			return nil
+		}
 		parts = append(parts, g.llPass(a.typ)+" "+v.text)
 	}
 	if result == nil {
@@ -167,21 +262,136 @@ func (g *generator) directCall(module string, n *zyxc.Node, sym string, recv *va
 	return &value{text: reg, ll: retLL, typ: result}
 }
 
-// cArguments renders one argument in the form the C ABI uses: a fat pointer
-// crosses as its address and its length.
-func (g *generator) cArguments(a *value) []string {
-	v := g.load(a)
-	lls := g.abiArgs(a.typ)
-	if len(lls) == 1 {
-		return []string{lls[0] + " " + v.text}
+// blockingCall lowers a C call that may block through the blocking pool: the
+// arguments are spilled where a pool thread can read them, a thunk makes the
+// call, and the calling coroutine parks until it is done.
+func (g *generator) blockingCall(symbol string, args []*value, result *types.Type, retLL string) *value {
+	var values [][]cArgValue
+	var fields []string
+	for _, a := range args {
+		vals := g.cValues(a)
+		if vals == nil {
+			return nil
+		}
+		values = append(values, vals)
+		for _, v := range vals {
+			fields = append(fields, v.ll)
+		}
 	}
-	parts := make([]string, 0, len(lls))
+	resultField := -1
+	if result != nil {
+		resultField = len(fields)
+		fields = append(fields, retLL)
+	}
+	ctxType := "{}"
+	if len(fields) > 0 {
+		ctxType = "{ " + strings.Join(fields, ", ") + " }"
+	}
+	base := g.allocaCtx(ctxType)
+	at := 0
+	for _, vals := range values {
+		for _, v := range vals {
+			g.emit("  store %s %s, ptr %s", v.ll, v.text, g.ctxField(base, ctxType, at))
+			at++
+		}
+	}
+	thunk := g.blockThunk(symbol, values, result, retLL, ctxType, resultField)
+	g.declareRuntime("zyxrt_block_run", "void", "ptr", "ptr")
+	g.emit("  call void @zyxrt_block_run(ptr @%s, ptr %s)", thunk, base)
+	if result == nil {
+		return &value{ll: "void"}
+	}
+	reg := g.newReg()
+	g.emit("  %s = load %s, ptr %s", reg, retLL, g.ctxField(base, ctxType, resultField))
+	return &value{text: reg, ll: retLL, typ: result}
+}
+
+// allocaCtx reserves the block a blocking call marshals its arguments into.
+// The block lives in the caller's frame, which stays alive while the
+// coroutine is parked.
+func (g *generator) allocaCtx(ll string) string {
+	reg := g.newReg()
+	fmt.Fprintf(&g.fn.allocas, "  %s = alloca %s\n", reg, ll)
+	return reg
+}
+
+// ctxField returns the address of one field of a marshalling block.
+func (g *generator) ctxField(base, ctxType string, index int) string {
+	reg := g.newReg()
+	g.emit("  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d", reg, ctxType, base, index)
+	return reg
+}
+
+// blockThunk emits the entry a blocking call runs on a pool thread: it reads
+// the marshalled arguments back, makes the call, and stores the result.
+func (g *generator) blockThunk(symbol string, values [][]cArgValue, result *types.Type, retLL, ctxType string, resultField int) string {
+	g.thunks++
+	name := fmt.Sprintf("zyx.block.%d", g.thunks)
+	saved := g.fn
+	g.fn = &funcState{symbol: name, vars: map[string]*varSlot{}}
+	g.fn.entry = g.newLabel("block")
+	g.fn.ret = g.newLabel("block.done")
+
+	var parts []string
+	at := 0
+	for _, vals := range values {
+		for _, v := range vals {
+			reg := g.newReg()
+			g.emit("  %s = load %s, ptr %s", reg, v.ll, g.ctxField("%ctx", ctxType, at))
+			parts = append(parts, v.ll+" "+reg)
+			at++
+		}
+	}
+	if result == nil {
+		g.terminator("  call void @%s(%s)", llvmName(symbol), strings.Join(parts, ", "))
+		g.terminator("  ret void")
+	} else {
+		reg := g.newReg()
+		g.emit("  %s = call %s @%s(%s)", reg, retLL, llvmName(symbol), strings.Join(parts, ", "))
+		g.emit("  store %s %s, ptr %s", retLL, reg, g.ctxField("%ctx", ctxType, resultField))
+		g.terminator("  ret void")
+	}
+	g.emitThunk(name, "void", "ptr %ctx")
+	g.fn = saved
+	return name
+}
+
+// cArgValue is one value a C call passes for an argument, in ABI order.
+type cArgValue struct {
+	ll   string
+	text string
+}
+
+// cValues returns the values a C call passes for one argument: a fat pointer
+// crosses as its address and its length, and a record as the target places
+// it. The ABI spelling of a call and the marshalling of a blocking call both
+// read from here, so the two never disagree about how an argument crosses.
+func (g *generator) cValues(a *value) []cArgValue {
+	if g.target.ABIKind(a.typ) == toolchain.ABIAggregate {
+		return g.recordValues(a)
+	}
+	lls := g.abiArgs(a.typ)
+	v := g.load(a)
+	if len(lls) == 1 {
+		return []cArgValue{{ll: lls[0], text: v.text}}
+	}
+	out := make([]cArgValue, 0, len(lls))
 	for i, ll := range lls {
 		reg := g.newReg()
 		g.emit("  %s = extractvalue %s %s, %d", reg, v.ll, v.text, i)
-		parts = append(parts, ll+" "+reg)
+		out = append(out, cArgValue{ll: ll, text: reg})
 	}
-	return parts
+	return out
+}
+
+// cArguments renders one argument in the form the C ABI uses.
+func (g *generator) cArguments(a *value) []string {
+	values := g.cValues(a)
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		out = append(out, v.ll+" "+v.text)
+	}
+	return out
 }
 
 // cCall lowers a call into the C namespace. The C namespace carries no
@@ -193,7 +403,7 @@ func (g *generator) cCall(module string, n *zyxc.Node) *value {
 		return nil
 	}
 	symbol := n.Payload[0]
-	var parts []string
+	var args []*value
 	var types []string
 	for _, child := range n.Children {
 		if child.Kind != "arg" {
@@ -203,22 +413,81 @@ func (g *generator) cCall(module string, n *zyxc.Node) *value {
 		if v == nil {
 			return nil
 		}
-		args := g.cArguments(v)
-		parts = append(parts, args...)
-		for _, a := range args {
-			ll, _, _ := strings.Cut(a, " ")
-			types = append(types, ll)
+		args = append(args, v)
+		types = append(types, g.cDeclared(v.typ)...)
+	}
+	result := g.typeOfNode(n.First("type"), module)
+	ret := "void"
+	if result != nil {
+		var ok bool
+		ret, ok = g.cReturn(result)
+		if !ok {
+			return nil
 		}
 	}
 	if !g.m.declared[symbol] {
 		// The C namespace carries no declaration, so the first call of a
 		// symbol settles the shape of the one declaration the module
-		// writes for it.
+		// writes for it. The check holds every call to the header's own
+		// signature, so the calls agree on the shape.
 		g.m.declared[symbol] = true
-		fmt.Fprintf(&g.m.funcs, "declare void @%s(%s)\n", llvmName(symbol), strings.Join(types, ", "))
+		fmt.Fprintf(&g.m.funcs, "declare %s @%s(%s)\n", ret, llvmName(symbol), strings.Join(types, ", "))
 	}
-	g.emit("  call void @%s(%s)", llvmName(symbol), strings.Join(parts, ", "))
-	return &value{ll: "void"}
+	if hasMark(n, "c-blocking") {
+		// The call may block, so it runs on a pool thread and the calling
+		// coroutine parks until it is done.
+		return g.blockingCall(symbol, args, result, ret)
+	}
+	var parts []string
+	for _, v := range args {
+		parts = append(parts, g.cArguments(v)...)
+	}
+	if result == nil {
+		g.emit("  call void @%s(%s)", llvmName(symbol), strings.Join(parts, ", "))
+		return &value{ll: "void"}
+	}
+	reg := g.newReg()
+	g.emit("  %s = call %s @%s(%s)", reg, ret, llvmName(symbol), strings.Join(parts, ", "))
+	return &value{text: reg, ll: ret, typ: result}
+}
+
+// cReturn returns the LLVM type of the value a C function answers with. A
+// scalar and an address cross as themselves; a record by value needs the C
+// ABI of the target, which is not lowered.
+func (g *generator) cReturn(t *types.Type) (string, bool) {
+	switch t.Kind {
+	case types.KindBool, types.KindChar, types.KindRaw, types.KindFunc:
+		return g.llType(t), true
+	}
+	if t.IsNumeric() {
+		return g.llType(t), true
+	}
+	g.fail(fmt.Errorf("llvmgen: a C function that answers with %s is not lowered", t))
+	return "", false
+}
+
+// cGlobal lowers a reference to a global object a C header declares. The
+// object belongs to the C side, so the module names it and the link resolves
+// it.
+func (g *generator) cGlobal(module string, n *zyxc.Node) *value {
+	if len(n.Payload) == 0 {
+		g.fail(fmt.Errorf("llvmgen: a C global needs a name"))
+		return nil
+	}
+	typ := g.typeOfNode(n.First("type"), module)
+	if typ == nil {
+		g.fail(fmt.Errorf("llvmgen: the type of the C global is not settled"))
+		return nil
+	}
+	ll := g.llType(typ)
+	symbol := n.Payload[0]
+	if !g.m.declared[symbol] {
+		g.m.declared[symbol] = true
+		fmt.Fprintf(&g.m.funcs, "@%s = external global %s\n", llvmName(symbol), ll)
+	}
+	// The name is the storage of the object, so a read loads it and the
+	// value carries the type a load yields.
+	return &value{text: "@" + llvmName(symbol), ll: g.llPass(typ), typ: typ, lvalue: true}
 }
 
 // panicCall lowers the built-in panic.

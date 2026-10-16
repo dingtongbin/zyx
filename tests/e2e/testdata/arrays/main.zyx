@@ -1,0 +1,26 @@
+package main
+
+import "std/fmt"
+
+func main() {
+    var xs = new Array<i64>(2)
+    xs.Push(1)
+    xs.Push(2)
+    xs.Push(3)
+    fmt.PrintI64(i64(xs.Len()))
+    fmt.PrintNl()
+    fmt.PrintI64(xs.get_unchecked(2))
+    fmt.PrintNl()
+    match xs.Get(1) {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.PrintI64(- 1)
+    }
+    fmt.PrintNl()
+    match xs.Pop() {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.PrintI64(- 1)
+    }
+    fmt.PrintNl()
+    fmt.PrintI64(i64(xs.Len()))
+    fmt.PrintNl()
+}

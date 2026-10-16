@@ -21,6 +21,7 @@ var sources = []string{
 	"package main\n\nfunc g() {\nvar m: Map<str, i64> = Map { \"a\": 1 }\nvar i = 0\nfor i < 3 {\ni += 1\n}\n}\n",
 	"package main\n\nfunc h() {\nvar x = 0 - 1\nvar y = a - b\n}\n",
 	"package main\n\nfunc i() {\n// a comment\nvar x = 1 // trailing\n}\n",
+	"package main\nimport c \"test.h\" { fast read, write }\nfast extern func getpid() -> i32\nfunc main() {\n}\n",
 }
 
 func TestFormatIsIdempotent(t *testing.T) {
@@ -61,7 +62,18 @@ func TestFormatIndentsBlocks(t *testing.T) {
 // below is already canonical, which makes formatting it a no-op.
 func TestFormatKeepsABodyAfterAUserResultType(t *testing.T) {
 	src := "package main\n\nstruct Tally {\n    total: i64\n    func init(n: i64) -> Tally {\n" +
-		"        return Tally { total: n}\n    }\n}\n"
+		"        return Tally { total: n }\n    }\n}\n"
+	if got := format(src); got != src {
+		t.Errorf("format =\n%q\nwant\n%q", got, src)
+	}
+}
+
+// A call on a type argument list attaches to the list it closes, while a
+// comparison keeps the space before its right operand. The source is already
+// canonical, which makes formatting it a no-op.
+func TestFormatAttachesACallToATypeArgumentList(t *testing.T) {
+	src := "package main\n\nfunc f(n: i64) -> i64 {\n    return n\n}\n\nfunc main() {\n" +
+		"    var xs = new Array<i64>(4)\n    var b = 1 > (2)\n    var d = f(1)\n}\n"
 	if got := format(src); got != src {
 		t.Errorf("format =\n%q\nwant\n%q", got, src)
 	}
@@ -115,5 +127,53 @@ func TestFormatKeepsATypeArgumentListTight(t *testing.T) {
 	got := format(src)
 	if !strings.Contains(got, "Map<str, i64>") {
 		t.Errorf("a type argument list must stay tight:\n%s", got)
+	}
+}
+
+// TestFormatKeepsFastDeclarations checks the two places a C function's
+// blocking behavior is declared: the fast list of an import of a header, and
+// the fast qualifier of an extern declaration.
+func TestFormatKeepsFastDeclarations(t *testing.T) {
+	src := "package main\nimport c \"test.h\" { fast read, write }\nfast extern func getpid() -> i32\nfunc main() {\n}\n"
+	got := format(src)
+	for _, want := range []string{"fast read, write", "fast extern func getpid() -> i32"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the formatted source lost %q:\n%s", want, got)
+		}
+	}
+	if again := format(got); again != got {
+		t.Errorf("format is not idempotent:\n--- first ---\n%s\n--- second ---\n%s", got, again)
+	}
+}
+
+// TestFormatKeepsATrailingComment checks that a comment the program wrote at
+// the end of a line stays on that line. The format neither wraps nor splits
+// lines, and it keeps a line comment where it was written.
+func TestFormatKeepsATrailingComment(t *testing.T) {
+	src := "package main\nfunc f() {\nvar x = 1 // after a binding\n} // after a block\n"
+	got := format(src)
+	for _, want := range []string{"var x = 1 // after a binding", "} // after a block"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the formatted source moved a trailing comment:\n%s", got)
+		}
+	}
+	if again := format(got); again != got {
+		t.Errorf("format is not idempotent:\n--- first ---\n%s\n--- second ---\n%s", got, again)
+	}
+}
+
+// TestFormatKeepsABlockComment checks that a block comment is kept where it
+// was written: a multi-line one stays multi-line, an inline one stays on its
+// line, and a nested one is one comment rather than two.
+func TestFormatKeepsABlockComment(t *testing.T) {
+	src := "package main\n/* one\n   /* nested */\n   two */\nfunc f() {\nvar x = 1 /* inline */ + 2\n/* own line */\nvar y = 3\n}\n"
+	got := format(src)
+	for _, want := range []string{"/* one", "/* nested */", "var x = 1 /* inline */ + 2", "/* own line */\n"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the formatted source lost %q:\n%s", want, got)
+		}
+	}
+	if again := format(got); again != got {
+		t.Errorf("format is not idempotent:\n--- first ---\n%s\n--- second ---\n%s", got, again)
 	}
 }

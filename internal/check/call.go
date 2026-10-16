@@ -3,10 +3,12 @@
 package check
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 
 	"zyx/internal/ast"
+	"zyx/internal/cheader"
 	"zyx/internal/diag"
 	"zyx/internal/resolve"
 	"zyx/internal/source"
@@ -155,16 +157,7 @@ func (c *checker) checkClone(recv *types.Type, sp source.Span) *types.Type {
 // checkQualifiedCall checks `pkg.Fn(args)` and `c.fn(args)`.
 func (c *checker) checkQualifiedCall(sel *ast.SelectorExpr, v *ast.CallExpr, pkg *resolve.Symbol) *types.Type {
 	if pkg.Name == "c" {
-		// The signature of a C function comes from the header symbol table,
-		// which the toolchain stage supplies, so only the arguments are
-		// checked here.
-		prev := c.addrOK
-		c.addrOK = true
-		for _, a := range v.Args {
-			c.checkExpr(a, nil)
-		}
-		c.addrOK = prev
-		return void
+		return c.checkCCall(sel, v)
 	}
 	member := c.symOf(sel.Name)
 	if member == nil {
@@ -184,6 +177,149 @@ func (c *checker) checkQualifiedCall(sel *ast.SelectorExpr, v *ast.CallExpr, pkg
 	}
 	c.out.Nodes[sel.Name] = sig
 	return c.checkArgs(sig, v.Args, sel.Name, sel.Name.Sp, c.requiredArgs(sel.Name), false, nil)
+}
+
+// checkCCall checks a call into the C namespace. The signature comes from the
+// header the package imported, so the arguments are checked against the
+// declaration and the call answers with the declaration's result.
+func (c *checker) checkCCall(sel *ast.SelectorExpr, v *ast.CallExpr) *types.Type {
+	name := sel.Name.Name
+	fn, ok := c.cFunction(name)
+	if !ok {
+		c.errorHelp(diag.CodeUndefinedName, sel.Name.Sp,
+			"import the header that declares it",
+			"%s is not declared by an imported C header", name)
+		return nil
+	}
+	// An argument may be the address of a value, which only a C call takes.
+	prev := c.addrOK
+	c.addrOK = true
+	defer func() { c.addrOK = prev }()
+
+	// A str and a view cross as the pointer and the length they are, so one
+	// argument can fill two parameters.
+	at := 0
+	for _, a := range v.Args {
+		var want *types.Type
+		if at < len(fn.Params) {
+			want = fn.Params[at]
+		}
+		t := c.checkExpr(a, want)
+		if t == nil || t.Kind == types.Invalid {
+			return nil
+		}
+		width := 1
+		if t.Kind == types.KindStr || t.Kind == types.KindSlice {
+			width = 2
+		}
+		if at+width > len(fn.Params) {
+			if !fn.Variadic {
+				c.errorHelp(diag.CodeArgCount, a.Span(),
+					"pass the declared number of arguments",
+					"%s takes %d arguments", name, len(fn.Params))
+				return nil
+			}
+			at += width
+			continue
+		}
+		if !cArgFits(t, fn.Params[at:at+width]) {
+			c.errorHelp(diag.CodeTypeMismatch, a.Span(),
+				"pass a value of the declared type",
+				"%s takes %s here, not %s", name, cArgText(fn.Params[at:at+width]), t)
+			return nil
+		}
+		at += width
+	}
+	if at != len(fn.Params) && !fn.Variadic {
+		c.errorHelp(diag.CodeArgCount, sel.Name.Sp,
+			"pass the declared number of arguments",
+			"%s takes %d arguments, %d given", name, len(fn.Params), at)
+		return nil
+	}
+	if fn.Result == nil {
+		return void
+	}
+	return fn.Result
+}
+
+// cFunction returns the declaration of a C function, searching the headers
+// the package imported.
+func (c *checker) cFunction(name string) (*cheader.Func, bool) {
+	for _, header := range sortedKeys(c.cdecls) {
+		if fn, ok := c.cdecls[header].Functions[name]; ok {
+			return fn, true
+		}
+	}
+	return nil, false
+}
+
+// cArgFits reports whether a language value fits the C parameters its
+// position fills.
+//
+// The C boundary is a boundary of representations: a bool is one byte and a
+// char is four, and an integer of the same width crosses as the parameter
+// whether or not the signedness matches, because the bytes are the same. A
+// str and a view fill the pointer and the length they are.
+func cArgFits(t *types.Type, params []*types.Type) bool {
+	switch len(params) {
+	case 2:
+		return types.Identical(params[0], types.Raw) && params[1].IsInteger()
+	case 1:
+	default:
+		return false
+	}
+	p := params[0]
+	if types.Identical(t, p) {
+		return true
+	}
+	if t.IsNumeric() && p.IsNumeric() {
+		return cWidth(t) == cWidth(p)
+	}
+	switch t.Kind {
+	case types.KindBool:
+		return cWidth(p) == 1
+	case types.KindChar:
+		return cWidth(p) == 4
+	}
+	return false
+}
+
+// cWidth returns the byte width of an integer type, and zero for a type that
+// is not one.
+func cWidth(t *types.Type) int {
+	switch t.Kind {
+	case types.KindInt8, types.KindUint8:
+		return 1
+	case types.KindInt16, types.KindUint16:
+		return 2
+	case types.KindInt32, types.KindUint32:
+		return 4
+	case types.KindInt64, types.KindUint64, types.KindUsize:
+		return 8
+	case types.KindInt128, types.KindUint128:
+		return 16
+	}
+	return 0
+}
+
+// cArgText renders the parameters one argument fills.
+func cArgText(params []*types.Type) string {
+	parts := make([]string, 0, len(params))
+	for _, pt := range params {
+		parts = append(parts, pt.String())
+	}
+	return strings.Join(parts, ", ")
+}
+
+// sortedKeys returns the keys of a table in byte order, so a search over
+// several headers does not depend on the order they were read in.
+func sortedKeys(t map[string]*cheader.Table) []string {
+	out := make([]string, 0, len(t))
+	for key := range t {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // checkVariantCall checks `Enum.Variant(args)`. The enum's type arguments
@@ -259,10 +395,19 @@ func (c *checker) checkVariantCall(sel *ast.SelectorExpr, v *ast.CallExpr, sym *
 		}
 	}
 	if len(v.Args) != len(variant.Payload) {
-		c.errorHelp(diag.CodeArgCount, sel.Name.Sp,
-			"pass the declared number of arguments",
-			"%s.%s takes %d arguments, got %d",
-			enum.Name, variant.Name, len(variant.Payload), len(v.Args))
+		// A variant whose payload is the unit type carries nothing, so it is
+		// written without arguments rather than with a value that says
+		// nothing.
+		unit := false
+		if len(v.Args) == 0 && len(variant.Payload) == 1 {
+			unit = types.Substitute(variant.Payload[0], bindings).ID == "void"
+		}
+		if !unit {
+			c.errorHelp(diag.CodeArgCount, sel.Name.Sp,
+				"pass the declared number of arguments",
+				"%s.%s takes %d arguments, got %d",
+				enum.Name, variant.Name, len(variant.Payload), len(v.Args))
+		}
 	}
 	return inst
 }
@@ -377,6 +522,11 @@ func (c *checker) methodOf(recv *types.Type, name string) *types.Type {
 	if recv == nil || recv.Kind == types.Invalid {
 		return nil
 	}
+	if recv.Kind == types.KindTypeParam {
+		// A type parameter reaches the methods its constraints declare,
+		// which is the only interface it is known to satisfy.
+		return c.out.paramMethod(recv, name)
+	}
 	if d := c.declOf(recv); d != nil {
 		if sig, ok := d.Methods[name]; ok {
 			return instantiateMethod(recv, d, sig)
@@ -406,6 +556,9 @@ func instantiateMethod(recv *types.Type, d *Decl, sig *types.Type) *types.Type {
 func (p *Package) MethodOf(recv *types.Type, name string) *types.Type {
 	if recv == nil || recv.Kind == types.Invalid {
 		return nil
+	}
+	if recv.Kind == types.KindTypeParam {
+		return p.paramMethod(recv, name)
 	}
 	if d := p.Decl(recv); d != nil {
 		if sig, ok := d.Methods[name]; ok {
@@ -442,6 +595,9 @@ var containerMethods = map[string]map[string]func(*types.Type) *types.Type{
 		},
 		"Contains": func(recv *types.Type) *types.Type {
 			return types.FuncOf(types.Bool, arg(recv, 0))
+		},
+		"Insert": func(recv *types.Type) *types.Type {
+			return types.FuncOf(void, arg(recv, 0), arg(recv, 1))
 		},
 		"Remove": func(recv *types.Type) *types.Type {
 			return types.FuncOf(types.Option.Instantiate(arg(recv, 1)), arg(recv, 0))
@@ -488,6 +644,28 @@ var containerMethods = map[string]map[string]func(*types.Type) *types.Type{
 		"Pop": func(recv *types.Type) *types.Type {
 			return types.FuncOf(types.Option.Instantiate(arg(recv, 0)))
 		},
+	},
+	"Ring": {
+		"Len":  func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Cap":  func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Push": func(recv *types.Type) *types.Type { return types.FuncOf(void, arg(recv, 0)) },
+		"Pop": func(recv *types.Type) *types.Type {
+			return types.FuncOf(types.Option.Instantiate(arg(recv, 0)))
+		},
+	},
+	"Buf": {
+		"Len":       func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Cap":       func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Clear":     func(*types.Type) *types.Type { return types.FuncOf(void) },
+		"Reset":     func(*types.Type) *types.Type { return types.FuncOf(void) },
+		"Reserve":   func(*types.Type) *types.Type { return types.FuncOf(void, types.Usize) },
+		"Consume":   func(*types.Type) *types.Type { return types.FuncOf(void, types.Usize) },
+		"WriteByte": func(*types.Type) *types.Type { return types.FuncOf(void, types.Uint8) },
+		"Write":     func(*types.Type) *types.Type { return types.FuncOf(void, types.SliceOf(types.Uint8)) },
+		"WriteStr":  func(*types.Type) *types.Type { return types.FuncOf(void, types.Str) },
+		"Bytes":     func(*types.Type) *types.Type { return types.FuncOf(types.SliceOf(types.Uint8)) },
+		"Str":       func(*types.Type) *types.Type { return types.FuncOf(types.Str) },
+		"Take":      func(*types.Type) *types.Type { return types.FuncOf(types.Array.Instantiate(types.Uint8)) },
 	},
 	"BlockingQueue": {
 		"Len": func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
@@ -548,11 +726,25 @@ func builtinMethod(recv *types.Type, name string) *types.Type {
 	}
 	if recv.IsInteger() {
 		switch name {
-		case "wrap_add", "wrap_sub", "wrap_mul", "rotl", "rotr", "swap_bytes":
+		case "wrap_add", "wrap_sub", "wrap_mul", "rotl", "rotr":
 			return types.FuncOf(recv, recv)
+		case "swap_bytes":
+			return types.FuncOf(recv)
 		case "count_ones", "leading_zeros", "trailing_zeros":
 			return types.FuncOf(types.Uint32)
 		}
+	}
+	if name == "Show" && showable(recv) {
+		// The language gives a value its Show from the fixed table the
+		// backend owns, so the method is callable wherever an interface
+		// value or a constrained parameter would call it.
+		return types.FuncOf(nil, types.Buf)
+	}
+	if name == "Eq" && equatable(recv) {
+		return types.FuncOf(types.Bool, recv)
+	}
+	if name == "Hash" && hashable(recv) {
+		return types.FuncOf(types.Uint64)
 	}
 	return nil
 }
@@ -659,7 +851,9 @@ func argsSpan(args []ast.Expr) source.Span {
 }
 
 // accepts reports whether an argument of type got may stand where want is
-// expected. An unsuffixed numeric literal adopts the expected numeric type.
+// expected. An unsuffixed numeric literal adopts the expected numeric type,
+// and a generic declaration's own type accepts the form that declaration
+// builds when it writes that type with its own parameters.
 func (c *checker) accepts(want *types.Type, arg ast.Expr, got *types.Type) bool {
 	if c.assignable(want, got) {
 		return true
@@ -668,7 +862,25 @@ func (c *checker) accepts(want *types.Type, arg ast.Expr, got *types.Type) bool 
 		c.out.Nodes[arg] = want
 		return true
 	}
-	return false
+	return uninstantiatedForm(want, got)
+}
+
+// uninstantiatedForm reports whether want is a generic declaration's own type
+// and got is that type instantiated with type parameters, which is the form
+// the declaration builds when it names itself without arguments.
+func uninstantiatedForm(want, got *types.Type) bool {
+	if want == nil || got == nil || !want.IsNamed() || !got.IsNamed() {
+		return false
+	}
+	if want.ID != got.ID || len(want.Args) != 0 || len(got.Args) == 0 {
+		return false
+	}
+	for _, a := range got.Args {
+		if a == nil || a.Kind != types.KindTypeParam {
+			return false
+		}
+	}
+	return true
 }
 
 // assignable reports whether a value of type src may be stored where dst is
@@ -711,18 +923,81 @@ func (c *checker) implements(t, iface *types.Type) bool {
 }
 
 // builtinImplements reports whether the language itself gives a type an
-// interface: the primitive types and str implement Eq, Hash, and Show, and
-// the concurrency handles are SyncSafe.
+// interface: the types it compares implement Eq, the types it hashes
+// implement Hash, the types whose text the backend writes from its fixed
+// table implement Show, and the concurrency handles are SyncSafe.
 func builtinImplements(t, iface *types.Type) bool {
 	switch iface.Name {
-	case "Eq", "Hash", "Show":
-		return t.IsBasic() || t.Kind == types.KindStr || t.Kind == types.KindDuration
+	case "Eq":
+		return equatable(t)
+	case "Hash":
+		return hashable(t)
+	case "Show":
+		return showable(t)
 	case "SyncSafe":
 		switch t.Kind {
 		case types.KindChan, types.KindStr:
 			return true
 		}
-		return t.ID == types.JoinHandle.ID || t.ID == types.PanicError.ID
+		if t.ID == types.JoinHandle.ID || t.ID == types.PanicError.ID {
+			return true
+		}
+		return syncSafeType(t)
+	}
+	return false
+}
+
+// syncSafeType reports whether a named type is one of the concurrency
+// primitives the standard library provides. They cross a coroutine boundary
+// by reference rather than by copy, because what they guard is shared.
+func syncSafeType(t *types.Type) bool {
+	if t.Pkg != "sync" && !strings.HasSuffix(t.Pkg, "/sync") {
+		return false
+	}
+	switch t.Name {
+	case "Atomic", "Mutex", "Once", "WaitGroup", "Semaphore", "Shared":
+		return true
+	}
+	return false
+}
+
+// showable reports whether the language writes the text of the type from the
+// backend's fixed table rather than from a declaration. It is exactly the set
+// of types whose Show the backend lowers, so the check and the backend never
+// disagree about whether a value can be written.
+func showable(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	return t.IsNumeric() || t.Kind == types.KindBool || t.Kind == types.KindChar ||
+		t.Kind == types.KindStr || t.Kind == types.KindDuration
+}
+
+// equatable reports whether the language gives the type its own equality,
+// which is the set the comparison operators accept. It is exactly the set
+// whose Eq the backend lowers.
+func equatable(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	return t.IsNumeric() || t.Kind == types.KindBool || t.Kind == types.KindChar ||
+		t.Kind == types.KindRaw || t.Kind == types.KindStr || t.Kind == types.KindDuration
+}
+
+// hashable reports whether the language gives the type a hash, which is
+// exactly the set a container accepts as a key. A floating-point value is
+// left out: its equality is not the equality of its bytes, so no hash agrees
+// with it.
+func hashable(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Kind {
+	case types.KindBool, types.KindInt8, types.KindInt16, types.KindInt32,
+		types.KindInt64, types.KindInt128, types.KindUint8, types.KindUint16,
+		types.KindUint32, types.KindUint64, types.KindUint128, types.KindUsize,
+		types.KindChar, types.KindRaw, types.KindDuration, types.KindStr:
+		return true
 	}
 	return false
 }

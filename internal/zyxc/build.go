@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"zyx/internal/ast"
+	"zyx/internal/cheader"
 	"zyx/internal/check"
 	"zyx/internal/coro"
 	"zyx/internal/marks"
@@ -20,8 +21,8 @@ import (
 // Build renders one package's analyzed form as a .zyxc tree: the imports
 // first in byte order, then every declaration in source order, with the
 // symbol id of every reference and the marks of every operation.
-func Build(pkg *resolve.Package, rinfo *resolve.Info, cpkg *check.Package, minfo *marks.Info, cinfo *coro.Info, target string) (*File, error) {
-	b := &builder{pkg: pkg, rinfo: rinfo, cpkg: cpkg, marks: minfo, coro: cinfo, target: target}
+func Build(pkg *resolve.Package, rinfo *resolve.Info, cpkg *check.Package, minfo *marks.Info, cinfo *coro.Info, target string, cdecls map[string]*cheader.Table) (*File, error) {
+	b := &builder{pkg: pkg, rinfo: rinfo, cpkg: cpkg, marks: minfo, coro: cinfo, target: target, cdecls: cdecls}
 	f := &File{Target: target, Module: pkg.Path}
 	var imports []*Node
 	for _, file := range pkg.Files {
@@ -102,10 +103,17 @@ type builder struct {
 	coro  *coro.Info
 	// target is the triple the layout of every type is settled for.
 	target string
+	// cdecls holds the declarations of every C header the package imported,
+	// keyed by the header they came from.
+	cdecls map[string]*cheader.Table
 }
 
-// marks attaches the marks of a node.
+// mark attaches the marks of a node. Every statement and every expression
+// passes through here, so a mark the analysis recorded reaches the format.
 func (b *builder) mark(n *Node, at ast.Node) *Node {
+	if n == nil {
+		return nil
+	}
 	for _, m := range b.marks.MarksOf(at) {
 		n.Mark(m.Name, m.Arg)
 	}
@@ -157,8 +165,22 @@ func (b *builder) qualified(t *types.Type) *types.Type {
 		out.Elem = b.qualified(t.Elem)
 		return &out
 	}
-	if !t.IsNamed() || t.Pkg == "" || t.Pkg == b.pkg.Path || t.Qual != "" {
+	if !t.IsNamed() {
 		return t
+	}
+	if t.Pkg == "" || t.Pkg == b.pkg.Path || t.Qual != "" {
+		// The type itself needs no qualifier, but its arguments can name a
+		// package this one does not declare, which is how `Result<void, E>`
+		// carries a type from the package that declared it.
+		if len(t.Args) == 0 {
+			return t
+		}
+		out := *t
+		out.Args = make([]*types.Type, len(t.Args))
+		for i, a := range t.Args {
+			out.Args[i] = b.qualified(a)
+		}
+		return &out
 	}
 	out := *t
 	out.Qual = packageQualifier(t.Pkg)
@@ -180,12 +202,62 @@ func packageQualifier(path string) string {
 	return path
 }
 
-// importNode renders one import declaration.
+// importNode renders one import declaration. A C header carries the
+// declarations clang read from it, so the intermediate form holds the whole C
+// surface a program was compiled against.
 func (b *builder) importNode(imp *ast.ImportDecl) *Node {
 	if imp.CHeader {
-		return b.at(New("import-c", imp.Path), imp.Span())
+		n := b.at(New("import-c", imp.Path), imp.Span())
+		table := b.cdecls[imp.Path]
+		if table == nil {
+			return n
+		}
+		for _, name := range table.Names() {
+			n.Child(b.cDeclaration(table, name))
+		}
+		return n
 	}
 	return b.at(New("import", imp.Path), imp.Span())
+}
+
+// cDeclaration renders one declaration a C header exposes. A function the
+// package declared fast carries the flag, so the blocking behavior of every C
+// call is settled in the intermediate form rather than derived again.
+func (b *builder) cDeclaration(table *cheader.Table, name string) *Node {
+	if fn, ok := table.Functions[name]; ok {
+		n := New("c-func", name)
+		if b.cpkg != nil && b.cpkg.FastC[name] {
+			n.Payload = append(n.Payload, "fast")
+		}
+		for i, pt := range fn.Params {
+			p := New("param", fn.Names[i], pt.String())
+			n.Child(p)
+		}
+		if fn.Result != nil {
+			n.Child(New("result", fn.Result.String()))
+		}
+		if fn.Variadic {
+			n.Child(New("c-variadic"))
+		}
+		return n
+	}
+	if record, ok := table.Records[name]; ok {
+		kind := "struct"
+		if record.Union {
+			kind = "union"
+		}
+		return New("c-record", name, kind)
+	}
+	if alias, ok := table.Aliases[name]; ok {
+		return New("c-alias", name, alias.String())
+	}
+	if value, ok := table.Constants[name]; ok {
+		return New("c-const", name, strconv.FormatInt(value, 10))
+	}
+	if global, ok := table.Globals[name]; ok {
+		return New("c-global", name, global.String())
+	}
+	return nil
 }
 
 // decl renders one top-level declaration.
@@ -193,8 +265,8 @@ func (b *builder) decl(decl ast.Decl) *Node {
 	switch d := decl.(type) {
 	case *ast.ConstDecl:
 		n := New("const", d.Name.Name, b.symID(d.Name))
-		if d.Type != nil {
-			n.Child(New("type", b.typeText(b.cpkg.Nodes[d.Type])))
+		if t := b.declaredType(d.Type, d.Name, d.Value); t != nil {
+			n.Child(New("type", b.typeText(t)))
 		}
 		if d.Value != nil {
 			n.Child(b.wrap("value", b.expr(d.Value)))
@@ -205,8 +277,8 @@ func (b *builder) decl(decl ast.Decl) *Node {
 		for _, name := range d.Names {
 			n.Payload = append(n.Payload, name.Name, b.symID(name))
 		}
-		if d.Type != nil {
-			n.Child(New("type", b.typeText(b.cpkg.Nodes[d.Type])))
+		if t := b.declaredType(d.Type, firstName(d.Names), d.Value); t != nil {
+			n.Child(New("type", b.typeText(t)))
 		}
 		if d.Value != nil {
 			n.Child(b.wrap("value", b.expr(d.Value)))
@@ -224,10 +296,8 @@ func (b *builder) decl(decl ast.Decl) *Node {
 		return b.structNode(d)
 	case *ast.UnionDecl:
 		n := New("extern-union", d.Name.Name)
-		if t := b.staticType(d.Name); t != nil {
-			for _, f := range b.fieldNodes(t, nil) {
-				n.Child(f)
-			}
+		for _, f := range d.Fields {
+			n.Child(b.fieldDecl(f))
 		}
 		return b.at(n, d.Sp)
 	case *ast.EnumDecl:
@@ -274,7 +344,7 @@ func (b *builder) member(member ast.Decl, selfType string) *Node {
 		}
 		return b.at(n, m.Sp)
 	case *ast.ImplBlock:
-		n := New("impl", b.typeText(b.cpkg.Nodes[m.Interface]))
+		n := New("impl", b.implSymbol(m.Interface))
 		n.Child(b.typeParams(m.TypeParams)...)
 		for _, f := range m.Methods {
 			n.Child(b.funcNode(f, selfType))
@@ -465,10 +535,15 @@ func (b *builder) declaredFields(decl *ast.StructDecl) []*Node {
 		if !ok {
 			continue
 		}
-		n := New("field-decl", f.Name.Name, b.typeText(b.cpkg.Nodes[f.Type]))
-		out = append(out, b.at(n, f.Sp))
+		out = append(out, b.fieldDecl(f))
 	}
 	return out
+}
+
+// fieldDecl renders one field declaration.
+func (b *builder) fieldDecl(f *ast.FieldDecl) *Node {
+	n := New("field-decl", f.Name.Name, b.typeText(b.cpkg.Nodes[f.Type]))
+	return b.at(n, f.Sp)
 }
 
 // variantNode renders an enum variant.
@@ -523,7 +598,15 @@ func (b *builder) block(s *ast.BlockStmt) *Node {
 }
 
 // stmt renders one statement.
+// stmt renders a statement and attaches its marks. Every statement reaches
+// the format through here, so a mark the analysis recorded is never lost on
+// the way.
 func (b *builder) stmt(s ast.Stmt) *Node {
+	return b.mark(b.stmtNode(s), s)
+}
+
+// stmtNode renders a statement without its marks.
+func (b *builder) stmtNode(s ast.Stmt) *Node {
 	switch v := s.(type) {
 	case nil:
 		return nil
@@ -531,7 +614,7 @@ func (b *builder) stmt(s ast.Stmt) *Node {
 		return b.block(v)
 	case *ast.ExprStmt:
 		n := New("expr-stmt").Child(b.expr(v.X))
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	case *ast.AssignStmt:
 		return b.assignNode(v)
 	case *ast.VarDecl:
@@ -585,7 +668,7 @@ func (b *builder) stmt(s ast.Stmt) *Node {
 		return b.at(n, v.Sp)
 	case *ast.DeferStmt:
 		n := New("defer").Child(b.wrap("call", b.expr(v.Call)))
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	case *ast.RegionStmt:
 		name := ""
 		for _, m := range b.marks.MarksOf(v) {
@@ -598,7 +681,7 @@ func (b *builder) stmt(s ast.Stmt) *Node {
 			n.Mark("defers", "")
 		}
 		n.Child(b.wrap("body", b.block(v.Body)))
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	case *ast.ComptimeBlockStmt:
 		n := New("block").Child(b.block(v.Body))
 		return b.at(n, v.Sp)
@@ -613,7 +696,7 @@ func (b *builder) stmt(s ast.Stmt) *Node {
 		for _, arm := range v.Arms {
 			n.Child(b.selectArm(arm))
 		}
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	}
 	b.fail(s, "statement "+nodeName(s))
 	return nil
@@ -634,12 +717,12 @@ func (b *builder) assignNode(v *ast.AssignStmt) *Node {
 		n := New("assign")
 		n.Child(b.wrap("target", b.expr(v.Target)))
 		n.Child(b.wrap("value", b.expr(v.Value)))
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	}
 	n := New("assign-op", v.Op.String())
 	n.Child(b.wrap("target", b.expr(v.Target)))
 	n.Child(b.wrap("value", b.expr(v.Value)))
-	return b.mark(b.at(n, v.Sp), v)
+	return b.at(n, v.Sp)
 }
 
 // forNode renders one of the three loop forms.
@@ -673,7 +756,7 @@ func (b *builder) forNode(v *ast.ForStmt) *Node {
 		n.Child(b.wrap("cond", b.expr(v.Iter)))
 	}
 	n.Child(b.wrap("body", b.stmt(v.Body)))
-	return b.mark(b.at(n, v.Sp), v)
+	return b.at(n, v.Sp)
 }
 
 // armNode renders one match arm.
@@ -692,7 +775,8 @@ func (b *builder) selectArm(arm *ast.SelectArm) *Node {
 	var n *Node
 	switch arm.Kind {
 	case ast.SelectRecv:
-		n = New("recv-arm", nameOr(arm.RecvValue), nameOr(arm.RecvOk))
+		n = New("recv-arm", nameOr(arm.RecvValue), b.symID(arm.RecvValue),
+			nameOr(arm.RecvOk), b.symID(arm.RecvOk))
 		n.Child(b.wrap("chan", b.expr(arm.Chan)))
 	case ast.SelectSend:
 		n = New("send-arm")
@@ -777,6 +861,50 @@ func (b *builder) staticType(e ast.Node) *types.Type {
 	return t
 }
 
+// implSymbol returns the symbol id of the interface an impl block names. The
+// interface is identified by its symbol, so a reader never has to match a
+// spelling to find it.
+func (b *builder) implSymbol(t ast.TypeExpr) string {
+	if tn, ok := t.(*ast.TypeName); ok && tn.Name != nil {
+		return b.symID(tn.Name)
+	}
+	return ""
+}
+
+// lambdaID returns the symbol id of a lambda, which is a function of its own
+// and needs a name to be emitted under.
+func (b *builder) lambdaID(v *ast.LambdaExpr) string {
+	if sym := b.rinfo.Defs[v]; sym != nil {
+		return sym.ID
+	}
+	return ""
+}
+
+// firstName returns the first name of a binding list, or nil when the list is
+// empty.
+func firstName(names []*ast.Ident) *ast.Ident {
+	if len(names) == 0 {
+		return nil
+	}
+	return names[0]
+}
+
+// declaredType returns the type a binding has: the type it writes, the type
+// the checker recorded for its name, or the type its initializer has. A
+// binding reaches the format with a settled type, so no later stage reads the
+// initializer to find one.
+func (b *builder) declaredType(declared ast.TypeExpr, name *ast.Ident, value ast.Expr) *types.Type {
+	if declared != nil {
+		return b.cpkg.Nodes[declared]
+	}
+	if name != nil {
+		if t := b.staticType(name); t != nil {
+			return t
+		}
+	}
+	return b.staticType(value)
+}
+
 // annotate records the static type of an expression, which the backend
 // consumes and never has to infer.
 func (b *builder) annotate(n *Node, e ast.Expr) *Node {
@@ -794,7 +922,7 @@ func (b *builder) annotate(n *Node, e ast.Expr) *Node {
 // inference: the type of a literal, of a call whose callee carries no
 // declaration, and of an unannotated binding.
 func (b *builder) expr(e ast.Expr) *Node {
-	return b.annotate(b.exprNode(e), e)
+	return b.mark(b.annotate(b.exprNode(e), e), e)
 }
 
 // exprNode renders an expression without its type annotation.
@@ -833,7 +961,7 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 		}
 		n := New("call")
 		n.Child(b.wrap("callee", b.expr(v.Fn)))
-		n.Child(b.args(v.Args)...)
+		n.Child(b.callArgNodes(v)...)
 		return b.at(n, v.Sp)
 	case *ast.SelectorExpr:
 		return b.selector(v)
@@ -846,7 +974,7 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 			n.Child(b.wrap("recv", b.expr(v.X)))
 			n.Child(b.wrap("lo", b.expr(r.Lo)))
 			n.Child(b.wrap("hi", b.expr(r.Hi)))
-			return b.mark(b.at(n, v.Sp), v)
+			return b.at(n, v.Sp)
 		}
 		n := New("index")
 		n.Child(b.wrap("recv", b.expr(v.X)))
@@ -862,7 +990,7 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 		for _, a := range v.Args {
 			n.Child(b.wrap("arg", b.expr(a)))
 		}
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	case *ast.TryExpr:
 		n := New("try").Child(b.wrap("call", b.expr(v.X)))
 		return b.at(n, v.Sp)
@@ -872,22 +1000,12 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 			n.Mark("watched", "")
 			n.Child(b.wrap("watcher", b.expr(v.Watcher)))
 		}
-		return b.mark(b.at(n, v.Sp), v)
-	case *ast.FastExpr:
-		n := New("c-call", "")
-		if call, ok := v.X.(*ast.CallExpr); ok {
-			n.Payload = []string{cName(call.Fn)}
-			for _, a := range call.Args {
-				n.Child(b.wrap("arg", b.expr(a)))
-			}
-			return b.mark(b.at(n, call.Sp), v)
-		}
-		return b.expr(v.X)
+		return b.at(n, v.Sp)
 	case *ast.FuncRefExpr:
 		n := New("func-ref", b.symID(v.Name))
 		return b.at(n, v.Sp)
 	case *ast.LambdaExpr:
-		n := New("lambda", "")
+		n := New("lambda", b.lambdaID(v))
 		for _, p := range v.Params {
 			pn := New("param", nameOr(p.Name), b.typeText(b.cpkg.Nodes[p.Type]))
 			n.Child(b.at(pn, p.Sp))
@@ -912,25 +1030,17 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 		for _, x := range v.Elems {
 			n.Child(b.wrap("elem", b.expr(x)))
 		}
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	case *ast.ArrayRepeatExpr:
 		n := New("array-repeat")
 		n.Child(b.wrap("elem", b.expr(v.Elem)))
 		n.Child(b.wrap("count", b.expr(v.Count)))
-		return b.mark(b.at(n, v.Sp), v)
+		return b.at(n, v.Sp)
 	case *ast.AggregateLitExpr:
 		return b.aggregate(v)
 	}
 	b.fail(e, "expression "+nodeName(e))
 	return nil
-}
-
-// cName returns the C name a C call reaches.
-func cName(fn ast.Expr) string {
-	if sel, ok := fn.(*ast.SelectorExpr); ok && sel.Name != nil {
-		return sel.Name.Name
-	}
-	return ""
 }
 
 // namespace returns the predeclared namespace a selector reaches, such as
@@ -1028,6 +1138,158 @@ func (b *builder) calleeTypeNode(id *ast.Ident) *Node {
 	return nil
 }
 
+// callArgs returns a call's arguments with the defaults of the parameters the
+// call leaves out appended, so the argument list the format carries is the one
+// the call means.
+func (b *builder) callArgs(v *ast.CallExpr) []ast.Expr {
+	if decl := b.calleeDecl(v); decl != nil {
+		return ast.WithDefaults(v.Args, decl.Params)
+	}
+	return v.Args
+}
+
+// calleeDecl returns the declaration a call names, when that declaration
+// belongs to this package. A declaration another package owns is reached
+// through the interface it exports, because its tree is not part of this one.
+func (b *builder) calleeDecl(v *ast.CallExpr) *ast.FuncDecl {
+	switch fn := v.Fn.(type) {
+	case *ast.Ident:
+		sym := b.rinfo.Defs[fn]
+		if !b.ownDecl(sym) {
+			return nil
+		}
+		decl, _ := sym.Decl.(*ast.FuncDecl)
+		return decl
+	case *ast.SelectorExpr:
+		// A method's declaration belongs to the type its receiver has, which
+		// the check settled.
+		recv := b.cpkg.Nodes[fn.X]
+		if recv == nil {
+			return nil
+		}
+		d := b.cpkg.Decl(recv)
+		if d == nil {
+			return nil
+		}
+		sym := d.MethodSyms[fn.Name.Name]
+		if !b.ownDecl(sym) {
+			return nil
+		}
+		decl, _ := sym.Decl.(*ast.FuncDecl)
+		return decl
+	}
+	return nil
+}
+
+// ownDecl reports whether a declaration symbol belongs to this package, which
+// is what decides whether its default expressions are part of this tree.
+func (b *builder) ownDecl(sym *resolve.Symbol) bool {
+	return sym != nil && strings.HasPrefix(sym.ID, b.pkg.Path+".")
+}
+
+// callArgNodes renders a call's arguments, completing the defaults the call
+// leaves out. One written in this package is rendered from its expression,
+// and one another package declares is rendered from the value that package
+// exports, because its declaration is not part of this tree.
+func (b *builder) callArgNodes(v *ast.CallExpr) []*Node {
+	out := b.args(b.callArgs(v))
+	if len(out) != len(v.Args) {
+		return out
+	}
+	for _, val := range b.importedDefaults(v) {
+		n := b.valueNode(val, v.Sp)
+		if n == nil {
+			return out
+		}
+		out = append(out, b.wrap("arg", n))
+	}
+	return out
+}
+
+// importedDefaults returns the default values of the parameters a call leaves
+// out, when the callee is a function or a method another package declares.
+func (b *builder) importedDefaults(v *ast.CallExpr) []*check.Value {
+	if b.cpkg == nil {
+		return nil
+	}
+	fn, ok := v.Fn.(*ast.SelectorExpr)
+	if !ok {
+		return nil
+	}
+	if pkg := b.importedPackage(fn.X); pkg != nil {
+		itf := b.cpkg.Imported(pkg.ID)
+		if itf == nil {
+			return nil
+		}
+		return tailDefaults(itf.FuncDefaults[fn.Name.Name], len(v.Args))
+	}
+	recv := b.cpkg.Nodes[fn.X]
+	if recv == nil {
+		return nil
+	}
+	d := b.cpkg.Decl(recv)
+	if d == nil {
+		return nil
+	}
+	return tailDefaults(d.MethodDefaults[fn.Name.Name], len(v.Args))
+}
+
+// importedPackage returns the symbol a selector's qualifier names when it is
+// an imported package, or nil.
+func (b *builder) importedPackage(x ast.Expr) *resolve.Symbol {
+	id, ok := x.(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	sym := b.rinfo.Defs[id]
+	if sym == nil || sym.Kind != resolve.KindPackage {
+		return nil
+	}
+	return sym
+}
+
+// tailDefaults returns the defaults of the parameters a call leaves out, or
+// nil when any of them has none.
+func tailDefaults(values []*check.Value, given int) []*check.Value {
+	if len(values) <= given {
+		return nil
+	}
+	out := make([]*check.Value, 0, len(values)-given)
+	for _, v := range values[given:] {
+		if v == nil {
+			return nil
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// valueNode renders a compile-time value as a node, which is what completes a
+// default another package declared. A value whose shape is not a literal the
+// format carries is reported rather than rendered wrongly.
+func (b *builder) valueNode(val *check.Value, sp source.Span) *Node {
+	if val == nil || val.Type == nil {
+		return nil
+	}
+	// A variant with no payload is a value of its enum.
+	if val.Type.Kind == types.KindEnum && val.Str != "" {
+		return b.at(New("variant-lit", b.typeText(val.Type), val.Str), sp)
+	}
+	var kind, text string
+	switch {
+	case val.Type.IsInteger() || val.Type.Kind == types.KindChar:
+		kind, text = "int", strconv.FormatUint(val.Int, 10)
+	case val.Type.Kind == types.KindBool:
+		kind, text = "bool", strconv.FormatBool(val.Bool)
+	default:
+		b.fail(&ast.Ident{Sp: sp}, "a default of type "+b.typeText(val.Type))
+		return nil
+	}
+	n := New("lit", kind, text)
+	n.Child(New("type", b.typeText(val.Type)))
+	return b.at(n, sp)
+}
+
 // args renders a call's arguments.
 func (b *builder) args(list []ast.Expr) []*Node {
 	out := make([]*Node, 0, len(list))
@@ -1044,13 +1306,25 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 		switch {
 		case b.isCCall(sel):
 			n := New("c-call", sel.Name.Name)
-			n.Child(b.args(v.Args)...)
-			return b.mark(b.at(n, v.Sp), v)
+			n.Child(b.callArgNodes(v)...)
+			return b.at(n, v.Sp)
 		case b.namespace(sel) != "":
 			// meta.size_of(T) and dur.ms(100) are their own node kinds,
-			// because the backend settles them without a call.
+			// because the backend settles them without a call. A meta query
+			// names a type, so its argument is written as a type text, which
+			// is what monomorphization substitutes.
 			n := New(b.namespace(sel), sel.Name.Name)
-			n.Child(b.args(v.Args)...)
+			if b.namespace(sel) == "meta" {
+				for _, a := range v.Args {
+					t := b.staticType(a)
+					if t == nil {
+						continue
+					}
+					n.Child(b.wrap("arg", b.at(New("type", b.typeText(t)), a.Span())))
+				}
+			} else {
+				n.Child(b.callArgNodes(v)...)
+			}
 			return b.at(n, v.Sp)
 		case b.isJoin(sel):
 			n := New("join", sel.Name.Name)
@@ -1058,19 +1332,19 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 			return b.at(n, v.Sp)
 		case b.isVariant(sel):
 			n := New("variant-lit", b.typeText(b.staticType(v)), sel.Name.Name)
-			n.Child(b.args(v.Args)...)
+			n.Child(b.callArgNodes(v)...)
 			return b.at(n, v.Sp)
 		case b.isMethodCall(sel):
 			n := New("mcall", sel.Name.Name, b.memberID(sel.X, sel.Name.Name))
 			n.Child(b.wrap("recv", b.expr(sel.X)))
-			n.Child(b.args(v.Args)...)
+			n.Child(b.callArgNodes(v)...)
 			if child := b.calleeTypeNode(sel.Name); child != nil {
 				n.Child(child)
 			}
-			return b.mark(b.at(n, v.Sp), v)
+			return b.at(n, v.Sp)
 		case b.isQualified(sel):
 			n := New("qual", nameOr(qualifierName(sel)), sel.Name.Name, b.symID(sel.Name))
-			n.Child(b.args(v.Args)...)
+			n.Child(b.callArgNodes(v)...)
 			if child := b.calleeTypeNode(sel.Name); child != nil {
 				n.Child(child)
 			}
@@ -1142,6 +1416,8 @@ func (b *builder) selector(v *ast.SelectorExpr) *Node {
 	case b.isQualified(v):
 		n := New("qual", nameOr(qualifierName(v)), v.Name.Name, b.symID(v.Name))
 		return b.at(n, v.Sp)
+	case b.isCValue(v):
+		return b.cValueNode(v)
 	case b.isCCall(v):
 		return b.at(New("c-call", v.Name.Name), v.Sp)
 	case b.isVariant(v):
@@ -1162,6 +1438,62 @@ func (b *builder) selector(v *ast.SelectorExpr) *Node {
 	// cannot resolve.
 	b.fail(v, "the selector "+v.Name.Name)
 	return nil
+}
+
+// isCValue reports whether a selector names a C declaration that is not a
+// function: an enumerator, which is a constant, or a global object.
+func (b *builder) isCValue(v *ast.SelectorExpr) bool {
+	id, ok := v.X.(*ast.Ident)
+	if !ok || id.Name != "c" || v.Name == nil {
+		return false
+	}
+	for _, header := range cHeaderNames(b.cdecls) {
+		table := b.cdecls[header]
+		if _, ok := table.Constants[v.Name.Name]; ok {
+			return true
+		}
+		if _, ok := table.Globals[v.Name.Name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// cValueNode renders a C constant or a C global object. A constant is folded
+// where it is written, and a global object is a name the link resolves.
+func (b *builder) cValueNode(v *ast.SelectorExpr) *Node {
+	name := v.Name.Name
+	t := b.cpkg.Nodes[v.Name]
+	for _, header := range cHeaderNames(b.cdecls) {
+		table := b.cdecls[header]
+		if value, ok := table.Constants[name]; ok {
+			n := New("lit", "int", strconv.FormatInt(value, 10))
+			if t != nil {
+				n.Child(New("type", b.typeText(t)))
+			}
+			return b.at(n, v.Sp)
+		}
+		if _, ok := table.Globals[name]; ok {
+			n := New("c-global-ref", name)
+			if t != nil {
+				n.Child(New("type", b.typeText(t)))
+			}
+			return b.at(n, v.Sp)
+		}
+	}
+	b.fail(v, "the C name "+name)
+	return nil
+}
+
+// cHeaderNames returns the headers of a table in byte order, so a lookup
+// does not depend on the order they were read in.
+func cHeaderNames(t map[string]*cheader.Table) []string {
+	out := make([]string, 0, len(t))
+	for key := range t {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // memberID returns the symbol id of a member of a receiver's type. A method
@@ -1216,12 +1548,16 @@ func (b *builder) isCCall(v *ast.SelectorExpr) bool {
 // mistaken for one, and the enum is read from the variant name, which is the
 // node the checker records it on.
 func (b *builder) isVariant(v *ast.SelectorExpr) bool {
-	id := qualifierName(v)
-	if id == nil || !b.isTypeName(id) {
-		return false
-	}
 	t := b.cpkg.Nodes[v.Name]
 	if t == nil || t.Kind != types.KindEnum {
+		return false
+	}
+	// The receiver must name the enum itself: a bare type name, or a package
+	// qualified one. A field read names a value rather than a type, so a
+	// receiver that has a value type rules the reading out.
+	if id := qualifierName(v); id != nil && b.isTypeName(id) {
+		// The type is written directly, as `Type.Variant`.
+	} else if recv := b.staticType(v.X); recv != nil && recv.Kind != types.KindTypeValue {
 		return false
 	}
 	d := b.cpkg.Decl(t)
@@ -1306,5 +1642,5 @@ func (b *builder) aggregate(v *ast.AggregateLitExpr) *Node {
 			n.Child(e)
 		}
 	}
-	return b.mark(b.at(n, v.Sp), v)
+	return b.at(n, v.Sp)
 }

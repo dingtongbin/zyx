@@ -25,9 +25,9 @@ var builtinDecls = buildBuiltinDecls()
 
 // buildBuiltinDecls builds the member table of the pre-imported types.
 func buildBuiltinDecls() map[string]*Decl {
-	optionT := types.Param("Option$T", "T")
-	resultT := types.Param("Result$T", "T")
-	resultE := types.Param("Result$E", "E")
+	optionT := predeclaredParams("Option")[0]
+	resultParams := predeclaredParams("Result")
+	resultT, resultE := resultParams[0], resultParams[1]
 	handleR := types.Param("JoinHandle$R", "R")
 	self := types.Param(selfParam, selfParam)
 	resultOf := func(ok, err *types.Type) *types.Type {
@@ -36,8 +36,8 @@ func buildBuiltinDecls() map[string]*Decl {
 	return map[string]*Decl{
 		"Option": {
 			Type:     types.Option,
-			Params:   []*types.Type{optionT},
-			Variants: []*Variant{{Name: "None"}, {Name: "Some", Payload: []*types.Type{optionT}}},
+			Params:   predeclaredParams("Option"),
+			Variants: predeclaredVariants("Option"),
 			Methods: map[string]*types.Type{
 				"IsSome":   types.FuncOf(types.Bool),
 				"IsNone":   types.FuncOf(types.Bool),
@@ -46,12 +46,9 @@ func buildBuiltinDecls() map[string]*Decl {
 			},
 		},
 		"Result": {
-			Type:   types.Result,
-			Params: []*types.Type{resultT, resultE},
-			Variants: []*Variant{
-				{Name: "Ok", Payload: []*types.Type{resultT}},
-				{Name: "Err", Payload: []*types.Type{resultE}},
-			},
+			Type:     types.Result,
+			Params:   predeclaredParams("Result"),
+			Variants: predeclaredVariants("Result"),
 			Methods: map[string]*types.Type{
 				"IsOk":     types.FuncOf(types.Bool),
 				"IsErr":    types.FuncOf(types.Bool),
@@ -70,22 +67,12 @@ func buildBuiltinDecls() map[string]*Decl {
 			},
 		},
 		"Value": {
-			Type: types.Value,
-			Variants: []*Variant{
-				{Name: "Null"},
-				{Name: "Bool", Payload: []*types.Type{types.Bool}},
-				{Name: "Num", Payload: []*types.Type{types.Float64}},
-				{Name: "Str", Payload: []*types.Type{types.Str}},
-				{Name: "Arr", Payload: []*types.Type{types.Array.Instantiate(types.Value)}},
-				{Name: "Obj", Payload: []*types.Type{types.Map.Instantiate(types.Str, types.Value)}},
-			},
+			Type:     types.Value,
+			Variants: predeclaredVariants("Value"),
 		},
 		"PanicError": {
-			Type: types.PanicError,
-			Fields: []*Field{
-				{Name: "Msg", Type: types.Str},
-				{Name: "Location", Type: types.Str},
-			},
+			Type:   types.PanicError,
+			Fields: predeclaredFields("PanicError"),
 		},
 		"Eq": {
 			Type:    types.Eq,
@@ -96,14 +83,45 @@ func buildBuiltinDecls() map[string]*Decl {
 			Methods: map[string]*types.Type{"Hash": types.FuncOf(types.Uint64)},
 		},
 		"Show": {
-			Type:    types.Show,
-			Methods: map[string]*types.Type{"Show": types.FuncOf(types.Str)},
+			Type: types.Show,
+			// Show writes the text of a value into the buffer it is given,
+			// so no value becomes a string on the way.
+			Methods: map[string]*types.Type{"Show": types.FuncOf(nil, types.Buf)},
 		},
 		"SyncSafe": {
 			Type:    types.SyncSafe,
 			Methods: map[string]*types.Type{},
 		},
 	}
+}
+
+// predeclaredFields returns the fields of a predeclared struct in the
+// checker's own form.
+func predeclaredFields(name string) []*Field {
+	list, _ := types.PredeclaredFields(name)
+	out := make([]*Field, 0, len(list))
+	for _, f := range list {
+		out = append(out, &Field{Name: f.Name, Type: f.Type})
+	}
+	return out
+}
+
+// predeclaredParams returns the type parameters of a predeclared enum, which
+// the types package owns so that the checker and the backend agree on them.
+func predeclaredParams(name string) []*types.Type {
+	params, _ := types.PredeclaredParams(name)
+	return params
+}
+
+// predeclaredVariants returns the variants of a predeclared enum in the
+// checker's own form.
+func predeclaredVariants(name string) []*Variant {
+	list, _ := types.PredeclaredVariants(name)
+	out := make([]*Variant, 0, len(list))
+	for _, v := range list {
+		out = append(out, &Variant{Name: v.Name, Payload: v.Payload})
+	}
+	return out
 }
 
 // funcContext describes where a function declaration appears.
@@ -202,6 +220,24 @@ func isSyncPrimitive(t *types.Type) bool {
 	return false
 }
 
+// defaultValues evaluates the defaults of a declaration, one per parameter in
+// order and nil where a parameter has none, so an importing package can
+// complete a call that leaves them out. A default is a compile-time
+// constant, so the value is all a caller needs.
+func (c *checker) defaultValues(f *ast.FuncDecl) []*Value {
+	out := make([]*Value, len(f.Params))
+	prev := c.inComptime
+	c.inComptime = true
+	for i, p := range f.Params {
+		if p.Default == nil {
+			continue
+		}
+		out[i] = c.eval(p.Default)
+	}
+	c.inComptime = prev
+	return out
+}
+
 // checkFreeFunc checks a top-level function.
 func (c *checker) checkFreeFunc(v *ast.FuncDecl) {
 	for _, tp := range v.TypeParams {
@@ -217,9 +253,25 @@ func (c *checker) checkFreeFunc(v *ast.FuncDecl) {
 		if v.Name != nil && t != nil {
 			c.out.Decls[v.Name.Name] = t
 			c.recordDecl(v.Name, t)
+			if d := c.defaultValues(v); hasAny(d) {
+				if c.out.FuncDefaults == nil {
+					c.out.FuncDefaults = map[string][]*Value{}
+				}
+				c.out.FuncDefaults[v.Name.Name] = d
+			}
 		}
 		c.checkFuncShape(v, funcContext{})
 	})
+}
+
+// hasAny reports whether a default list holds a default at all.
+func hasAny(values []*Value) bool {
+	for _, v := range values {
+		if v != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // funcType returns the function type of a declaration. A variadic parameter
@@ -239,6 +291,14 @@ func (c *checker) funcType(v *ast.FuncDecl) *types.Type {
 // the variadic parameter, default values, and the reserved names.
 func (c *checker) checkFuncShape(v *ast.FuncDecl, ctx funcContext) {
 	hasBody := v.Body != nil || v.BodyExpr != nil
+	if v.Quals.Fast && !v.Quals.Extern {
+		// Whether a C function blocks is a property of the function, so the
+		// declaration that links it is where fast belongs. A function the
+		// program defines is not a C symbol at all.
+		c.errorHelp(diag.CodeUnexpectedToken, nameSpan(v),
+			"mark the function extern, or drop fast",
+			"fast states the blocking behavior of a C symbol, so it needs extern")
+	}
 	switch {
 	case v.Quals.Extern:
 		if hasBody {
@@ -253,7 +313,7 @@ func (c *checker) checkFuncShape(v *ast.FuncDecl, ctx funcContext) {
 				"an interface method has no body")
 		}
 	default:
-		if !hasBody {
+		if !hasBody && v.Name != nil {
 			c.errorHelp(diag.CodeMissingBody, nameSpan(v),
 				"write the body, or mark the function extern",
 				"function %q has no body", v.Name.Name)
@@ -498,6 +558,16 @@ func (c *checker) checkMethod(d *Decl, f *ast.FuncDecl) {
 	t := c.funcType(f)
 	if f.Name != nil {
 		d.Methods[f.Name.Name] = t
+		if d.MethodSyms == nil {
+			d.MethodSyms = map[string]*resolve.Symbol{}
+		}
+		d.MethodSyms[f.Name.Name] = c.symOf(f.Name)
+		if values := c.defaultValues(f); hasAny(values) {
+			if d.MethodDefaults == nil {
+				d.MethodDefaults = map[string][]*Value{}
+			}
+			d.MethodDefaults[f.Name.Name] = values
+		}
 		c.recordDecl(f.Name, t)
 		if f.Name.Name == "init" {
 			c.checkInitShape(f)
@@ -608,7 +678,7 @@ func (c *checker) checkImpls() {
 
 // checkImplComplete compares one impl block with the interface it names.
 func (c *checker) checkImplComplete(d *Decl, impl *Impl) {
-	want := c.interfaceMethods(impl.Interface, d.Type)
+	want := c.out.interfaceMethods(impl.Interface, d.Type)
 	for name, sig := range want {
 		got, ok := impl.Methods[name]
 		if !ok {
@@ -634,13 +704,13 @@ func (c *checker) checkImplComplete(d *Decl, impl *Impl) {
 
 // interfaceMethods returns the methods an interface requires, with its type
 // arguments and its Self parameter applied to the implementing type.
-func (c *checker) interfaceMethods(iface, implType *types.Type) map[string]*types.Type {
-	raw := c.rawInterfaceMethods(iface)
+func (p *Package) interfaceMethods(iface, implType *types.Type) map[string]*types.Type {
+	raw := p.rawInterfaceMethods(iface)
 	if raw == nil {
 		return nil
 	}
 	args := map[string]*types.Type{}
-	if d := c.declOf(iface); d != nil {
+	if d := p.Decl(iface); d != nil {
 		for i, p := range d.Params {
 			if i < len(iface.Args) {
 				args[p.ID] = iface.Args[i]
@@ -665,11 +735,11 @@ func (c *checker) interfaceMethods(iface, implType *types.Type) map[string]*type
 
 // rawInterfaceMethods returns the declared methods of an interface, before
 // its type arguments and Self are applied.
-func (c *checker) rawInterfaceMethods(iface *types.Type) map[string]*types.Type {
+func (p *Package) rawInterfaceMethods(iface *types.Type) map[string]*types.Type {
 	if iface == nil {
 		return nil
 	}
-	if d := c.declOf(iface); d != nil {
+	if d := p.Decl(iface); d != nil {
 		return d.Methods
 	}
 	return nil
@@ -700,9 +770,15 @@ func abiCompatible(t *types.Type) bool {
 		return false
 	}
 	switch t.Kind {
-	case types.KindBool, types.KindChar, types.KindRaw, types.KindFunc,
+	case types.KindBool, types.KindChar, types.KindRaw,
 		types.KindExternStruct, types.KindUnion:
 		return true
+	case types.KindFunc:
+		// A function value carries the function and the receiver a method
+		// value was taken from, so it is not a C function pointer. A C
+		// callback field is written from the header's own type once the
+		// header symbol table lands.
+		return false
 	case types.KindArray:
 		return abiCompatible(t.Elem)
 	}

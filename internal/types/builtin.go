@@ -25,6 +25,10 @@ var (
 	Str       = basic(KindStr)
 	Raw       = basic(KindRaw)
 	TypeValue = basic(KindTypeValue)
+	// Void is the result of a function that returns nothing. It carries no
+	// value, and it is a type so that a container or a handle can name it as
+	// a type argument.
+	Void = &Type{Kind: Invalid, ID: "void", Name: "void"}
 )
 
 // basic returns the singleton of a basic kind.
@@ -45,6 +49,10 @@ var (
 	Set           = Named(KindContainer, "", "", "Set", 1)
 	PriorityQueue = Named(KindContainer, "", "", "PriorityQueue", 1)
 	BlockingQueue = Named(KindContainer, "", "", "BlockingQueue", 1)
+	// Buf is the mutable byte buffer the standard library builds on.
+	Buf = Named(KindContainer, "", "", "Buf", 0)
+	// Ring is the fixed-capacity circular buffer.
+	Ring = Named(KindContainer, "", "", "Ring", 1)
 	// JoinHandle is the coroutine handle a spawn returns.
 	JoinHandle = Named(KindContainer, "", "", "JoinHandle", 1)
 	// Duration is the predeclared value type with built-in arithmetic.
@@ -59,6 +67,88 @@ var (
 	Show     = Named(KindInterface, "", "", "Show", 0)
 	SyncSafe = Named(KindInterface, "", "", "SyncSafe", 0)
 )
+
+// The type parameters of the predeclared enums. The checker and the backend
+// both read them, so a payload written in terms of a parameter means the same
+// thing to either.
+var (
+	optionT = Param("Option$T", "T")
+	resultT = Param("Result$T", "T")
+	resultE = Param("Result$E", "E")
+)
+
+// A Variant is one member of a predeclared enum, with its payload written in
+// terms of the enum's own type parameters.
+type Variant struct {
+	Name    string
+	Payload []*Type
+}
+
+// predeclaredParams lists the type parameters of a predeclared enum, in
+// declaration order.
+var predeclaredParams = map[string][]*Type{
+	"Option": {optionT},
+	"Result": {resultT, resultE},
+}
+
+// predeclaredVariants lists the variants of a predeclared enum, in
+// declaration order. An enum the language declares has its variants in the
+// program's own tree instead.
+var predeclaredVariants = map[string][]Variant{
+	"Option": {
+		{Name: "None"},
+		{Name: "Some", Payload: []*Type{optionT}},
+	},
+	"Result": {
+		{Name: "Ok", Payload: []*Type{resultT}},
+		{Name: "Err", Payload: []*Type{resultE}},
+	},
+	"Value": {
+		{Name: "Null"},
+		{Name: "Bool", Payload: []*Type{Bool}},
+		{Name: "Num", Payload: []*Type{Float64}},
+		{Name: "Str", Payload: []*Type{Str}},
+		{Name: "Arr", Payload: []*Type{Array.Instantiate(Value)}},
+		{Name: "Obj", Payload: []*Type{Map.Instantiate(Str, Value)}},
+	},
+}
+
+// A Field is one member of a predeclared struct, which the language declares
+// rather than the program.
+type Field struct {
+	Name string
+	Type *Type
+}
+
+// predeclaredFields lists the fields of a predeclared struct, in declaration
+// order.
+var predeclaredFields = map[string][]Field{
+	"PanicError": {
+		{Name: "Msg", Type: Str},
+		{Name: "Location", Type: Str},
+	},
+}
+
+// PredeclaredFields returns the fields of a predeclared struct, in
+// declaration order.
+func PredeclaredFields(name string) ([]Field, bool) {
+	fields, ok := predeclaredFields[name]
+	return fields, ok
+}
+
+// PredeclaredParams returns the type parameters of a predeclared enum, in
+// declaration order.
+func PredeclaredParams(name string) ([]*Type, bool) {
+	params, ok := predeclaredParams[name]
+	return params, ok
+}
+
+// PredeclaredVariants returns the variants of a predeclared enum, in
+// declaration order.
+func PredeclaredVariants(name string) ([]Variant, bool) {
+	variants, ok := predeclaredVariants[name]
+	return variants, ok
+}
 
 // basics maps every basic kind to its singleton.
 var basics = map[Kind]*Type{
@@ -112,7 +202,10 @@ var predeclared = map[string]*Type{
 	"Set":           Set,
 	"PriorityQueue": PriorityQueue,
 	"BlockingQueue": BlockingQueue,
+	"Buf":           Buf,
+	"Ring":          Ring,
 	"JoinHandle":    JoinHandle,
+	"void":          Void,
 	"Duration":      Duration,
 	"PanicError":    PanicError,
 	"Value":         Value,

@@ -10,8 +10,25 @@ import (
 	"zyx/internal/zyxc"
 )
 
-// stmt lowers one statement.
+// stmt lowers one statement, then releases the objects the analysis marked as
+// no longer used inside it.
 func (g *generator) stmt(module string, n *zyxc.Node) {
+	mark := len(g.fn.pending)
+	g.stmtNode(module, n)
+	g.flushReleases(mark)
+}
+
+// flushReleases releases the objects a statement finished with.
+func (g *generator) flushReleases(from int) {
+	pending := g.fn.pending[from:]
+	g.fn.pending = g.fn.pending[:from]
+	for _, p := range pending {
+		g.release(p.typ, p.slot)
+	}
+}
+
+// stmtNode lowers one statement.
+func (g *generator) stmtNode(module string, n *zyxc.Node) {
 	if n == nil {
 		return
 	}
@@ -30,14 +47,20 @@ func (g *generator) stmt(module string, n *zyxc.Node) {
 		g.bind(module, n)
 	case "if":
 		g.ifStmt(module, n)
+	case "match":
+		g.matchStmt(module, n)
 	case "for":
 		g.forStmt(module, n)
+	case "for-in":
+		g.forIn(module, n)
 	case "break":
 		g.breakStmt(n)
 	case "continue":
 		g.continueStmt(n)
 	case "return":
 		g.returnStmt(module, n)
+	case "select":
+		g.selectStmt(module, n)
 	case "region":
 		g.regionStmt(module, n)
 	case "defer":
@@ -72,8 +95,13 @@ func (g *generator) initChild(n *zyxc.Node) *zyxc.Node {
 	return nil
 }
 
-// bind lowers a local declaration.
+// bind lowers a local declaration. A binding may introduce several names at
+// once, which take the elements of the tuple it is given.
 func (g *generator) bind(module string, n *zyxc.Node) {
+	if len(n.Payload) > 2 {
+		g.bindTuple(module, n)
+		return
+	}
 	if len(n.Payload) < 2 {
 		g.fail(fmt.Errorf("llvmgen: a binding needs a name"))
 		return
@@ -99,6 +127,46 @@ func (g *generator) bind(module string, n *zyxc.Node) {
 	if id != "" {
 		g.fn.vars[id] = &varSlot{alloca: slot, typ: typ}
 	}
+}
+
+// bindTuple lowers a binding that introduces several names from one tuple.
+// The element types come from the tuple, so the format writes no type for the
+// binding itself.
+func (g *generator) bindTuple(module string, n *zyxc.Node) {
+	init := g.initChild(n)
+	if init == nil {
+		g.fail(fmt.Errorf("llvmgen: a binding of several names needs a value"))
+		return
+	}
+	v := g.load(g.expr(module, init, nil))
+	if v == nil {
+		return
+	}
+	if v.typ == nil || v.typ.Kind != types.KindTuple {
+		g.fail(fmt.Errorf("llvmgen: a binding of several names needs a tuple, got %s", v.typ))
+		return
+	}
+	for i := 0; i+1 < len(n.Payload); i += 2 {
+		name, symbol := n.Payload[i], n.Payload[i+1]
+		elem := i / 2
+		if elem >= len(v.typ.Elems) {
+			g.fail(fmt.Errorf("llvmgen: the binding has more names than %s has elements", v.typ))
+			return
+		}
+		typ := v.typ.Elems[elem]
+		slot := g.alloca(typ)
+		g.storeInto(slot, typ, g.tupleElement(v, elem, typ), false)
+		if name != "_" && symbol != "" {
+			g.fn.vars[symbol] = &varSlot{alloca: slot, typ: typ}
+		}
+	}
+}
+
+// tupleElement returns one element of a tuple value.
+func (g *generator) tupleElement(v *value, index int, typ *types.Type) *value {
+	reg := g.newReg()
+	g.emit("  %s = extractvalue %s %s, %d", reg, g.llType(v.typ), v.text, index)
+	return &value{text: reg, ll: g.llPass(typ), typ: typ}
 }
 
 // assign lowers an assignment.
@@ -245,6 +313,13 @@ func (g *generator) returnStmt(module string, n *zyxc.Node) {
 	if v == nil {
 		g.terminator("  br label %%%s", g.fn.ret)
 		return
+	}
+	if g.fn.result.Kind == types.KindInterface && v.typ.Kind != types.KindInterface {
+		// A concrete result becomes an interface value on the way out.
+		if v = g.ifaceValue(g.fn.result, v); v == nil {
+			g.terminator("  br label %%%s", g.fn.ret)
+			return
+		}
 	}
 	// The result is kept in a local that the shared return block reads, so
 	// that every return path converges on one epilogue.

@@ -220,6 +220,121 @@ const (
 	ABIAggregate
 )
 
+// RecordClass is the class of one value a record contributes at a call.
+type RecordClass uint8
+
+const (
+	// RecordInteger travels in a general register.
+	RecordInteger RecordClass = iota
+	// RecordFloat travels in a vector register.
+	RecordFloat
+	// RecordCopy travels as the address of a copy the caller owns, which is
+	// how a record too large or too oddly shaped for registers travels.
+	RecordCopy
+)
+
+// RecordArg is one argument a record contributes, and where in the record the
+// value is read from.
+type RecordArg struct {
+	// Class is the class of the value.
+	Class RecordClass
+	// Offset is the byte offset of the value in the record.
+	Offset uint64
+	// Width is the width in bits of the integer the value travels as. It is
+	// zero for a floating-point value, which travels as a double.
+	Width uint64
+	// Align is the alignment of a copy in bytes, for a RecordCopy.
+	Align uint64
+}
+
+// RecordShape describes a record to the target's argument placement rules.
+type RecordShape struct {
+	// Size is the size of the record in bytes.
+	Size uint64
+	// Align is the alignment of the record in bytes.
+	Align uint64
+	// Fields describes every field, in declaration order.
+	Fields []RecordField
+}
+
+// RecordField describes one field as the placement rules see it. A nested
+// record contributes its own fields, at the offsets they land at.
+type RecordField struct {
+	// Offset is the field's byte offset in the outer record.
+	Offset uint64
+	// Size is the field's size in bytes.
+	Size uint64
+	// Float marks a floating-point field.
+	Float bool
+}
+
+// RecordArgument returns the arguments a record contributes as an argument on
+// the target. A C compiler places a record by rules of its own, and the two
+// families of 64-bit targets place it differently, so the target table owns
+// the rule.
+//
+// Windows passes a record of one, two, four, or eight bytes as an integer of
+// that width and every other one through a copy. A System V target classifies
+// each eightbyte of the record: one that holds only floating-point fields
+// travels in a vector register and one that holds anything else travels in a
+// general register, while a record larger than two eightbytes, or one with a
+// field that is not naturally aligned, travels through a copy.
+func (t Target) RecordArgument(s RecordShape) []RecordArg {
+	if t.OS == "windows" {
+		switch s.Size {
+		case 1, 2, 4, 8:
+			return []RecordArg{{Class: RecordInteger, Width: s.Size * 8}}
+		}
+		return []RecordArg{{Class: RecordCopy, Align: s.Align}}
+	}
+	if s.Size > 16 || unalignedFields(s) {
+		return []RecordArg{{Class: RecordCopy, Align: s.Align}}
+	}
+	var out []RecordArg
+	for start := uint64(0); start < s.Size; start += 8 {
+		out = append(out, eightbyte(s, start))
+	}
+	return out
+}
+
+// eightbyte classifies the eightbyte that starts at start. The class is what
+// decides the register file; the width is how many bytes of the record the
+// value occupies, so a read of it never reaches past the record.
+func eightbyte(s RecordShape, start uint64) RecordArg {
+	end := start + 8
+	if end > s.Size {
+		end = s.Size
+	}
+	arg := RecordArg{Class: RecordFloat, Offset: start, Width: (end - start) * 8}
+	for _, f := range s.Fields {
+		if f.Offset >= end || f.Offset+f.Size <= start {
+			continue
+		}
+		if !f.Float {
+			// One integer or pointer field makes the whole eightbyte an
+			// integer, because the register has one class.
+			arg.Class = RecordInteger
+			break
+		}
+	}
+	return arg
+}
+
+// unalignedFields reports whether a field sits where the target's rules would
+// not put it, which the System V rules answer with a copy.
+func unalignedFields(s RecordShape) bool {
+	for _, f := range s.Fields {
+		align := uint64(1)
+		for align < f.Size && align < 8 {
+			align *= 2
+		}
+		if f.Offset%align != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // ABIKind returns how a value of a type crosses the C boundary. The target
 // table owns the classification, because it is part of the platform's ABI;
 // the backend spells it in LLVM types.

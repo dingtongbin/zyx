@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"zyx/internal/toolchain"
 	"zyx/internal/zyxc"
 )
 
@@ -16,8 +17,8 @@ import (
 var coveredKinds = []string{
 	"addr", "alias", "arg", "arm", "array-lit", "array-repeat", "assign", "assign-op",
 	"binary",
-	"bind", "bind-const", "block", "body", "break", "c-call", "call", "callee",
-	"callee-type", "chan", "cond", "const", "continue", "convert", "count",
+	"c-alias", "c-const", "c-func", "c-global", "c-global-ref", "c-record", "c-variadic",
+	"bind", "bind-const", "block", "body", "break", "c-call", "call", "callee", "callee-type", "chan", "cond", "const", "continue", "convert", "count",
 	"default-arm", "defer", "dur", "elem", "else", "entry", "enum", "expr-stmt",
 	"extern-struct", "extern-union", "field", "field-decl", "field-init", "for",
 	"for-in", "func", "func-ref", "hi", "idx", "if", "impl", "import", "import-c",
@@ -42,7 +43,8 @@ var coveredKinds = []string{
 // test below is what makes the two agree.
 var specKinds = []string{
 	"addr", "alias", "arm", "array-lit", "array-repeat", "assign", "assign-op",
-	"binary", "bind", "bind-const", "block", "break", "call", "c-call", "const",
+	"binary",
+	"c-alias", "c-const", "c-func", "c-global", "c-global-ref", "c-record", "c-variadic", "bind", "bind-const", "block", "break", "call", "c-call", "const",
 	"continue", "convert", "default-arm", "defer", "dur", "enum", "expr-stmt",
 	"extern-struct", "extern-union", "field", "field-decl", "for", "for-in", "func",
 	"func-ref", "if", "impl", "import", "import-c", "index", "interface", "is",
@@ -65,47 +67,29 @@ var deferredKinds = map[string]string{}
 var specMarks = []string{
 	"alias", "boundary-clone", "boundary-share", "c-blocking", "c-fast",
 	"chan:close", "chan:recv", "chan:select", "chan:send", "chan:try",
-	"coro:body", "coro:handoff", "coro:host", "coro:panic-path", "coro:region",
-	"coro:spawn", "defer-site", "defers", "entry", "home", "init", "iter-guard",
-	"last-use", "mono-rule", "move", "region:enter", "region:exit", "shared-bind",
-	"shared-ref", "shared-store", "static-release", "transfer", "view-borrow",
-	"watched",
+	"coro:handoff", "coro:host", "coro:panic-path", "coro:region",
+	"coro:spawn", "defer-site", "defers", "entry", "home", "init",
+	"iter-guard", "last-use", "move", "region:enter",
+	"region:exit", "shared-bind", "shared-ref", "shared-store",
+	"static-release", "transfer", "view-borrow", "watched",
 }
 
 // coveredMarks lists the marks the corpus emits. It grows as the corpus
 // grows: a mark that stops being emitted fails the test below.
 var coveredMarks = []string{
-	"alias", "c-blocking", "chan:select", "coro:handoff", "coro:host",
-	"coro:panic-path", "coro:region", "coro:spawn", "defer-site", "defers",
-	"entry", "home", "init", "iter-guard", "region:enter", "region:exit",
-	"transfer", "view-borrow", "watched",
+	"alias", "boundary-clone", "boundary-share", "c-blocking", "c-fast",
+	"chan:close", "chan:recv", "chan:select", "chan:send", "chan:try",
+	"coro:handoff", "coro:host", "coro:panic-path", "coro:region", "coro:spawn",
+	"defer-site", "defers", "entry", "home", "init", "iter-guard", "last-use",
+	"move", "region:enter", "region:exit", "shared-bind", "shared-ref",
+	"shared-store", "static-release", "transfer", "view-borrow", "watched",
 }
 
 // deferredMarks lists the marks the format defines that no corpus reaches
 // yet, with the reason. Every entry is work the front end still owes, not a
-// decision to drop the mark.
-var deferredMarks = map[string]string{
-	"boundary-clone": memoryPass,
-	"boundary-share": memoryPass,
-	"c-fast":         "the front end does not classify C calls yet",
-	"chan:close":     memoryPass,
-	"chan:recv":      memoryPass,
-	"chan:send":      memoryPass,
-	"chan:try":       memoryPass,
-	"coro:body":      memoryPass,
-	"last-use":       memoryPass,
-	"mono-rule":      "comptime evaluation is not implemented yet",
-	"move":           memoryPass,
-	"shared-bind":    memoryPass,
-	"shared-ref":     memoryPass,
-	"shared-store":   memoryPass,
-	"static-release": memoryPass,
-}
-
-// memoryPass is the reason the ownership and boundary marks are deferred:
-// they come from the pass that decides where an object lives and when it is
-// released, which the front end does not run yet.
-const memoryPass = "the ownership and release pass does not run yet"
+// decision to drop the mark. It is empty: the format defines no mark the
+// front end leaves unproduced.
+var deferredMarks = map[string]string{}
 
 // emitMarks returns every mark the intermediate form of a package writes,
 // read back through the format's own reader. Reading the text rather than
@@ -305,6 +289,45 @@ func TestEverySpecKindIsExercisedOrDeferred(t *testing.T) {
 	}
 }
 
+// TestStaticReleaseReachesTheBackend checks that an object the analysis marks
+// as no longer used is released through the runtime. The value the program
+// computes proves the release does not happen before the use it follows,
+// which is what a wrong placement would break.
+func TestStaticReleaseReachesTheBackend(t *testing.T) {
+	if _, err := toolchain.Locate(); err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	dir := copyTree(t, filepath.Join("testdata", "release"))
+	stdout, stderr, code := run(dir, "emit-llvm", ".")
+	if code != 0 {
+		t.Fatalf("emit-llvm failed with %d:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "call void @zyxrt_region_release") {
+		t.Errorf("no object is released:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "zyxrt_region_current") {
+		t.Errorf("the release does not name a region:\n%s", stdout)
+	}
+}
+
+// TestBoundaryCopyReachesTheBackend checks that an object crossing into a
+// coroutine is copied, and that the copy is what the coroutine reads: the
+// argument block holds the reference the callee receives, not the object
+// itself, which the program's value confirms.
+func TestBoundaryCopyReachesTheBackend(t *testing.T) {
+	if _, err := toolchain.Locate(); err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	dir := copyTree(t, filepath.Join("testdata", "boundary"))
+	stdout, stderr, code := run(dir, "emit-llvm", ".")
+	if code != 0 {
+		t.Fatalf("emit-llvm failed with %d:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "llvm.memcpy") {
+		t.Errorf("the boundary copy is missing:\n%s", stdout)
+	}
+}
+
 // TestGenericCallsCarryTheirInstantiatedSignature checks that a call to a
 // generic function annotates its callee with the signature the call
 // instantiates. The monomorphizer settles the type arguments by matching that
@@ -322,6 +345,118 @@ func TestGenericCallsCarryTheirInstantiatedSignature(t *testing.T) {
 	if strings.Contains(stdout, "func(T, T, bool) -> T") {
 		t.Errorf("the call to pick still carries the generic signature:\n%s", stdout)
 	}
+}
+
+// TestInterpolationWritesIntoABuffer checks that interpolating a declared type
+// hands the gather buffer to the value's Show rather than asking it for a
+// string and appending that. A Show that answered with a string would still
+// produce the same output, so the test reads the call the backend emits: the
+// argument after the receiver has to be the register the buffer came from.
+func TestInterpolationWritesIntoABuffer(t *testing.T) {
+	if _, err := toolchain.Locate(); err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	dir := copyTree(t, filepath.Join("testdata", "interpolation"))
+	stdout, stderr, code := run(dir, "emit-llvm", ".")
+	if code != 0 {
+		t.Fatalf("emit-llvm failed with %d:\n%s", code, stderr)
+	}
+	if regexp.MustCompile(`call \{ ptr, i64 \} @"[^"]*\.Show"`).MatchString(stdout) {
+		t.Errorf("Show still answers with a string:\n%s", stdout)
+	}
+	// A value the fixed table writes goes straight into the buffer, so no
+	// formatter that hands back a string of its own remains.
+	if regexp.MustCompile(`@zyxrt_(i64|u64|f64|bool|char)_str`).MatchString(stdout) {
+		t.Errorf("a formatted value still becomes a string of its own:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "zyxrt_buf_write_") {
+		t.Errorf("no value is written into the buffer:\n%s", stdout)
+	}
+	buffers := regexp.MustCompile(`(%[\w.]+) = call ptr @zyxrt_buf_new`).FindAllStringSubmatch(stdout, -1)
+	if len(buffers) == 0 {
+		t.Fatalf("no interpolation gathers into a buffer:\n%s", stdout)
+	}
+	for _, buffer := range buffers {
+		call := regexp.MustCompile(`call void @"[^"]*\.Show"\(ptr %[\w.]+, ptr ` + regexp.QuoteMeta(buffer[1]) + `\)`)
+		if call.MatchString(stdout) {
+			return
+		}
+	}
+	t.Errorf("no Show receives the gather buffer:\n%s", stdout)
+}
+
+// deferredRunning lists the kinds the format defines that no program which
+// runs reaches, with the reason. A kind only a checked corpus directory
+// reaches is a construct no machine code carries yet, so only the checker
+// verifies it.
+var deferredRunning = map[string]string{
+	// A construct that exists only while the program is compiled, so no
+	// machine code carries it by nature.
+	"alias":      compileOnly,
+	"bind-const": compileOnly,
+}
+
+// inImported is the reason a kind is deferred from this measurement: its only
+// use is inside a package the program imports.
+const inImported = "its only use is in an imported package, which the entry package's tree does not show"
+
+// compileOnly is the reason a kind is deferred: the construct is settled while
+// the program is compiled and leaves no machine code behind.
+const compileOnly = "the construct is settled at compile time and leaves no machine code"
+
+// programKinds returns every kind the programs that run reach. A program is a
+// directory of testdata, which the end-to-end test compiles to machine code
+// and executes.
+func programKinds(t *testing.T) map[string]bool {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, name := range programs(t) {
+		for kind := range emitKinds(t, copyTree(t, filepath.Join("testdata", name))) {
+			seen[kind] = true
+		}
+	}
+	return seen
+}
+
+// TestEverySpecKindReachesMachineCode checks that a program which runs reaches
+// every kind the format defines. A kind only a checked corpus directory
+// reaches is a construct no machine code carries yet, and this is where that
+// shows up rather than in a claim about coverage. The count it reports is the
+// answer to how much of the syntax the corpus carries into machine code.
+func TestEverySpecKindReachesMachineCode(t *testing.T) {
+	if _, err := toolchain.Locate(); err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	seen := programKinds(t)
+	var unbuilt []string
+	for _, kind := range specKinds {
+		if seen[kind] {
+			continue
+		}
+		if reason, ok := deferredRunning[kind]; ok && reason != "" {
+			continue
+		}
+		unbuilt = append(unbuilt, kind)
+	}
+	if len(unbuilt) != 0 {
+		t.Errorf("no program that runs reaches these kinds and none is deferred: %s",
+			strings.Join(unbuilt, " "))
+	}
+	// A kind that a running program now reaches belongs in the covered set,
+	// so a stale deferral is a fact the record gets wrong.
+	var reached []string
+	for kind := range deferredRunning {
+		if seen[kind] {
+			reached = append(reached, kind)
+		}
+	}
+	sort.Strings(reached)
+	if len(reached) != 0 {
+		t.Errorf("a program that runs reaches these kinds, so they are no longer deferred: %s",
+			strings.Join(reached, " "))
+	}
+	t.Logf("a running program reaches %d of the %d kinds the format defines; the rest are deferred with a reason",
+		len(specKinds)-len(deferredRunning), len(specKinds))
 }
 
 // TestDeferredKindsAreStillUnreached checks the record of what the front end

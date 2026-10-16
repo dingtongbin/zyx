@@ -47,6 +47,12 @@ func newTypeTable(p *Program) *typeTable {
 		modules: map[string]string{},
 	}
 	for _, path := range p.Order {
+		// A module names itself, so a tree can name a type of any package
+		// in the program. An instance of a library's generic function is
+		// written in the library and carries its caller's types.
+		t.quals[qualifier(path)] = path
+	}
+	for _, path := range p.Order {
 		file := p.Files[path]
 		if file == nil {
 			continue
@@ -149,7 +155,9 @@ func (t *typeTable) KindOf(id string) (types.Kind, error) {
 func (t *typeTable) Fields(ty *types.Type) ([]layout.Field, bool) {
 	node := t.decls[ty.ID]
 	if node == nil {
-		return nil, false
+		// A predeclared struct has no declaration in any tree: its fields
+		// are part of the language, so they come from the fixed table.
+		return predeclaredFields(ty)
 	}
 	switch node.Kind {
 	case "struct", "extern-struct", "extern-union":
@@ -176,7 +184,9 @@ func (t *typeTable) Fields(ty *types.Type) ([]layout.Field, bool) {
 func (t *typeTable) Variants(ty *types.Type) ([]layout.Variant, bool) {
 	node := t.decls[ty.ID]
 	if node == nil || node.Kind != "enum" {
-		return nil, false
+		// A predeclared enum has no declaration in any tree: its variants
+		// are part of the language, so they come from the fixed table.
+		return predeclaredVariants(ty)
 	}
 	module := t.modules[ty.ID]
 	var out []layout.Variant
@@ -193,6 +203,45 @@ func (t *typeTable) Variants(ty *types.Type) ([]layout.Variant, bool) {
 			v.Payload = payload.Elems
 		}
 		out = append(out, v)
+	}
+	return out, true
+}
+
+// predeclaredFields returns the fields of a predeclared struct.
+func predeclaredFields(ty *types.Type) ([]layout.Field, bool) {
+	fields, ok := types.PredeclaredFields(ty.Name)
+	if !ok {
+		return nil, false
+	}
+	out := make([]layout.Field, 0, len(fields))
+	for _, f := range fields {
+		out = append(out, layout.Field{Name: f.Name, Type: f.Type})
+	}
+	return out, true
+}
+
+// predeclaredVariants returns the variants of a predeclared enum with the
+// payload substituted for the type arguments this use supplies. The table is
+// a language fact, so reading it is a lookup rather than an inference.
+func predeclaredVariants(ty *types.Type) ([]layout.Variant, bool) {
+	variants, ok := types.PredeclaredVariants(ty.Name)
+	if !ok {
+		return nil, false
+	}
+	params, _ := types.PredeclaredParams(ty.Name)
+	bindings := map[string]*types.Type{}
+	for i, p := range params {
+		if i < len(ty.Args) {
+			bindings[p.ID] = ty.Args[i]
+		}
+	}
+	out := make([]layout.Variant, 0, len(variants))
+	for _, v := range variants {
+		payload := make([]*types.Type, 0, len(v.Payload))
+		for _, pt := range v.Payload {
+			payload = append(payload, types.Substitute(pt, bindings))
+		}
+		out = append(out, layout.Variant{Name: v.Name, Payload: payload})
 	}
 	return out, true
 }

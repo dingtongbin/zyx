@@ -33,17 +33,27 @@ type module struct {
 	defined map[string]bool
 	// globalInits holds the top-level initializers that are not constants.
 	globalInits []globalInit
-	next        int
+	// ifaceTables maps a concrete type and an interface onto the name of the
+	// method table the one presents for the other.
+	ifaceTables map[string]string
+	// ifaceDefs holds the method tables in creation order.
+	ifaceDefs []string
+	// receivers maps a function symbol onto the thunk that drops the
+	// receiver a function value carries.
+	receivers map[string]string
+	next      int
 }
 
 // newModule returns an empty module.
 func newModule(target string) *module {
 	return &module{
-		target:   target,
-		names:    map[string]string{},
-		strs:     map[string]string{},
-		declared: map[string]bool{},
-		defined:  map[string]bool{},
+		target:      target,
+		names:       map[string]string{},
+		strs:        map[string]string{},
+		ifaceTables: map[string]string{},
+		declared:    map[string]bool{},
+		defined:     map[string]bool{},
+		receivers:   map[string]string{},
 	}
 }
 
@@ -57,6 +67,9 @@ func (m *module) text() []byte {
 	}
 	for _, g := range m.globals {
 		b.WriteString(g)
+	}
+	for _, def := range m.ifaceDefs {
+		b.WriteString(def)
 	}
 	b.WriteString(m.funcs.String())
 	return []byte(b.String())
@@ -147,6 +160,8 @@ func (g *generator) aggregateBody(t *types.Type) string {
 		return "{" + strings.Join(parts, ", ") + "}"
 	case types.KindUnion:
 		return g.unionBody(t)
+	case types.KindEnum:
+		return g.enumBody(t)
 	}
 	g.fail(fmt.Errorf("llvmgen: %s has no aggregate layout", t))
 	return "{ i8 }"
@@ -226,8 +241,12 @@ func (g *generator) llType(t *types.Type) string {
 		return "double"
 	case types.KindChar:
 		return "i32"
-	case types.KindRaw, types.KindFunc:
+	case types.KindRaw:
 		return "ptr"
+	case types.KindFunc:
+		// A function value carries the function and, when it is a method
+		// taken as a value, the receiver it was taken from.
+		return "{ ptr, ptr }"
 	case types.KindStr, types.KindSlice:
 		return "{ ptr, " + g.ptrInt() + " }"
 	case types.KindInterface:
@@ -242,11 +261,13 @@ func (g *generator) llType(t *types.Type) string {
 			parts = append(parts, g.llType(e))
 		}
 		return "{" + strings.Join(parts, ", ") + "}"
-	case types.KindStruct, types.KindExternStruct, types.KindUnion:
+	case types.KindStruct, types.KindExternStruct, types.KindUnion, types.KindEnum:
 		return g.structName(t)
-	case types.KindEnum:
-		g.fail(fmt.Errorf("llvmgen: enums are not lowered yet"))
-		return "i8"
+	case types.Invalid:
+		if t.ID == "void" {
+			// A function that returns nothing has a result of no size.
+			return "{}"
+		}
 	}
 	g.fail(fmt.Errorf("llvmgen: %s has no LLVM type", t))
 	return "i64"
@@ -270,15 +291,16 @@ func (g *generator) llPass(t *types.Type) string {
 func (g *generator) ptrInt() string { return g.target.PtrInt() }
 
 // byAddress reports whether a value of the type is passed and stored as the
-// address of its object rather than as the object itself. A reference
-// struct and a fixed-size array are created in a region, so a value of
-// either names an object rather than carrying one.
+// address of its object rather than as the object itself. A reference struct
+// is created in a region, so a value of one names an object rather than
+// carrying one. A C layout type is a value type: its bytes travel with the
+// value, which is what lets it cross to C.
 func byAddress(t *types.Type) bool {
 	if t == nil {
 		return false
 	}
 	switch t.Kind {
-	case types.KindStruct, types.KindExternStruct, types.KindUnion, types.KindEnum, types.KindArray:
+	case types.KindStruct, types.KindEnum, types.KindArray:
 		return true
 	}
 	return false
@@ -286,11 +308,10 @@ func byAddress(t *types.Type) bool {
 
 // zero renders the LLVM zero value of a type.
 func (g *generator) zero(t *types.Type) string {
-	ll := g.llPass(t)
-	if byAddress(t) {
-		return "null"
-	}
-	if strings.HasPrefix(ll, "{") || strings.HasPrefix(ll, "[") {
+	// A global is declared with the type the object lies in, which is llType
+	// rather than the type a value of it passes as.
+	ll := g.llType(t)
+	if strings.HasPrefix(ll, "{") || strings.HasPrefix(ll, "[") || strings.HasPrefix(ll, "%") {
 		return "zeroinitializer"
 	}
 	if ll == "float" || ll == "double" {
@@ -306,6 +327,11 @@ func (g *generator) zero(t *types.Type) string {
 func (g *generator) typeOfNode(n *zyxc.Node, module string) *types.Type {
 	if n == nil || len(n.Payload) == 0 {
 		return nil
+	}
+	if n.Payload[0] == "void" {
+		// The result of a function that returns nothing is a predeclared
+		// type, so a handle can carry it as a type argument.
+		return types.Void
 	}
 	t, err := g.tab.parse(module, n.Payload[0])
 	if err != nil {

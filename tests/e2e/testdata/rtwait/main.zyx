@@ -1,0 +1,55 @@
+package main
+
+import "std/fmt"
+import "std/rt"
+
+import c "pair.h"
+
+// The program watches one end of a pair of connected descriptors while it
+// writes to the other, so the wait ends because the descriptor became ready
+// rather than because time passed.
+
+func main() {
+    var a: i32 = 0
+    var b: i32 = 0
+    if c.pair_open(& a, & b) != 0 {
+        fmt.Println("no pair")
+        return
+    }
+    region {
+        var h = spawn waitReadable(a)
+        fmt.Println("waiting")
+        c.pair_write(b, 120)
+        h.Join()
+    }
+    c.pair_read(a)
+    // A descriptor with room in its send buffer is writable at once.
+    match rt.WaitWritable(b) {
+        Ok(_) => fmt.Println("writable")
+        Err(e) => fmt.Println("not writable")
+    }
+    // Releasing a descriptor wakes everyone waiting on it, and waiting on it
+    // afterwards is refused.
+    region {
+        var h = spawn waitReadable(a)
+        fmt.Println("releasing")
+        rt.Release(a)
+        h.Join()
+    }
+    match rt.WaitReadable(a) {
+        Ok(_) => fmt.Println("still readable")
+        Err(e) => fmt.Println("refused")
+    }
+    c.pair_close(a)
+    c.pair_close(b)
+    fmt.Println("done")
+}
+
+// waitReadable reports what a wait on the descriptor answered.
+
+func waitReadable(fd: i32) {
+    match rt.WaitReadable(fd) {
+        Ok(_) => fmt.Println("ready")
+        Err(e) => fmt.Println("closed")
+    }
+}

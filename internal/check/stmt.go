@@ -3,8 +3,11 @@
 package check
 
 import (
+	"strings"
+
 	"zyx/internal/ast"
 	"zyx/internal/diag"
+	"zyx/internal/resolve"
 	"zyx/internal/source"
 	"zyx/internal/token"
 	"zyx/internal/types"
@@ -154,10 +157,40 @@ func (c *checker) checkCond(e ast.Expr) {
 	}
 }
 
+// checkAssignTarget reports a target that has no storage to write. The
+// language's containers are appended to and read, a slice is a read-only view,
+// and a str is immutable, so only a name, a field, or an element of a
+// fixed-size array can be assigned through.
+func (c *checker) checkAssignTarget(target ast.Expr) {
+	index, ok := target.(*ast.IndexExpr)
+	if !ok {
+		return
+	}
+	base := c.out.Nodes[index.X]
+	if base == nil {
+		return
+	}
+	switch base.Kind {
+	case types.KindContainer:
+		c.errorHelp(diag.CodeTypeMismatch, target.Span(),
+			"assign to a name, a field, or an element of a fixed-size array",
+			"a %s is appended to and read, so its elements are not assigned", base)
+	case types.KindSlice:
+		c.errorHelp(diag.CodeTypeMismatch, target.Span(),
+			"assign to a name, a field, or an element of a fixed-size array",
+			"a view is read-only, so its elements are not assigned")
+	case types.KindStr:
+		c.errorHelp(diag.CodeTypeMismatch, target.Span(),
+			"assign to a name, a field, or an element of a fixed-size array",
+			"a str is immutable")
+	}
+}
+
 // checkAssign checks an assignment, simple or compound.
 func (c *checker) checkAssign(v *ast.AssignStmt) {
 	if v.Op != token.Assign {
 		lt := c.checkExpr(v.Target, nil)
+		c.checkAssignTarget(v.Target)
 		rt := c.checkExpr(v.Value, lt)
 		lt, rt = c.adaptLiterals(v.Target, v.Value, lt, rt)
 		if lt != nil && rt != nil && lt.Kind != types.Invalid &&
@@ -169,6 +202,7 @@ func (c *checker) checkAssign(v *ast.AssignStmt) {
 		return
 	}
 	dst := c.checkExpr(v.Target, nil)
+	c.checkAssignTarget(v.Target)
 	if dst == nil || dst.Kind == types.Invalid {
 		return
 	}
@@ -443,6 +477,10 @@ func (c *checker) checkConstInit(v *ast.ConstDecl) {
 			"assign a value of the declared type",
 			"assigning %s to %s", got, t)
 	}
+	// An annotated constant names a value of that type, so a use of the name
+	// as a value finds it. Without this, only an unannotated constant has a
+	// type and every use of an annotated one reads as nothing.
+	c.bindName(v.Name, t)
 }
 
 // checkVarInit checks the initializer of a top-level variable, which lives
@@ -452,7 +490,14 @@ func (c *checker) checkVarInit(v *ast.VarDecl) {
 	c.inComptime = true
 	t := c.buildType(v.Type)
 	got := c.checkExpr(v.Value, t)
-	val := c.requireConst(v.Value, "a top-level var initializer")
+	var val *Value
+	if c.staticSyncCall(v.Value) {
+		// A static sync object lives in static storage rather than in a
+		// region, so its constructor is a call the backend runs before the
+		// program does rather than a compile-time value.
+	} else {
+		val = c.requireConst(v.Value, "a top-level var initializer")
+	}
 	c.inComptime = prev
 	if len(v.Names) == 1 && val != nil {
 		c.out.Consts[v.Names[0].Name] = val
@@ -467,6 +512,9 @@ func (c *checker) checkVarInit(v *ast.VarDecl) {
 				"assign a value of the declared type",
 				"assigning %s to %s", got, t)
 		}
+		// An annotated variable names a value of that type, so a use of the
+		// name as a value finds it.
+		c.bindName(v.Names[0], t)
 	case len(v.Names) == 1:
 		if val != nil && val.Type != nil {
 			c.bindName(v.Names[0], val.Type)
@@ -476,6 +524,33 @@ func (c *checker) checkVarInit(v *ast.VarDecl) {
 	default:
 		c.bindTuple(v.Names, v.Value, got)
 	}
+}
+
+// staticSyncCall reports whether an initializer builds a static sync object,
+// which is what the standard library's Static* constructors do. Such a value
+// lives in static storage rather than in a region, so it needs no region to
+// exist yet, and the initializer runs before the program does.
+func (c *checker) staticSyncCall(e ast.Expr) bool {
+	call, ok := e.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := call.Fn.(*ast.SelectorExpr)
+	if !ok || sel.Name == nil {
+		return false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	sym := c.symOf(id)
+	if sym == nil || sym.Kind != resolve.KindPackage {
+		return false
+	}
+	if sym.ID != "sync" && !strings.HasSuffix(sym.ID, "/sync") {
+		return false
+	}
+	return strings.HasPrefix(sel.Name.Name, "Static")
 }
 
 // checkMemberInit checks a constant declared inside a type body, which must

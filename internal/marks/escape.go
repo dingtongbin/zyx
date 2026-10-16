@@ -54,13 +54,25 @@ func (b *builder) classify(a *allocation) {
 		b.info.Add(a.Node, "move", "c0")
 		b.info.Add(a.Node, "alias", "")
 	case escapeStore:
-		// The object is truly shared, and the region that dominates every
-		// use is only known once the whole program is available.
+		// The object is truly shared, so it binds to the region that
+		// contains every use.
 		b.info.Add(a.Node, "alias", "")
-		b.info.Add(a.Node, "mono-rule", "home "+a.Sym)
+		b.sharedBind(a)
 	default:
 		b.homeAndRelease(a)
 	}
+}
+
+// sharedBind binds an object more than one region uses to the innermost
+// region that contains every use. The object is created there, so no use
+// outlives the region that holds it.
+func (b *builder) sharedBind(a *allocation) {
+	regions := append([]*Region{a.Region}, b.uses[a]...)
+	home := commonAll(regions)
+	if home == nil {
+		home = a.Region
+	}
+	b.info.Add(a.Node, "shared-bind", home.Name)
 }
 
 // homeAndRelease settles the home region of an object that stays inside the

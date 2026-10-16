@@ -72,20 +72,26 @@ func (l *lexer) closeBrace() {
 	}
 }
 
-// lineEndsAfter reports whether only horizontal space, an optional line
-// comment, and the line terminator follow the position pos.
+// lineEndsAfter reports whether only horizontal space, an optional comment,
+// and the line terminator follow the position pos.
 func (l *lexer) lineEndsAfter(pos int) bool {
 	i := pos + 1
-	for i < len(l.src) && (l.src[i] == ' ' || l.src[i] == '\t') {
-		i++
-	}
-	if i+1 < len(l.src) && l.src[i] == '/' && l.src[i+1] == '/' {
-		for i < len(l.src) && l.src[i] != '\n' && l.src[i] != '\r' {
+	for i < len(l.src) {
+		switch {
+		case l.src[i] == ' ' || l.src[i] == '\t':
 			i++
+		case i+1 < len(l.src) && l.src[i] == '/' && l.src[i+1] == '/':
+			for i < len(l.src) && l.src[i] != '\n' && l.src[i] != '\r' {
+				i++
+			}
+		case i+1 < len(l.src) && l.src[i] == '/' && l.src[i+1] == '*':
+			// A block comment ends where its closing marker is, so a brace
+			// followed by one is still a brace at the end of its line.
+			end, _ := blockCommentEnd(l.src, i)
+			i = end
+		default:
+			return l.src[i] == '\n' || l.src[i] == '\r'
 		}
 	}
-	if i >= len(l.src) {
-		return true
-	}
-	return l.src[i] == '\n' || l.src[i] == '\r'
+	return true
 }

@@ -21,4 +21,6 @@ struct Rect {
     }
 }
 
-func Make(w: i64, h: i64) -> Rect { return Rect { origin: Vec { x: 0, y: 0}, width: w, height: h,}}
+func Make(w: i64, h: i64) -> Rect {
+    return Rect { origin: Vec { x: 0, y: 0 }, width: w, height: h, }
+}

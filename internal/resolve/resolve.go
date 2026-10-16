@@ -721,8 +721,13 @@ func (r *resolver) resolveUnion(sym *Symbol, v *ast.UnionDecl) {
 }
 
 // selfIdent returns the implicit receiver of a method. It carries the
-// method's position so diagnostics about self point at the declaration.
+// method's position so diagnostics about self point at the declaration. A
+// method the parser could not name has no position to carry, so it has no
+// receiver either.
 func selfIdent(f *ast.FuncDecl) *ast.Ident {
+	if f.Name == nil {
+		return nil
+	}
 	return &ast.Ident{Sp: f.Name.Sp, Name: "self"}
 }
 
