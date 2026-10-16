@@ -65,7 +65,7 @@ var (
 	Eq       = Named(KindInterface, "", "", "Eq", 0)
 	Hash     = Named(KindInterface, "", "", "Hash", 0)
 	Show     = Named(KindInterface, "", "", "Show", 0)
-	Order    = Named(KindInterface, "", "", "Order", 0)
+	Ord      = Named(KindInterface, "", "", "Ord", 0)
 	SyncSafe = Named(KindInterface, "", "", "SyncSafe", 0)
 )
 
@@ -213,7 +213,7 @@ var predeclared = map[string]*Type{
 	"Eq":            Eq,
 	"Hash":          Hash,
 	"Show":          Show,
-	"Order":         Order,
+	"Ord":           Ord,
 	"SyncSafe":      SyncSafe,
 }
 

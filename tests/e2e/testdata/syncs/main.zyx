@@ -130,10 +130,10 @@ func main() {
     fmt.PrintBool(counter.Cas(9, 12))
     fmt.PrintI64(counter.Load())
     fmt.PrintNl()
-    counter.Store(0, sync.MemoryOrder.Relaxed)
-    fmt.PrintI64(counter.Load(sync.MemoryOrder.Relaxed))
+    counter.Store(0, sync.Order.Relaxed)
+    fmt.PrintI64(counter.Load(sync.Order.Relaxed))
     fmt.PrintNl()
-    sync.Fence(sync.MemoryOrder.Acquire)
+    sync.Fence(sync.Order.Acquire)
     fmt.PrintI64(7)
     fmt.PrintNl()
     // A top-level binding holds a static sync object: it outlives every

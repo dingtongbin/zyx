@@ -5,7 +5,7 @@ import "std/fmt"
 // order reports the sign of a comparison the way Order.Compare does, through a
 // parameter the language gives an order to itself.
 
-func order < T: Order > (a: T, b: T) -> i64 {
+func order < T: Ord > (a: T, b: T) -> i64 {
     return i64(a.Compare(b))
 }
 

@@ -26,6 +26,16 @@ int zyxrt_array_pop(void *handle, void *out);
 int zyxrt_array_get(void *handle, size_t index, void *out);
 void zyxrt_array_get_unchecked(void *handle, size_t index, void *out);
 void zyxrt_array_remove(void *handle, size_t index);
+/* zyxrt_array_cap is the room the array has, zyxrt_array_clear drops every
+   element and keeps it, zyxrt_array_reserve makes room for n elements,
+   zyxrt_array_insert puts one at an index, and
+   zyxrt_array_remove_range drops n of them from an index. An index past the
+   end of an insertion or a range is a fault. */
+size_t zyxrt_array_cap(void *handle);
+void zyxrt_array_clear(void *handle);
+void zyxrt_array_reserve(void *handle, size_t n);
+void zyxrt_array_insert(void *handle, size_t index, const void *value);
+void zyxrt_array_remove_range(void *handle, size_t index, size_t n);
 
 /* A map hashes and compares a key through the two functions it is given, so
    the same table serves a scalar key, a string key, and a key of a type with

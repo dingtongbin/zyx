@@ -573,7 +573,18 @@ func (p *Package) MethodOf(recv *types.Type, name string) *types.Type {
 // receiver's type arguments.
 var containerMethods = map[string]map[string]func(*types.Type) *types.Type{
 	"Array": {
-		"Len": func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Len":   func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Cap":   func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Clear": func(*types.Type) *types.Type { return types.FuncOf(void) },
+		"Reserve": func(*types.Type) *types.Type {
+			return types.FuncOf(void, types.Usize)
+		},
+		"Insert": func(recv *types.Type) *types.Type {
+			return types.FuncOf(void, types.Usize, arg(recv, 0))
+		},
+		"RemoveRange": func(*types.Type) *types.Type {
+			return types.FuncOf(void, types.Usize, types.Usize)
+		},
 		"Push": func(recv *types.Type) *types.Type {
 			return types.FuncOf(void, arg(recv, 0))
 		},
@@ -941,7 +952,7 @@ func builtinImplements(t, iface *types.Type) bool {
 		return hashable(t)
 	case "Show":
 		return showable(t)
-	case "Order":
+	case "Ord":
 		return ordered(t)
 	case "SyncSafe":
 		switch t.Kind {

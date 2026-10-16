@@ -44,7 +44,7 @@ func builtinIfaceMethod(iface, recv *types.Type, name string) *types.Type {
 		if name == "Show" {
 			return types.FuncOf(nil, types.Buf)
 		}
-	case "Order":
+	case "Ord":
 		if name == "Compare" {
 			return types.FuncOf(types.Int32, recv)
 		}

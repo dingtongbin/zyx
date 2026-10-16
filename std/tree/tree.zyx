@@ -1,1 +1,350 @@
 package tree
+
+// A sorted map and a sorted set, both a red-black tree over an index pool. A
+// node is a handle rather than a reference, so the whole tree is one array:
+// the key and the value of a node are written once and never move, and the
+// recursion passes indices rather than references.
+//
+// The tree is left-leaning: every red link leans left, which is what makes a
+// node's color and its rotations local. Insertion and removal each restore
+// that as they return, so no operation walks the tree twice.
+
+// nothing is the index that stands for an empty child.
+const nothing = 0 - 1
+
+// A Node is one entry of the pool. A red node is the small half of a
+// three-node: it is joined to its parent by a red link.
+struct Node<K, V> {
+    key: K
+    value: V
+    left: i64
+    right: i64
+    red: bool
+}
+
+// A TreeMap keeps its entries in the order of their keys. A key must be
+// comparable and ordered, and the two must agree: a comparison that answers
+// zero exactly when the keys are equal.
+struct TreeMap<K: Eq + Order, V> {
+    nodes: Array<Node<K, V>>
+    root: i64
+    size: i64
+    // removed holds what a removal took out, because the descent answers with
+    // the node it rebuilt rather than with the value it dropped.
+    removed: Option<V>
+
+    // init builds an empty map.
+    func init() -> Self {
+        return TreeMap<K, V> {
+            nodes: new Array<Node<K, V>>(),
+            root: nothing,
+            size: 0,
+            removed: Option.None,
+        }
+    }
+
+    // Len is how many entries the map holds.
+    func Len() -> usize {
+        return usize(self.size)
+    }
+
+    // Clear drops every entry, keeping the pool.
+    func Clear() {
+        self.nodes.Clear()
+        self.root = nothing
+        self.size = 0
+    }
+
+    // Get answers the value a key holds.
+    func Get(k: K) -> Option<V> {
+        var at = self.root
+        for at != nothing {
+            var cmp = k.Compare(self.nodes[at].key)
+            if cmp < 0 {
+                at = self.nodes[at].left
+                continue
+            }
+            if cmp > 0 {
+                at = self.nodes[at].right
+                continue
+            }
+            return Option.Some(self.nodes[at].value)
+        }
+        return Option.None
+    }
+
+    // Contains reports whether a key is in the map.
+    func Contains(k: K) -> bool {
+        return self.Get(k).IsSome()
+    }
+
+    // Insert writes a value under a key, replacing what was there.
+    func Insert(k: K, v: V) {
+        var added = false
+        self.root = self.insert(self.root, k, v, added)
+        self.nodes[self.root].red = false
+    }
+
+    // Remove takes a key out and answers the value it held.
+    func Remove(k: K) -> Option<V> {
+        if self.Get(k).IsNone() {
+            return Option.None
+        }
+        self.removed = Option.None
+        self.root = self.delete(self.root, k)
+        if self.root != nothing {
+            self.nodes[self.root].red = false
+        }
+        self.size -= 1
+        return self.removed
+    }
+
+    // Keys answers every key in order.
+    func Keys() -> Array<K> {
+        var out = new Array<K>()
+        self.collectKeys(self.root, out)
+        return out
+    }
+
+    // Values answers every value in the order of its key.
+    func Values() -> Array<V> {
+        var out = new Array<V>()
+        self.collectValues(self.root, out)
+        return out
+    }
+
+    // insert writes one entry and answers the root of the subtree, having
+    // restored the leaning on the way back up.
+    func insert(h: i64, k: K, v: V, added: bool) -> i64 {
+        if h == nothing {
+            self.nodes.Push(Node<K, V> { key: k, value: v, left: nothing, right: nothing, red: true })
+            self.size += 1
+            added = true
+            return i64(self.nodes.Len()) - 1
+        }
+        var cmp = k.Compare(self.nodes[h].key)
+        if cmp < 0 {
+            var moved = false
+            self.nodes[h].left = self.insert(self.nodes[h].left, k, v, moved)
+            if moved {
+                added = true
+            }
+        } else if cmp > 0 {
+            var moved = false
+            self.nodes[h].right = self.insert(self.nodes[h].right, k, v, moved)
+            if moved {
+                added = true
+            }
+        } else {
+            self.nodes[h].value = v
+        }
+        return self.balance(h)
+    }
+
+    // balance restores the leaning of one subtree.
+    func balance(h: i64) -> i64 {
+        var at = h
+        if self.isRed(self.nodes[at].right) && !self.isRed(self.nodes[at].left) {
+            at = self.rotateLeft(at)
+        }
+        if self.isRed(self.nodes[at].left) && self.isRed(self.nodes[self.nodes[at].left].left) {
+            at = self.rotateRight(at)
+        }
+        if self.isRed(self.nodes[at].left) && self.isRed(self.nodes[at].right) {
+            self.flipColors(at)
+        }
+        return at
+    }
+
+    // delete takes one key out and answers the root of the subtree.
+    func delete(h: i64, k: K) -> i64 {
+        if k.Compare(self.nodes[h].key) < 0 {
+            if !self.isRed(self.nodes[h].left) && !self.isRed(self.nodes[self.nodes[h].left].left) {
+                h = self.moveRedLeft(h)
+            }
+            self.nodes[h].left = self.delete(self.nodes[h].left, k)
+            return self.fixUp(h)
+        }
+        if self.isRed(self.nodes[h].left) {
+            h = self.rotateRight(h)
+        }
+        if k.Compare(self.nodes[h].key) == 0 && self.nodes[h].right == nothing {
+            self.removed = Option.Some(self.nodes[h].value)
+            return nothing
+        }
+        if !self.isRed(self.nodes[h].right) && !self.isRed(self.nodes[self.nodes[h].right].left) {
+            h = self.moveRedRight(h)
+        }
+        if k.Compare(self.nodes[h].key) == 0 {
+            self.removed = Option.Some(self.nodes[h].value)
+            var least = self.minimum(self.nodes[h].right)
+            self.nodes[h].key = self.nodes[least].key
+            self.nodes[h].value = self.nodes[least].value
+            self.nodes[h].right = self.deleteMin(self.nodes[h].right)
+            return self.fixUp(h)
+        }
+        self.nodes[h].right = self.delete(self.nodes[h].right, k)
+        return self.fixUp(h)
+    }
+
+    // deleteMin takes the least key of a subtree out.
+    func deleteMin(h: i64) -> i64 {
+        if self.nodes[h].left == nothing {
+            return nothing
+        }
+        if !self.isRed(self.nodes[h].left) && !self.isRed(self.nodes[self.nodes[h].left].left) {
+            h = self.moveRedLeft(h)
+        }
+        self.nodes[h].left = self.deleteMin(self.nodes[h].left)
+        return self.fixUp(h)
+    }
+
+    // minimum answers the least index of a subtree.
+    func minimum(h: i64) -> i64 {
+        var at = h
+        for self.nodes[at].left != nothing {
+            at = self.nodes[at].left
+        }
+        return at
+    }
+
+    // fixUp restores the leaning of one subtree after a removal.
+    func fixUp(h: i64) -> i64 {
+        var at = h
+        if self.isRed(self.nodes[at].right) {
+            at = self.rotateLeft(at)
+        }
+        if self.isRed(self.nodes[at].left) && self.isRed(self.nodes[self.nodes[at].left].left) {
+            at = self.rotateRight(at)
+        }
+        if self.isRed(self.nodes[at].left) && self.isRed(self.nodes[at].right) {
+            self.flipColors(at)
+        }
+        return at
+    }
+
+    // moveRedLeft makes the left child or one of its children red, so that a
+    // removal below it cannot leave a black link short.
+    func moveRedLeft(h: i64) -> i64 {
+        self.flipColors(h)
+        if self.isRed(self.nodes[self.nodes[h].right].left) {
+            self.nodes[h].right = self.rotateRight(self.nodes[h].right)
+            var at = self.rotateLeft(h)
+            self.flipColors(at)
+            return at
+        }
+        return h
+    }
+
+    // moveRedRight makes the right child or one of its children red.
+    func moveRedRight(h: i64) -> i64 {
+        self.flipColors(h)
+        if self.isRed(self.nodes[self.nodes[h].left].left) {
+            var at = self.rotateRight(h)
+            self.flipColors(at)
+            return at
+        }
+        return h
+    }
+
+    // rotateLeft lifts the right child over its parent.
+    func rotateLeft(h: i64) -> i64 {
+        var x = self.nodes[h].right
+        self.nodes[h].right = self.nodes[x].left
+        self.nodes[x].left = h
+        self.nodes[x].red = self.nodes[h].red
+        self.nodes[h].red = true
+        return x
+    }
+
+    // rotateRight lifts the left child over its parent.
+    func rotateRight(h: i64) -> i64 {
+        var x = self.nodes[h].left
+        self.nodes[h].left = self.nodes[x].right
+        self.nodes[x].right = h
+        self.nodes[x].red = self.nodes[h].red
+        self.nodes[h].red = true
+        return x
+    }
+
+    // flipColors moves the color of a node into its children, which is what
+    // splits a four-node.
+    func flipColors(h: i64) {
+        self.nodes[h].red = !self.nodes[h].red
+        self.nodes[self.nodes[h].left].red = !self.nodes[self.nodes[h].left].red
+        self.nodes[self.nodes[h].right].red = !self.nodes[self.nodes[h].right].red
+    }
+
+    // isRed reports whether a subtree's root is joined to its parent by a red
+    // link, which an empty child never is.
+    func isRed(h: i64) -> bool {
+        if h == nothing {
+            return false
+        }
+        return self.nodes[h].red
+    }
+
+    // collectKeys walks a subtree in key order.
+    func collectKeys(h: i64, out: Array<K>) {
+        if h == nothing {
+            return
+        }
+        self.collectKeys(self.nodes[h].left, out)
+        out.Push(self.nodes[h].key)
+        self.collectKeys(self.nodes[h].right, out)
+    }
+
+    // collectValues walks a subtree in key order.
+    func collectValues(h: i64, out: Array<V>) {
+        if h == nothing {
+            return
+        }
+        self.collectValues(self.nodes[h].left, out)
+        out.Push(self.nodes[h].value)
+        self.collectValues(self.nodes[h].right, out)
+    }
+}
+
+// A TreeSet keeps its values in their own order. It is a map whose values
+// carry nothing, so the tree is written once.
+struct TreeSet<T: Eq + Order> {
+    m: TreeMap<T, bool>
+
+    // init builds an empty set.
+    func init() -> Self {
+        return TreeSet<T> { m: TreeMap<T, bool> { nodes: new Array<Node<T, bool>>(), root: nothing, size: 0, removed: Option.None } }
+    }
+
+    // Len is how many values the set holds.
+    func Len() -> usize {
+        return self.m.Len()
+    }
+
+    // Clear drops every value.
+    func Clear() {
+        self.m.Clear()
+    }
+
+    // Contains reports whether a value is in the set.
+    func Contains(v: T) -> bool {
+        return self.m.Contains(v)
+    }
+
+    // Add puts a value in the set.
+    func Add(v: T) {
+        self.m.Insert(v, true)
+    }
+
+    // Remove takes a value out and answers it.
+    func Remove(v: T) -> Option<T> {
+        if self.m.Remove(v).IsNone() {
+            return Option.None
+        }
+        return Option.Some(v)
+    }
+
+    // ValueList answers every value in order.
+    func ValueList() -> Array<T> {
+        return self.m.Keys()
+    }
+}

@@ -96,3 +96,52 @@ void zyxrt_array_remove(void *handle, size_t index) {
   memmove(a->data + index * a->elem, a->data + (index + 1) * a->elem,
           (a->len - index) * a->elem);
 }
+
+size_t zyxrt_array_cap(void *handle) {
+  zyxrt_array *a = (zyxrt_array *)handle;
+  return a == NULL ? 0 : a->cap;
+}
+
+/* zyxrt_array_clear drops every element and keeps the buffer, so an array
+   that is filled again does not allocate again. */
+void zyxrt_array_clear(void *handle) {
+  zyxrt_array *a = (zyxrt_array *)handle;
+  if (a == NULL) return;
+  a->len = 0;
+}
+
+/* zyxrt_array_reserve makes room for n elements, which is what a caller does
+   when it knows how many are coming. */
+void zyxrt_array_reserve(void *handle, size_t n) {
+  zyxrt_array *a = (zyxrt_array *)handle;
+  if (a == NULL) return;
+  while (a->cap < n) {
+    grow(a);
+  }
+}
+
+/* zyxrt_array_insert puts one element at an index, moving what follows it. An
+   index past the end is a fault rather than a silent append: the caller's
+   check is what makes this call, and a library that accepts anything would
+   hide the mistake. */
+void zyxrt_array_insert(void *handle, size_t index, const void *value) {
+  zyxrt_array *a = (zyxrt_array *)handle;
+  if (a == NULL) return;
+  if (index > a->len) zyxrt_panic("index out of range", 18);
+  if (a->len == a->cap) grow(a);
+  memmove(a->data + (index + 1) * a->elem, a->data + index * a->elem,
+          (a->len - index) * a->elem);
+  memcpy(a->data + index * a->elem, value, a->elem);
+  a->len++;
+}
+
+/* zyxrt_array_remove_range drops n elements from an index, moving what
+   follows them. A range that reaches past the end is a fault. */
+void zyxrt_array_remove_range(void *handle, size_t index, size_t n) {
+  zyxrt_array *a = (zyxrt_array *)handle;
+  if (a == NULL) return;
+  if (index > a->len || n > a->len - index) zyxrt_panic("index out of range", 18);
+  memmove(a->data + index * a->elem, a->data + (index + n) * a->elem,
+          (a->len - index - n) * a->elem);
+  a->len -= n;
+}

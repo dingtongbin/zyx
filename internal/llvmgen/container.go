@@ -178,6 +178,52 @@ func (g *generator) arrayCall(module string, n *zyxc.Node, recv *value, name str
 		reg := g.newReg()
 		g.emit("  %s = call %s @zyxrt_array_len(ptr %s)", reg, g.ptrInt(), recv.text)
 		return &value{text: reg, ll: g.ptrInt(), typ: types.Usize}
+	case "Cap":
+		g.declareRuntime("zyxrt_array_cap", g.ptrInt(), "ptr")
+		reg := g.newReg()
+		g.emit("  %s = call %s @zyxrt_array_cap(ptr %s)", reg, g.ptrInt(), recv.text)
+		return &value{text: reg, ll: g.ptrInt(), typ: types.Usize}
+	case "Clear":
+		g.declareRuntime("zyxrt_array_clear", "void", "ptr")
+		g.emit("  call void @zyxrt_array_clear(ptr %s)", recv.text)
+		return &value{ll: "void"}
+	case "Reserve":
+		count := g.load(g.expr(module, g.sole(n.First("arg")), types.Usize))
+		if count == nil {
+			return nil
+		}
+		g.declareRuntime("zyxrt_array_reserve", "void", "ptr", g.ptrInt())
+		g.emit("  call void @zyxrt_array_reserve(ptr %s, %s %s)", recv.text, count.ll, count.text)
+		return &value{ll: "void"}
+	case "Insert":
+		args := g.argNodes(n)
+		if len(args) < 2 {
+			g.fail(fmt.Errorf("llvmgen: Array.Insert needs an index and a value"))
+			return nil
+		}
+		index := g.load(g.expr(module, args[0], types.Usize))
+		slot, ok := g.elementSlotAt(module, n, elem, 1)
+		if index == nil || !ok {
+			return nil
+		}
+		g.declareRuntime("zyxrt_array_insert", "void", "ptr", g.ptrInt(), "ptr")
+		g.emit("  call void @zyxrt_array_insert(ptr %s, %s %s, ptr %s)", recv.text, index.ll, index.text, slot)
+		return &value{ll: "void"}
+	case "RemoveRange":
+		args := g.argNodes(n)
+		if len(args) < 2 {
+			g.fail(fmt.Errorf("llvmgen: Array.RemoveRange needs an index and a count"))
+			return nil
+		}
+		index := g.load(g.expr(module, args[0], types.Usize))
+		count := g.load(g.expr(module, args[1], types.Usize))
+		if index == nil || count == nil {
+			return nil
+		}
+		g.declareRuntime("zyxrt_array_remove_range", "void", "ptr", g.ptrInt(), g.ptrInt())
+		g.emit("  call void @zyxrt_array_remove_range(ptr %s, %s %s, %s %s)",
+			recv.text, index.ll, index.text, count.ll, count.text)
+		return &value{ll: "void"}
 	case "Push":
 		slot, ok := g.elementSlot(module, n, elem)
 		if !ok {
