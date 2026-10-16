@@ -1,6 +1,8 @@
 package build
 
 import (
+	"archive/zip"
+	"bytes"
 	"os"
 	"path/filepath"
 	"sort"
@@ -8,6 +10,7 @@ import (
 	"testing"
 
 	"zyx/internal/diag"
+	"zyx/internal/mod"
 	"zyx/internal/toolchain"
 )
 
@@ -303,6 +306,110 @@ func TestOutputPaths(t *testing.T) {
 	}
 	if paths[0] != filepath.Join(root, "bin", "app") || paths[1] != filepath.Join(root, "bin", "other") {
 		t.Errorf("directory paths = %v", paths)
+	}
+}
+
+// zipOf builds a module archive holding the named files.
+func zipOf(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		entry, err := w.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write([]byte(files[name])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestResolvesARequiredModule(t *testing.T) {
+	root := t.TempDir()
+	cache, err := mod.OpenModuleCache(filepath.Join(root, ".zyx-mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A module in the cache, as a fetch would leave it.
+	archive := zipOf(t, map[string]string{
+		"example.com/dep@v1.0.0/zyx.mod":       "module example.com/dep\n\nzyx 0.1\n",
+		"example.com/dep@v1.0.0/util/util.zyx": "package util\n\nfunc Use() {\n}\n",
+	})
+	content, err := mod.HashContent(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Put("example.com/dep", "v1.0.0", content, archive); err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, map[string]string{
+		"main.zyx": "package main\n\nimport \"example.com/dep/util\"\n\nfunc Main() {\n}\n",
+	})
+	l := &Loader{
+		Root:       root,
+		ModulePath: "example.com/app",
+		Target:     linuxAMD64(),
+		Requires:   map[string]string{"example.com/dep": "v1.0.0"},
+		Modules:    cache,
+	}
+	pkg, err := l.LoadPackage("example.com/dep/util")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Name != "util" {
+		t.Errorf("name = %q, want util", pkg.Name)
+	}
+	if _, err := l.Load("example.com/app"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestModuleOfTakesTheLongestPrefix(t *testing.T) {
+	l := &Loader{Requires: map[string]string{
+		"example.com/dep":      "v1.0.0",
+		"example.com/dep/tool": "v2.0.0",
+	}}
+	path, version, ok := l.moduleOf("example.com/dep/tool/run")
+	if !ok || path != "example.com/dep/tool" || version != "v2.0.0" {
+		t.Errorf("moduleOf = %q %q %v, want example.com/dep/tool v2.0.0", path, version, ok)
+	}
+	path, version, ok = l.moduleOf("example.com/dep/util")
+	if !ok || path != "example.com/dep" || version != "v1.0.0" {
+		t.Errorf("moduleOf = %q %q %v, want example.com/dep v1.0.0", path, version, ok)
+	}
+	if _, _, ok := l.moduleOf("example.com/other"); ok {
+		t.Error("an unrelated path resolved to a requirement")
+	}
+}
+
+func TestVendorTakesPrecedence(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, map[string]string{
+		"vendor/example.com/dep/util/util.zyx": "package util\n\nfunc Use() {\n}\n",
+	})
+	l := &Loader{
+		Root:       root,
+		ModulePath: "example.com/app",
+		Target:     linuxAMD64(),
+		Requires:   map[string]string{"example.com/dep": "v1.0.0"},
+		Vendor:     filepath.Join(root, "vendor"),
+	}
+	dir, err := l.Resolve("example.com/dep/util")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root, "vendor", "example.com", "dep", "util"); dir != want {
+		t.Errorf("dir = %q, want the vendor copy at %q", dir, want)
 	}
 }
 

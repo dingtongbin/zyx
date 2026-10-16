@@ -3,6 +3,8 @@ package mod
 import (
 	"archive/zip"
 	"bytes"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -284,6 +286,100 @@ func TestHashManifest(t *testing.T) {
 	}
 	if one == other {
 		t.Error("a different module path did not change the hash")
+	}
+}
+
+func TestModuleCachePutAndRead(t *testing.T) {
+	c, err := OpenModuleCache(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := zipOf(t, map[string]string{
+		"example.com/dep@v1.0.0/zyx.mod":       "module example.com/dep\n\nzyx 0.1\n",
+		"example.com/dep@v1.0.0/util/util.zyx": "package util\n",
+	})
+	content, err := HashContent(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Put("example.com/dep", "v1.0.0", content, archive); err != nil {
+		t.Fatal(err)
+	}
+	if !c.Has("example.com/dep", "v1.0.0") {
+		t.Fatal("the module is not in the cache after a put")
+	}
+	f, err := c.Manifest("example.com/dep", "v1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Module != "example.com/dep" {
+		t.Errorf("module = %q, want example.com/dep", f.Module)
+	}
+	tree := filepath.Join(c.Dir("example.com/dep", "v1.0.0"), "util", "util.zyx")
+	if _, err := os.Stat(tree); err != nil {
+		t.Errorf("the tree was not unpacked: %v", err)
+	}
+	hash, err := c.ManifestHash("example.com/dep", "v1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash != HashManifest("example.com/dep", "v1.0.0", []byte("module example.com/dep\n\nzyx 0.1\n")) {
+		t.Errorf("manifest hash = %q, want the hash of what is stored", hash)
+	}
+}
+
+func TestModuleCacheRejectsAWrongHash(t *testing.T) {
+	c, err := OpenModuleCache(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := zipOf(t, map[string]string{"example.com/dep@v1.0.0/zyx.mod": "module example.com/dep\n"})
+	if err := c.Put("example.com/dep", "v1.0.0", "h1:wrong=", archive); err == nil {
+		t.Fatal("content that does not match the recorded hash was stored")
+	}
+	if c.Has("example.com/dep", "v1.0.0") {
+		t.Error("a refused module reached the cache")
+	}
+}
+
+func TestModuleCacheRejectsANameOutsideTheModule(t *testing.T) {
+	c, err := OpenModuleCache(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := zipOf(t, map[string]string{
+		"example.com/dep@v1.0.0/zyx.mod":       "module example.com/dep\n",
+		"example.com/dep@v1.0.0/../escape.zyx": "package escape\n",
+	})
+	if err := c.Put("example.com/dep", "v1.0.0", "", archive); err == nil {
+		t.Fatal("an archive that climbs out of the module was stored")
+	}
+	if _, err := os.Stat(filepath.Join(c.Root(), "escape.zyx")); err == nil {
+		t.Error("a file was written outside the module directory")
+	}
+}
+
+func TestModuleCacheRejectsAnArchiveWithoutAManifest(t *testing.T) {
+	c, err := OpenModuleCache(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := zipOf(t, map[string]string{"example.com/dep@v1.0.0/a.zyx": "package a\n"})
+	if err := c.Put("example.com/dep", "v1.0.0", "", archive); err == nil {
+		t.Fatal("an archive with no manifest was stored")
+	}
+}
+
+func TestEscapePath(t *testing.T) {
+	// Two paths that differ only in case stay two directories on a file
+	// system that does not tell them apart.
+	one := escapePath("example.com/Foo/Bar")
+	two := escapePath("example.com/foo/bar")
+	if one == two {
+		t.Errorf("the two paths share the directory %q", one)
+	}
+	if want := "example.com/!foo/!bar"; one != want {
+		t.Errorf("escapePath = %q, want %q", one, want)
 	}
 }
 

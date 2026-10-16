@@ -286,14 +286,43 @@ func (s *Session) findModule(start string) (*module, error) {
 	}
 }
 
-// loader returns a loader for a module and a target.
+// loader returns a loader for a module and a target. An import path outside
+// the module resolves against the module's requirements and its vendor
+// directory.
 func (s *Session) loader(m *module, o *options) *build.Loader {
-	return &build.Loader{
+	l := &build.Loader{
 		Root:       m.Root,
 		ModulePath: m.File.Module,
 		StdRoot:    s.stdRoot(),
 		Target:     o.target,
 	}
+	requires := map[string]string{}
+	for _, req := range m.File.Require {
+		requires[req.Path] = req.Version
+	}
+	l.Requires = requires
+	if c, err := mod.OpenModuleCache(s.moduleCacheRoot(m)); err == nil {
+		l.Modules = c
+	}
+	if vendor := filepath.Join(m.Root, "vendor"); isDirectory(vendor) {
+		l.Vendor = vendor
+	}
+	return l
+}
+
+// moduleCacheRoot returns where fetched modules live: the directory the
+// environment names, or one beside the module.
+func (s *Session) moduleCacheRoot(m *module) string {
+	if dir := s.env("ZYXMODCACHE"); dir != "" {
+		return dir
+	}
+	return filepath.Join(m.Root, ".zyx-mod")
+}
+
+// isDirectory reports whether a path is an existing directory.
+func isDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // stdRoot returns the standard library tree that ships with the compiler.

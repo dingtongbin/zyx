@@ -2,6 +2,7 @@
 /build/
 tests/e2e/testdata/*/build/
 .zyx-cache/
+.zyx-mod/
 *.exe
 
 # 本地设计文档与开发规范（不入 git，仅本地使用）

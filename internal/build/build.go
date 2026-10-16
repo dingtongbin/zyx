@@ -19,6 +19,7 @@ import (
 	"zyx/internal/coro"
 	"zyx/internal/diag"
 	"zyx/internal/marks"
+	"zyx/internal/mod"
 	"zyx/internal/resolve"
 	"zyx/internal/source"
 	"zyx/internal/toolchain"
@@ -62,6 +63,15 @@ type Loader struct {
 	Target toolchain.Target
 	// Testing includes test files, which an ordinary build leaves out.
 	Testing bool
+	// Requires holds the module requirements of the main module, keyed by
+	// module path. An import path outside the module and the standard
+	// library resolves to the longest requirement that is a prefix of it.
+	Requires map[string]string
+	// Modules is the cache the required modules were fetched into.
+	Modules *mod.ModuleCache
+	// Vendor is the module's vendor directory, which takes precedence over
+	// the cache when it exists.
+	Vendor string
 }
 
 // A Graph is a module's packages in dependency order.
@@ -232,7 +242,58 @@ func (l *Loader) Resolve(importPath string) (string, error) {
 		rel := strings.TrimPrefix(strings.TrimPrefix(importPath, l.ModulePath), "/")
 		return filepath.Join(l.Root, filepath.FromSlash(rel)), nil
 	}
+	// A vendor directory is a mirror of the modules the build needs, so it
+	// answers first and a build with one runs without the cache (§12.3).
+	if dir, ok := l.vendorDir(importPath); ok {
+		return dir, nil
+	}
+	if dir, ok := l.requiredDir(importPath); ok {
+		return dir, nil
+	}
 	return "", fmt.Errorf("import %q is not provided by module %s", importPath, l.ModulePath)
+}
+
+// vendorDir returns where an import path resolves in the module's vendor
+// directory, if the module has one and the package is in it.
+func (l *Loader) vendorDir(importPath string) (string, bool) {
+	if l.Vendor == "" {
+		return "", false
+	}
+	dir := filepath.Join(l.Vendor, filepath.FromSlash(importPath))
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		return dir, true
+	}
+	return "", false
+}
+
+// requiredDir returns where an import path resolves among the required
+// modules, which live in the module cache under their path and version.
+func (l *Loader) requiredDir(importPath string) (string, bool) {
+	path, version, ok := l.moduleOf(importPath)
+	if !ok || l.Modules == nil {
+		return "", false
+	}
+	rel := strings.TrimPrefix(strings.TrimPrefix(importPath, path), "/")
+	dir := filepath.Join(l.Modules.Dir(path, version), filepath.FromSlash(rel))
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		return dir, true
+	}
+	return "", false
+}
+
+// moduleOf returns the module an import path belongs to: the longest
+// requirement whose path is a prefix of it, which is what tells
+// example.com/dep/tool apart from example.com/dep.
+func (l *Loader) moduleOf(importPath string) (path, version string, ok bool) {
+	for candidate, candidateVersion := range l.Requires {
+		if importPath != candidate && !strings.HasPrefix(importPath, candidate+"/") {
+			continue
+		}
+		if len(candidate) > len(path) {
+			path, version, ok = candidate, candidateVersion, true
+		}
+	}
+	return path, version, ok
 }
 
 // validImportPath reports whether a path is a full module path. The
