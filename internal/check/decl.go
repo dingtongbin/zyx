@@ -220,6 +220,24 @@ func isSyncPrimitive(t *types.Type) bool {
 	return false
 }
 
+// defaultValues evaluates the defaults of a declaration, one per parameter in
+// order and nil where a parameter has none, so an importing package can
+// complete a call that leaves them out. A default is a compile-time
+// constant, so the value is all a caller needs.
+func (c *checker) defaultValues(f *ast.FuncDecl) []*Value {
+	out := make([]*Value, len(f.Params))
+	prev := c.inComptime
+	c.inComptime = true
+	for i, p := range f.Params {
+		if p.Default == nil {
+			continue
+		}
+		out[i] = c.eval(p.Default)
+	}
+	c.inComptime = prev
+	return out
+}
+
 // checkFreeFunc checks a top-level function.
 func (c *checker) checkFreeFunc(v *ast.FuncDecl) {
 	for _, tp := range v.TypeParams {
@@ -235,9 +253,25 @@ func (c *checker) checkFreeFunc(v *ast.FuncDecl) {
 		if v.Name != nil && t != nil {
 			c.out.Decls[v.Name.Name] = t
 			c.recordDecl(v.Name, t)
+			if d := c.defaultValues(v); hasAny(d) {
+				if c.out.FuncDefaults == nil {
+					c.out.FuncDefaults = map[string][]*Value{}
+				}
+				c.out.FuncDefaults[v.Name.Name] = d
+			}
 		}
 		c.checkFuncShape(v, funcContext{})
 	})
+}
+
+// hasAny reports whether a default list holds a default at all.
+func hasAny(values []*Value) bool {
+	for _, v := range values {
+		if v != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // funcType returns the function type of a declaration. A variadic parameter
@@ -528,6 +562,12 @@ func (c *checker) checkMethod(d *Decl, f *ast.FuncDecl) {
 			d.MethodSyms = map[string]*resolve.Symbol{}
 		}
 		d.MethodSyms[f.Name.Name] = c.symOf(f.Name)
+		if values := c.defaultValues(f); hasAny(values) {
+			if d.MethodDefaults == nil {
+				d.MethodDefaults = map[string][]*Value{}
+			}
+			d.MethodDefaults[f.Name.Name] = values
+		}
 		c.recordDecl(f.Name, t)
 		if f.Name.Name == "init" {
 			c.checkInitShape(f)

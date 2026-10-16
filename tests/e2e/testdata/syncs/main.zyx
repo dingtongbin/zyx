@@ -99,4 +99,22 @@ func main() {
     sh.Set(sh.Get() + 1)
     fmt.PrintI64(sh.Get())
     fmt.PrintNl()
+    // An atomic maps to the target's atomic instructions, and the memory
+    // order defaults to sequential consistency.
+    var counter = new sync.Atomic<i64>(5)
+    fmt.PrintI64(counter.Load())
+    fmt.PrintI64(counter.Add(3))
+    fmt.PrintI64(counter.Load())
+    fmt.PrintI64(counter.Swap(9))
+    fmt.PrintBool(counter.Cas(9, 11))
+    fmt.PrintI64(counter.Load())
+    fmt.PrintBool(counter.Cas(9, 12))
+    fmt.PrintI64(counter.Load())
+    fmt.PrintNl()
+    counter.Store(0, sync.Order.Relaxed)
+    fmt.PrintI64(counter.Load(sync.Order.Relaxed))
+    fmt.PrintNl()
+    sync.Fence(sync.Order.Acquire)
+    fmt.PrintI64(7)
+    fmt.PrintNl()
 }

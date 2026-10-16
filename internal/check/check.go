@@ -51,6 +51,11 @@ type Interface struct {
 	Decls map[string]*types.Type
 	// Declared maps the symbol id of every public type to its members.
 	Declared map[string]*Decl
+	// FuncDefaults maps each public function's name to the default value of
+	// every parameter, in order, with nil where the parameter has none. An
+	// importing package completes a call that leaves a default out from these
+	// values, because the declaration itself is not part of its tree.
+	FuncDefaults map[string][]*Value
 }
 
 // A Const is one constant declared in a type body.
@@ -80,6 +85,11 @@ type Decl struct {
 	// that needs the declaration itself, such as the one that completes a
 	// call's default arguments, can reach it.
 	MethodSyms map[string]*resolve.Symbol
+	// MethodDefaults maps each method name to the default value of every
+	// parameter, in order, with nil where the parameter has none. A package
+	// that calls the method from outside completes a call that leaves a
+	// default out from these values.
+	MethodDefaults map[string][]*Value
 	// Consts maps each constant name to its declaration.
 	Consts map[string]*Const
 	// Impls holds the interfaces the type implements, in source order.
@@ -187,6 +197,9 @@ type Package struct {
 	MethodValues map[ast.Node]bool
 	// Consts maps each evaluated constant to its value.
 	Consts map[string]*Value
+	// FuncDefaults maps each public function's name to the default value of
+	// every parameter, in order, with nil where the parameter has none.
+	FuncDefaults map[string][]*Value
 	// FastC names the C functions whose calls run on the calling coroutine
 	// rather than through the blocking pool. The set comes from the
 	// package's own linkage declarations: a `fast extern func`, and the
@@ -242,6 +255,19 @@ func (p *Package) SyncSafe(t *types.Type) bool {
 		}
 	}
 	return false
+}
+
+// Imported returns the checked surface of an imported package, or nil when
+// the package is not imported.
+func (p *Package) Imported(path string) *Interface {
+	if p.imports == nil {
+		return nil
+	}
+	itf, ok := p.imports.Lookup(path)
+	if !ok {
+		return nil
+	}
+	return itf
 }
 
 // Check type-checks one package's declarations for a target. The target
@@ -857,15 +883,22 @@ func (c *checker) symOf(id *ast.Ident) *resolve.Symbol {
 // buildInterface collects the surface downstream packages consume.
 func (c *checker) buildInterface() {
 	itf := &Interface{
-		Path:     c.path,
-		Name:     c.name,
-		Decls:    c.out.Decls,
-		Declared: map[string]*Decl{},
+		Path:         c.path,
+		Name:         c.name,
+		Decls:        c.out.Decls,
+		Declared:     map[string]*Decl{},
+		FuncDefaults: map[string][]*Value{},
 	}
 	for id, d := range c.out.Declared {
 		if d.Sym != nil && d.Sym.Public {
 			itf.Declared[id] = d
 		}
+	}
+	for name, values := range c.out.FuncDefaults {
+		if name == "" || name[0] < 'A' || name[0] > 'Z' {
+			continue
+		}
+		itf.FuncDefaults[name] = values
 	}
 	c.out.Interface = itf
 }

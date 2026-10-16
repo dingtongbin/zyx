@@ -224,7 +224,9 @@ func (g *generator) signature(module string, n *zyxc.Node) ([]paramInfo, *types.
 	qual := n.Payload[1]
 	cABI := qual == "extern" || qual == "c"
 	var params []paramInfo
-	if recv := g.receiverType(n); recv != nil {
+	if recv := g.receiverType(n); recv != nil && !hasMark(n, "init") {
+		// init constructs a value rather than reading one, so it has no
+		// receiver to receive, though it is written in a type body.
 		params = append(params, paramInfo{name: "self", typ: recv, lls: []string{g.llPass(recv)}})
 	}
 	for _, child := range n.Children {

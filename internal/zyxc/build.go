@@ -947,7 +947,7 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 		}
 		n := New("call")
 		n.Child(b.wrap("callee", b.expr(v.Fn)))
-		n.Child(b.args(b.callArgs(v))...)
+		n.Child(b.callArgNodes(v)...)
 		return b.at(n, v.Sp)
 	case *ast.SelectorExpr:
 		return b.selector(v)
@@ -1134,15 +1134,18 @@ func (b *builder) callArgs(v *ast.CallExpr) []ast.Expr {
 	return v.Args
 }
 
-// calleeDecl returns the declaration a call names, or nil when the callee is
-// a value rather than a function or a method.
+// calleeDecl returns the declaration a call names, when that declaration
+// belongs to this package. A declaration another package owns is reached
+// through the interface it exports, because its tree is not part of this one.
 func (b *builder) calleeDecl(v *ast.CallExpr) *ast.FuncDecl {
 	switch fn := v.Fn.(type) {
 	case *ast.Ident:
-		if sym := b.rinfo.Defs[fn]; sym != nil {
-			decl, _ := sym.Decl.(*ast.FuncDecl)
-			return decl
+		sym := b.rinfo.Defs[fn]
+		if !b.ownDecl(sym) {
+			return nil
 		}
+		decl, _ := sym.Decl.(*ast.FuncDecl)
+		return decl
 	case *ast.SelectorExpr:
 		// A method's declaration belongs to the type its receiver has, which
 		// the check settled.
@@ -1155,13 +1158,122 @@ func (b *builder) calleeDecl(v *ast.CallExpr) *ast.FuncDecl {
 			return nil
 		}
 		sym := d.MethodSyms[fn.Name.Name]
-		if sym == nil {
+		if !b.ownDecl(sym) {
 			return nil
 		}
 		decl, _ := sym.Decl.(*ast.FuncDecl)
 		return decl
 	}
 	return nil
+}
+
+// ownDecl reports whether a declaration symbol belongs to this package, which
+// is what decides whether its default expressions are part of this tree.
+func (b *builder) ownDecl(sym *resolve.Symbol) bool {
+	return sym != nil && strings.HasPrefix(sym.ID, b.pkg.Path+".")
+}
+
+// callArgNodes renders a call's arguments, completing the defaults the call
+// leaves out. One written in this package is rendered from its expression,
+// and one another package declares is rendered from the value that package
+// exports, because its declaration is not part of this tree.
+func (b *builder) callArgNodes(v *ast.CallExpr) []*Node {
+	out := b.args(b.callArgs(v))
+	if len(out) != len(v.Args) {
+		return out
+	}
+	for _, val := range b.importedDefaults(v) {
+		n := b.valueNode(val, v.Sp)
+		if n == nil {
+			return out
+		}
+		out = append(out, b.wrap("arg", n))
+	}
+	return out
+}
+
+// importedDefaults returns the default values of the parameters a call leaves
+// out, when the callee is a function or a method another package declares.
+func (b *builder) importedDefaults(v *ast.CallExpr) []*check.Value {
+	if b.cpkg == nil {
+		return nil
+	}
+	fn, ok := v.Fn.(*ast.SelectorExpr)
+	if !ok {
+		return nil
+	}
+	if pkg := b.importedPackage(fn.X); pkg != nil {
+		itf := b.cpkg.Imported(pkg.ID)
+		if itf == nil {
+			return nil
+		}
+		return tailDefaults(itf.FuncDefaults[fn.Name.Name], len(v.Args))
+	}
+	recv := b.cpkg.Nodes[fn.X]
+	if recv == nil {
+		return nil
+	}
+	d := b.cpkg.Decl(recv)
+	if d == nil {
+		return nil
+	}
+	return tailDefaults(d.MethodDefaults[fn.Name.Name], len(v.Args))
+}
+
+// importedPackage returns the symbol a selector's qualifier names when it is
+// an imported package, or nil.
+func (b *builder) importedPackage(x ast.Expr) *resolve.Symbol {
+	id, ok := x.(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	sym := b.rinfo.Defs[id]
+	if sym == nil || sym.Kind != resolve.KindPackage {
+		return nil
+	}
+	return sym
+}
+
+// tailDefaults returns the defaults of the parameters a call leaves out, or
+// nil when any of them has none.
+func tailDefaults(values []*check.Value, given int) []*check.Value {
+	if len(values) <= given {
+		return nil
+	}
+	out := make([]*check.Value, 0, len(values)-given)
+	for _, v := range values[given:] {
+		if v == nil {
+			return nil
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// valueNode renders a compile-time value as a node, which is what completes a
+// default another package declared. A value whose shape is not a literal the
+// format carries is reported rather than rendered wrongly.
+func (b *builder) valueNode(val *check.Value, sp source.Span) *Node {
+	if val == nil || val.Type == nil {
+		return nil
+	}
+	// A variant with no payload is a value of its enum.
+	if val.Type.Kind == types.KindEnum && val.Str != "" {
+		return b.at(New("variant-lit", b.typeText(val.Type), val.Str), sp)
+	}
+	var kind, text string
+	switch {
+	case val.Type.IsInteger() || val.Type.Kind == types.KindChar:
+		kind, text = "int", strconv.FormatUint(val.Int, 10)
+	case val.Type.Kind == types.KindBool:
+		kind, text = "bool", strconv.FormatBool(val.Bool)
+	default:
+		b.fail(&ast.Ident{Sp: sp}, "a default of type "+b.typeText(val.Type))
+		return nil
+	}
+	n := New("lit", kind, text)
+	n.Child(New("type", b.typeText(val.Type)))
+	return b.at(n, sp)
 }
 
 // args renders a call's arguments.
@@ -1180,7 +1292,7 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 		switch {
 		case b.isCCall(sel):
 			n := New("c-call", sel.Name.Name)
-			n.Child(b.args(b.callArgs(v))...)
+			n.Child(b.callArgNodes(v)...)
 			return b.at(n, v.Sp)
 		case b.namespace(sel) != "":
 			// meta.size_of(T) and dur.ms(100) are their own node kinds,
@@ -1197,7 +1309,7 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 					n.Child(b.wrap("arg", b.at(New("type", b.typeText(t)), a.Span())))
 				}
 			} else {
-				n.Child(b.args(b.callArgs(v))...)
+				n.Child(b.callArgNodes(v)...)
 			}
 			return b.at(n, v.Sp)
 		case b.isJoin(sel):
@@ -1206,19 +1318,19 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 			return b.at(n, v.Sp)
 		case b.isVariant(sel):
 			n := New("variant-lit", b.typeText(b.staticType(v)), sel.Name.Name)
-			n.Child(b.args(b.callArgs(v))...)
+			n.Child(b.callArgNodes(v)...)
 			return b.at(n, v.Sp)
 		case b.isMethodCall(sel):
 			n := New("mcall", sel.Name.Name, b.memberID(sel.X, sel.Name.Name))
 			n.Child(b.wrap("recv", b.expr(sel.X)))
-			n.Child(b.args(b.callArgs(v))...)
+			n.Child(b.callArgNodes(v)...)
 			if child := b.calleeTypeNode(sel.Name); child != nil {
 				n.Child(child)
 			}
 			return b.at(n, v.Sp)
 		case b.isQualified(sel):
 			n := New("qual", nameOr(qualifierName(sel)), sel.Name.Name, b.symID(sel.Name))
-			n.Child(b.args(b.callArgs(v))...)
+			n.Child(b.callArgNodes(v)...)
 			if child := b.calleeTypeNode(sel.Name); child != nil {
 				n.Child(child)
 			}

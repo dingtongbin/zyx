@@ -3,6 +3,158 @@
 
 #include "zyxrt_internal.h"
 
+#include <stdatomic.h>
+
+/* An atomic cell is allocated as the C atomic type of its width, so every
+   access is an atomic access to an atomic object rather than a cast of one.
+   The language's memory order maps to the C one. */
+typedef struct zyxrt_atomic {
+  size_t size;
+  union {
+    _Atomic uint8_t b8;
+    _Atomic uint16_t b16;
+    _Atomic uint32_t b32;
+    _Atomic uint64_t b64;
+  } cell;
+} zyxrt_atomic;
+
+/* The order numbers are the ones the language's Order enum uses. */
+static memory_order order_of(int64_t order) {
+  switch (order) {
+  case 1:
+    return memory_order_relaxed;
+  case 2:
+    return memory_order_acquire;
+  case 3:
+    return memory_order_release;
+  case 4:
+    return memory_order_acq_rel;
+  default:
+    return memory_order_seq_cst;
+  }
+}
+
+void *zyxrt_atomic_new(int64_t size, uint64_t value) {
+  zyxrt_atomic *a = (zyxrt_atomic *)zyxrt_region_alloc_current(sizeof(zyxrt_atomic), 8);
+  a->size = (size_t)size;
+  switch (a->size) {
+  case 1:
+    atomic_init(&a->cell.b8, (uint8_t)value);
+    break;
+  case 2:
+    atomic_init(&a->cell.b16, (uint16_t)value);
+    break;
+  case 4:
+    atomic_init(&a->cell.b32, (uint32_t)value);
+    break;
+  default:
+    atomic_init(&a->cell.b64, value);
+    break;
+  }
+  return a;
+}
+
+uint64_t zyxrt_atomic_load(void *handle, int64_t order) {
+  zyxrt_atomic *a = (zyxrt_atomic *)handle;
+  switch (a->size) {
+  case 1:
+    return atomic_load_explicit(&a->cell.b8, order_of(order));
+  case 2:
+    return atomic_load_explicit(&a->cell.b16, order_of(order));
+  case 4:
+    return atomic_load_explicit(&a->cell.b32, order_of(order));
+  default:
+    return atomic_load_explicit(&a->cell.b64, order_of(order));
+  }
+}
+
+void zyxrt_atomic_store(void *handle, uint64_t value, int64_t order) {
+  zyxrt_atomic *a = (zyxrt_atomic *)handle;
+  switch (a->size) {
+  case 1:
+    atomic_store_explicit(&a->cell.b8, (uint8_t)value, order_of(order));
+    break;
+  case 2:
+    atomic_store_explicit(&a->cell.b16, (uint16_t)value, order_of(order));
+    break;
+  case 4:
+    atomic_store_explicit(&a->cell.b32, (uint32_t)value, order_of(order));
+    break;
+  default:
+    atomic_store_explicit(&a->cell.b64, value, order_of(order));
+    break;
+  }
+}
+
+uint64_t zyxrt_atomic_add(void *handle, uint64_t value, int64_t order) {
+  zyxrt_atomic *a = (zyxrt_atomic *)handle;
+  switch (a->size) {
+  case 1:
+    return atomic_fetch_add_explicit(&a->cell.b8, (uint8_t)value, order_of(order));
+  case 2:
+    return atomic_fetch_add_explicit(&a->cell.b16, (uint16_t)value, order_of(order));
+  case 4:
+    return atomic_fetch_add_explicit(&a->cell.b32, (uint32_t)value, order_of(order));
+  default:
+    return atomic_fetch_add_explicit(&a->cell.b64, value, order_of(order));
+  }
+}
+
+uint64_t zyxrt_atomic_sub(void *handle, uint64_t value, int64_t order) {
+  zyxrt_atomic *a = (zyxrt_atomic *)handle;
+  switch (a->size) {
+  case 1:
+    return atomic_fetch_sub_explicit(&a->cell.b8, (uint8_t)value, order_of(order));
+  case 2:
+    return atomic_fetch_sub_explicit(&a->cell.b16, (uint16_t)value, order_of(order));
+  case 4:
+    return atomic_fetch_sub_explicit(&a->cell.b32, (uint32_t)value, order_of(order));
+  default:
+    return atomic_fetch_sub_explicit(&a->cell.b64, value, order_of(order));
+  }
+}
+
+uint64_t zyxrt_atomic_swap(void *handle, uint64_t value, int64_t order) {
+  zyxrt_atomic *a = (zyxrt_atomic *)handle;
+  switch (a->size) {
+  case 1:
+    return atomic_exchange_explicit(&a->cell.b8, (uint8_t)value, order_of(order));
+  case 2:
+    return atomic_exchange_explicit(&a->cell.b16, (uint16_t)value, order_of(order));
+  case 4:
+    return atomic_exchange_explicit(&a->cell.b32, (uint32_t)value, order_of(order));
+  default:
+    return atomic_exchange_explicit(&a->cell.b64, value, order_of(order));
+  }
+}
+
+int zyxrt_atomic_cas(void *handle, uint64_t expect, uint64_t value, int64_t order) {
+  zyxrt_atomic *a = (zyxrt_atomic *)handle;
+  memory_order o = order_of(order);
+  switch (a->size) {
+  case 1: {
+    uint8_t e = (uint8_t)expect;
+    return atomic_compare_exchange_strong_explicit(&a->cell.b8, &e, (uint8_t)value, o, o);
+  }
+  case 2: {
+    uint16_t e = (uint16_t)expect;
+    return atomic_compare_exchange_strong_explicit(&a->cell.b16, &e, (uint16_t)value, o, o);
+  }
+  case 4: {
+    uint32_t e = (uint32_t)expect;
+    return atomic_compare_exchange_strong_explicit(&a->cell.b32, &e, (uint32_t)value, o, o);
+  }
+  default: {
+    uint64_t e = expect;
+    return atomic_compare_exchange_strong_explicit(&a->cell.b64, &e, value, o, o);
+  }
+  }
+}
+
+void zyxrt_atomic_fence(int64_t order) {
+  atomic_thread_fence(order_of(order));
+}
+
 /* A wait group counts the coroutines a waiter waits for. */
 typedef struct zyxrt_wg {
   int64_t count;

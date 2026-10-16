@@ -219,6 +219,18 @@ void zyxrt_mutex_unlock(void *mutex);
 void zyxrt_mutex_wait(void *mutex);
 void zyxrt_mutex_notify_one(void *mutex);
 void zyxrt_mutex_notify_all(void *mutex);
+/* Atomics. A cell is allocated as the C atomic type of its width, so every
+   access is an atomic access to an atomic object. The order numbers are the
+   ones the language's Order enum uses: 1 relaxed, 2 acquire, 3 release,
+   4 acq_rel, anything else sequential consistency. */
+void *zyxrt_atomic_new(int64_t size, uint64_t value);
+uint64_t zyxrt_atomic_load(void *atomic, int64_t order);
+void zyxrt_atomic_store(void *atomic, uint64_t value, int64_t order);
+uint64_t zyxrt_atomic_add(void *atomic, uint64_t value, int64_t order);
+uint64_t zyxrt_atomic_sub(void *atomic, uint64_t value, int64_t order);
+uint64_t zyxrt_atomic_swap(void *atomic, uint64_t value, int64_t order);
+int zyxrt_atomic_cas(void *atomic, uint64_t expect, uint64_t value, int64_t order);
+void zyxrt_atomic_fence(int64_t order);
 /* Channels. A channel carries values of one size, up to a fixed capacity. */
 void *zyxrt_chan_new(size_t elem, size_t cap);
 void zyxrt_chan_send(void *ch, const void *value);
