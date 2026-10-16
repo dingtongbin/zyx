@@ -222,10 +222,10 @@ func (c *checker) checkCCall(sel *ast.SelectorExpr, v *ast.CallExpr) *types.Type
 			at += width
 			continue
 		}
-		if cByValue(t) {
+		if cByValue(t) && !c.target.RecordPlacementKnown() {
 			c.errorHelp(diag.CodeTypeMismatch, a.Span(),
 				"pass a scalar, an address, or a text",
-				"a %s crosses to C by value, which needs the C ABI's own placement of a record", t)
+				"a %s crosses to C by value, which this target's placement of a record does not lower yet", t)
 			return nil
 		}
 		if !cArgFits(t, fn.Params[at:at+width]) {

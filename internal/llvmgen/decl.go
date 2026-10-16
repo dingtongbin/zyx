@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"zyx/internal/layout"
 	"zyx/internal/toolchain"
 	"zyx/internal/types"
 	"zyx/internal/zyxc"
@@ -265,13 +266,88 @@ func (g *generator) abiArgs(t *types.Type) []string {
 	case toolchain.ABIFatPointer:
 		return []string{"ptr", g.ptrInt()}
 	case toolchain.ABIAggregate:
-		// A record crosses as its own bytes. Which registers it occupies is
-		// the target's C ABI, and the compiler that owns that ABI is the
-		// one the C side is compiled with, so the classification is left to
-		// it rather than written here.
-		return []string{g.llType(t)}
+		return g.recordArgs(t)
 	}
 	return []string{g.llPass(t)}
+}
+
+// recordArgs returns the register type a record crosses the C boundary as. A
+// C compiler places a record by rules of its own, which the target table
+// owns; this spells the placement in LLVM types.
+func (g *generator) recordArgs(t *types.Type) []string {
+	placement, width, ok := g.recordPlacement(t)
+	if !ok {
+		return []string{"ptr"}
+	}
+	switch placement {
+	case toolchain.PlaceInteger:
+		return []string{fmt.Sprintf("i%d", width*8)}
+	case toolchain.PlaceCopy:
+		return []string{"ptr"}
+	}
+	g.fail(fmt.Errorf("llvmgen: a %s crosses to C by value, and this target's placement of a record is not lowered yet", t))
+	return []string{"ptr"}
+}
+
+// recordPlacement returns how the target places a record, and the width of
+// the integer when the placement is PlaceInteger.
+func (g *generator) recordPlacement(t *types.Type) (toolchain.RecordPlacement, uint64, bool) {
+	size, err := layout.Size(t, g.tab, g.target.Layout())
+	if err != nil {
+		g.fail(fmt.Errorf("llvmgen: the size of %s: %w", t, err))
+		return toolchain.PlaceCopy, 0, false
+	}
+	placement, width := g.target.RecordArgument(size)
+	if placement == toolchain.PlaceClassified {
+		g.fail(fmt.Errorf("llvmgen: a %s crosses to C by value, and this target's placement of a record is not lowered yet", t))
+		return placement, 0, false
+	}
+	return placement, width, true
+}
+
+// recordArguments returns the argument list a record contributes to a C call,
+// placed the way the target places one.
+func (g *generator) recordArguments(a *value) []string {
+	placement, width, ok := g.recordPlacement(a.typ)
+	if !ok {
+		return nil
+	}
+	addr := g.addrText(a)
+	switch placement {
+	case toolchain.PlaceInteger:
+		// The record travels as one integer of its own width.
+		reg := g.newReg()
+		g.emit("  %s = load i%d, ptr %s", reg, width*8, addr)
+		return []string{fmt.Sprintf("i%d %s", width*8, reg)}
+	case toolchain.PlaceCopy:
+		// The callee reads the record where it lies, so the value travels as
+		// the address of a copy the caller owns. The declaration marks it
+		// byval, which is what tells the callee it may keep the copy.
+		slot := g.objectAlloca(a.typ)
+		g.copyObject(slot, addr, a.typ)
+		return []string{"ptr " + slot}
+	}
+	return nil
+}
+
+// cDeclared returns the parameter types a C declaration writes for a value of
+// one type, which carries the attribute the placement needs.
+func (g *generator) cDeclared(t *types.Type) []string {
+	lls := g.abiArgs(t)
+	if len(lls) == 1 && g.cByval(t) {
+		return []string{"ptr byval(" + g.llType(t) + ")"}
+	}
+	return lls
+}
+
+// cByval reports whether a parameter of the C ABI is the address of a copy
+// the caller owns, which a declaration marks byval.
+func (g *generator) cByval(t *types.Type) bool {
+	if t == nil || g.target.ABIKind(t) != toolchain.ABIAggregate {
+		return false
+	}
+	placement, _, ok := g.recordPlacement(t)
+	return ok && placement == toolchain.PlaceCopy
 }
 
 // declare emits an external function declaration.
@@ -282,11 +358,22 @@ func (g *generator) declare(symbol string, params []paramInfo, result *types.Typ
 	g.m.declared[symbol] = true
 	var parts []string
 	for _, p := range params {
-		for _, ll := range p.lls {
-			parts = append(parts, ll)
+		if cABIParam(p.typ) {
+			parts = append(parts, g.cDeclared(p.typ)...)
+			continue
 		}
+		parts = append(parts, p.lls...)
 	}
 	fmt.Fprintf(&g.m.funcs, "declare %s @%s(%s)\n", retLL, llvmName(symbol), strings.Join(parts, ", "))
+}
+
+// cABIParam reports whether a parameter crosses the C boundary, which is what
+// decides how its declaration spells it.
+func cABIParam(t *types.Type) bool {
+	return t != nil && (t.Kind == types.KindStr || t.Kind == types.KindSlice ||
+		t.Kind == types.KindStruct || t.Kind == types.KindExternStruct ||
+		t.Kind == types.KindUnion || t.Kind == types.KindEnum ||
+		t.Kind == types.KindArray || t.Kind == types.KindInterface)
 }
 
 // function emits one function definition or declaration.

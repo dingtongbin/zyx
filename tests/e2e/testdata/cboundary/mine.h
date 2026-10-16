@@ -8,3 +8,7 @@ extern int counter;
 int add(int a, int b);
 
 void trace(const char *fmt, ...);
+
+struct Point { int x; int y; };
+
+int sum(struct Point p);

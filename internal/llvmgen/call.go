@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"zyx/internal/toolchain"
 	"zyx/internal/types"
 	"zyx/internal/zyxc"
 )
@@ -262,16 +263,11 @@ func (g *generator) directCall(module string, n *zyxc.Node, sym string, recv *va
 // cArguments renders one argument in the form the C ABI uses: a fat pointer
 // crosses as its address and its length.
 func (g *generator) cArguments(a *value) []string {
+	if g.target.ABIKind(a.typ) == toolchain.ABIAggregate {
+		return g.recordArguments(a)
+	}
 	lls := g.abiArgs(a.typ)
 	if len(lls) == 1 {
-		if byAddress(a.typ) {
-			// A record crosses as its own bytes, so it is read out of the
-			// object that holds it.
-			addr := g.addrText(a)
-			reg := g.newReg()
-			g.emit("  %s = load %s, ptr %s", reg, lls[0], addr)
-			return []string{lls[0] + " " + reg}
-		}
 		v := g.load(a)
 		return []string{lls[0] + " " + v.text}
 	}
@@ -306,10 +302,7 @@ func (g *generator) cCall(module string, n *zyxc.Node) *value {
 		}
 		args := g.cArguments(v)
 		parts = append(parts, args...)
-		for _, a := range args {
-			ll, _, _ := strings.Cut(a, " ")
-			types = append(types, ll)
-		}
+		types = append(types, g.cDeclared(v.typ)...)
 	}
 	result := g.typeOfNode(n.First("type"), module)
 	ret := "void"

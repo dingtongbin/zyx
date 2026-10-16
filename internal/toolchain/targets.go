@@ -220,6 +220,45 @@ const (
 	ABIAggregate
 )
 
+// RecordPlacement says how a record crosses the C boundary as an argument. A
+// C compiler places a record by rules of its own, and the two families of
+// 64-bit targets place it differently, so the target table owns the rule.
+type RecordPlacement uint8
+
+const (
+	// PlaceCopy passes a copy of the record and lets the callee read it
+	// where it lies.
+	PlaceCopy RecordPlacement = iota
+	// PlaceInteger passes the record as one integer of the width the rule
+	// reports, which is what a Windows target does with a record of one,
+	// two, four, or eight bytes.
+	PlaceInteger
+	// PlaceClassified passes the record as the classes of its eightbytes,
+	// which is what a System V target does.
+	PlaceClassified
+)
+
+// RecordPlacementKnown reports whether the placement of a record by value is
+// lowered for the target. A System V target classifies the eightbytes of a
+// record, which the backend does not lower yet.
+func (t Target) RecordPlacementKnown() bool { return t.OS == "windows" }
+
+// RecordArgument returns how a record of the given size crosses the C
+// boundary as an argument on the target, and the width of the integer when
+// the placement is PlaceInteger.
+func (t Target) RecordArgument(size uint64) (RecordPlacement, uint64) {
+	if t.OS == "windows" {
+		// A record of one, two, four, or eight bytes is passed as an integer
+		// of that width; every other one is passed through a copy.
+		switch size {
+		case 1, 2, 4, 8:
+			return PlaceInteger, size
+		}
+		return PlaceCopy, 0
+	}
+	return PlaceClassified, 0
+}
+
 // ABIKind returns how a value of a type crosses the C boundary. The target
 // table owns the classification, because it is part of the platform's ABI;
 // the backend spells it in LLVM types.

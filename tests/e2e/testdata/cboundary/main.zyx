@@ -29,4 +29,14 @@ func main() {
     // A global object is read where the C side keeps it.
     fmt.PrintI64(i64(c.counter))
     fmt.PrintNl()
+    // A record crosses by value, placed the way the target places one.
+    var point = Point { x: 3, y: 4 }
+    fmt.PrintI64(i64(c.sum(point)))
+    fmt.PrintNl()
+}
+// The header's own tag and a declaration of the same name are one type.
+
+extern struct Point {
+    x: i32
+    y: i32
 }

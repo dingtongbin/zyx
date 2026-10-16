@@ -1232,7 +1232,7 @@ func (g *generator) structLit(module string, n *zyxc.Node) *value {
 	// A value type lies in the frame, so the literal names that storage and
 	// a read of it loads the bytes; a reference type names its object.
 	if !byAddress(typ) {
-		return &value{text: base, ll: "ptr", typ: typ, lvalue: true, inline: true}
+		return &value{text: base, ll: g.llType(typ), typ: typ, lvalue: true, inline: true}
 	}
 	return &value{text: base, ll: "ptr", typ: typ}
 }
