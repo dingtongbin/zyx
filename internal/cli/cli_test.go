@@ -329,6 +329,67 @@ func TestVendorMirrorsAndBuildsOffline(t *testing.T) {
 	}
 }
 
+func TestTidyAddsFetchesAndDrops(t *testing.T) {
+	server := proxyFor(t, "example.com/dep", "v1.0.0")
+	// A requirement that nothing reads is still one the graph reads the
+	// manifest of, so the source serves it too.
+	other := proxyFor(t, "example.com/unused", "v1.0.0")
+	dir := t.TempDir()
+	write(t, dir, map[string]string{
+		"zyx.mod":  "module example.com/app\n\nzyx 0.1\n\nrequire example.com/unused v1.0.0\n",
+		"main.zyx": "package main\n\nimport \"example.com/dep/util\"\n\nfunc main() {\n    util.Use()\n}\n",
+	})
+	s, _, errBuf := session(dir)
+	s.Env = func(name string) string {
+		if name == "ZYXPROXY" {
+			return server.URL + "," + other.URL
+		}
+		return ""
+	}
+	if code := s.Run([]string{"mod", "tidy"}); code != 0 {
+		t.Fatalf("tidy failed with %d:\n%s", code, errBuf)
+	}
+	manifest, err := os.ReadFile(filepath.Join(dir, "zyx.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The import is required now, and the requirement nothing reads is gone.
+	if !strings.Contains(string(manifest), "require example.com/dep v1.0.0") {
+		t.Errorf("the manifest holds:\n%s\nwant a requirement for example.com/dep", manifest)
+	}
+	if strings.Contains(string(manifest), "example.com/unused") {
+		t.Errorf("the manifest still requires a module nothing reads:\n%s", manifest)
+	}
+	sum, err := os.ReadFile(filepath.Join(dir, "zyx.sum"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sum), "example.com/dep v1.0.0 h1:") {
+		t.Errorf("the checksum file holds:\n%s\nwant the hashes of what was fetched", sum)
+	}
+	if strings.Contains(string(sum), "example.com/unused") {
+		t.Errorf("the checksum file still records a dropped module:\n%s", sum)
+	}
+
+	// Running it again changes nothing, which is what makes it usable in a
+	// check.
+	before := string(manifest) + string(sum)
+	if code := s.Run([]string{"mod", "tidy"}); code != 0 {
+		t.Fatalf("a second tidy failed with %d:\n%s", code, errBuf)
+	}
+	again, err := os.ReadFile(filepath.Join(dir, "zyx.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	againSum, err := os.ReadFile(filepath.Join(dir, "zyx.sum"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again)+string(againSum) != before {
+		t.Errorf("a second tidy changed the files:\n%s\nwant\n%s", string(again)+string(againSum), before)
+	}
+}
+
 func TestModInitWritesAManifest(t *testing.T) {
 	dir := t.TempDir()
 	s, _, errBuf := session(dir)

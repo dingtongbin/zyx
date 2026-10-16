@@ -295,26 +295,18 @@ func (s *Session) findModule(start string) (*module, error) {
 	}
 }
 
-// loader returns a loader for a module and a target. An import path outside
-// the module resolves against the module's requirements and its vendor
-// directory.
-func (s *Session) loader(m *module, o *options) *build.Loader {
+// loaderFor returns a loader that resolves the modules a walk has settled: the
+// requirements it holds, and the modules a replacement points at a directory
+// of the working tree.
+func (s *Session) loaderFor(m *module, o *options, required, local map[string]string) *build.Loader {
 	l := &build.Loader{
 		Root:       m.Root,
 		ModulePath: m.File.Module,
 		StdRoot:    s.stdRoot(),
 		Target:     o.target,
+		Requires:   required,
+		Local:      local,
 	}
-	l.Requires = map[string]string{}
-	l.Local = map[string]string{}
-	for _, dep := range m.Build {
-		if dep.Dir != "" {
-			l.Local[dep.Path] = dep.Dir
-			continue
-		}
-		l.Requires[dep.Path] = dep.Version
-	}
-	l.Modules = nil
 	if !m.Vendored {
 		l.Modules = s.moduleCache(m)
 	}
@@ -322,6 +314,20 @@ func (s *Session) loader(m *module, o *options) *build.Loader {
 		l.Vendor = vendor
 	}
 	return l
+}
+
+// loader returns a loader for the modules a build reads.
+func (s *Session) loader(m *module, o *options) *build.Loader {
+	required := map[string]string{}
+	local := map[string]string{}
+	for _, dep := range m.Build {
+		if dep.Dir != "" {
+			local[dep.Path] = dep.Dir
+			continue
+		}
+		required[dep.Path] = dep.Version
+	}
+	return s.loaderFor(m, o, required, local)
 }
 
 // moduleCacheRoot returns where fetched modules live: the directory the

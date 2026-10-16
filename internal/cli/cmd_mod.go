@@ -60,9 +60,11 @@ func (s *Session) modInit(args []string) int {
 	return exitOK
 }
 
-// modTidy rewrites the requirements to the ones the module's own packages
-// import. A requirement that is not already in the manifest needs a version
-// from the network, which a build without a module proxy cannot settle.
+// modTidy rewrites the requirements to the ones the module's packages reach,
+// fetches what is not there, and records the hashes a build fixes the result
+// by. The reachable graph is the build graph together with the test graph,
+// closed over the imports of everything it reaches, so a module only a
+// dependency's package imports is required just the same.
 func (s *Session) modTidy(args []string) int {
 	o, err := s.parseOptions(args)
 	if err != nil {
@@ -72,119 +74,165 @@ func (s *Session) modTidy(args []string) int {
 	if err != nil {
 		return s.usageError(err)
 	}
-	if !s.prepareModule(m) {
+	if err := mod.CheckLang(m.File, Version); err != nil {
+		fmt.Fprintln(s.Stderr, "zyx:", err)
 		return exitError
 	}
-	loader := s.loader(m, o)
+	fetcher, err := s.fetcher()
+	if err != nil {
+		return s.usageError(err)
+	}
+	cache := s.moduleCache(m)
+	checks := s.readSum(m)
+	if checks == nil {
+		checks = &mod.Sum{}
+	}
+
+	// The requirements as they stand, and the modules a replacement points at
+	// a directory of the working tree.
+	required := map[string]string{}
+	var list []mod.Module
+	for _, req := range m.File.Require {
+		required[req.Path] = req.Version
+		list = append(list, mod.Module{Path: req.Path, Version: req.Version})
+	}
+	local := map[string]string{}
+	for _, rep := range m.File.Replace {
+		if mod.LocalPath(rep.NewPath) {
+			local[rep.Path] = rep.NewPath
+		}
+	}
+
+	// findModule asks the source list for each prefix of an import path,
+	// longest first, which is how a module the manifest does not name is
+	// found.
+	findModule := func(importPath string) (mod.Module, error) {
+		if fetcher == nil {
+			return mod.Module{}, fmt.Errorf("%s is imported but no module provides it, and no source is configured to find one", importPath)
+		}
+		fields := strings.Split(importPath, "/")
+		for i := len(fields); i > 0; i-- {
+			candidate := strings.Join(fields[:i], "/")
+			version, err := fetcher.Latest(candidate)
+			if err != nil {
+				continue
+			}
+			return mod.Module{Path: candidate, Version: version}, nil
+		}
+		return mod.Module{}, fmt.Errorf("%s is imported but no module provides it", importPath)
+	}
+
+	// ensure fills the cache and the checksum file for one module version,
+	// fetching what is missing. A module a replacement points at a directory
+	// needs neither.
+	ensure := func(dep mod.Module) error {
+		if local[dep.Path] != "" {
+			return nil
+		}
+		if checks.Content(dep.Path, dep.Version) != "" && checks.Manifest(dep.Path, dep.Version) != "" {
+			if cache != nil && !cache.Has(dep.Path, dep.Version) {
+				return fetcher.FetchInto(cache, checks, dep.Path, dep.Version)
+			}
+			return nil
+		}
+		if fetcher == nil {
+			return fmt.Errorf("%s %s has no recorded hash in zyx.sum, and no source is configured to fetch it", dep.Path, dep.Version)
+		}
+		content, manifest, err := fetcher.FetchNew(cache, dep.Path, dep.Version)
+		if err != nil {
+			return err
+		}
+		checks.Add(dep.Path, dep.Version, content, manifest)
+		return nil
+	}
+
 	needed := map[string]bool{}
-	// The reachable graph is the build graph together with the test graph, and
-	// it is closed over the imports of everything it reaches: a module only a
-	// dependency's package imports is required just the same.
+	seen := map[string]bool{}
+	var queue []string
 	for _, testing := range []bool{false, true} {
-		load := *loader
+		load := s.loaderFor(m, o, required, local)
 		load.Testing = testing
-		all, err := load.All("")
+		paths, err := load.All("")
 		if err != nil {
 			return s.usageError(err)
 		}
-		for _, path := range all {
-			graph, err := load.Load(path)
-			if err != nil {
-				fmt.Fprintln(s.Stderr, "zyx:", err)
-				return exitError
-			}
-			for _, pkg := range graph.Order {
-				if s.report(pkg.Diags) {
-					return exitError
-				}
-				for _, imp := range pkg.Imports {
-					if strings.HasPrefix(imp, "std/") || imp == "std" {
-						continue
-					}
-					if imp == m.File.Module || strings.HasPrefix(imp, m.File.Module+"/") {
-						continue
-					}
-					// A requirement is the module an import path belongs to,
-					// which is the longest one that is a prefix of it.
-					if dep, ok := mod.ModuleOf(m.Build, imp); ok {
-						needed[dep.Path] = true
-						continue
-					}
-					needed[imp] = true
-				}
-			}
-		}
+		queue = append(queue, paths...)
 	}
-
-	// The version of a requirement is the one version selection settled on, so
-	// a module the graph raises to a higher version is written at the version
-	// the build reads.
-	known := map[string]string{}
-	for _, dep := range m.Build {
-		known[dep.Path] = dep.Version
-	}
-	var missing []string
-	var kept []mod.Requirement
-	for path := range needed {
-		version, ok := known[path]
-		if !ok {
-			missing = append(missing, path)
+	for len(queue) > 0 {
+		path := queue[0]
+		queue = queue[1:]
+		if seen[path] {
 			continue
 		}
-		kept = append(kept, mod.Requirement{Path: path, Version: version})
-	}
-	if len(missing) != 0 {
-		for _, path := range missing {
-			fmt.Fprintf(s.Stderr, "zyx: %s is imported but not required; add `require %s <version>` to zyx.mod\n", path, path)
-		}
-		return exitError
-	}
-	// An indirect requirement stays only while a kept requirement still
-	// needs it.
-	final := kept
-	for _, req := range m.File.Require {
-		if containsRequirement(kept, req.Path) {
-			continue
-		}
-		if needed[req.Path] {
-			final = append(final, req)
-		}
-	}
-
-	// The checksum file fixes every requirement by hash. A requirement with
-	// no recorded hash leaves the build without the information it needs,
-	// which is an error rather than a rewrite: nothing is written until the
-	// whole picture is complete.
-	sumPath := filepath.Join(m.Root, "zyx.sum")
-	checks := &mod.Sum{}
-	if data, err := os.ReadFile(sumPath); err == nil {
-		parsed, err := mod.ParseSum(data)
+		seen[path] = true
+		loader := s.loaderFor(m, o, required, local)
+		pkg, err := loader.LoadPackage(path)
 		if err != nil {
 			fmt.Fprintln(s.Stderr, "zyx:", err)
 			return exitError
 		}
-		checks = parsed
-	} else if !os.IsNotExist(err) {
+		if s.report(pkg.Diags) {
+			return exitError
+		}
+		for _, imp := range pkg.Imports {
+			if imp == "std" || strings.HasPrefix(imp, "std/") {
+				continue
+			}
+			if imp == m.File.Module || strings.HasPrefix(imp, m.File.Module+"/") {
+				queue = append(queue, imp)
+				continue
+			}
+			dep, ok := mod.ModuleOf(list, imp)
+			if !ok {
+				dep, err = findModule(imp)
+				if err != nil {
+					fmt.Fprintln(s.Stderr, "zyx:", err)
+					return exitError
+				}
+				required[dep.Path] = dep.Version
+				list = append(list, dep)
+			}
+			if err := ensure(dep); err != nil {
+				fmt.Fprintln(s.Stderr, "zyx:", err)
+				return exitError
+			}
+			needed[dep.Path] = true
+			queue = append(queue, imp)
+		}
+	}
+
+	// Version selection settles the version every requirement is written at,
+	// so a module the graph raises to a higher version is written at the
+	// version the build reads. A module nothing reads is dropped.
+	//
+	// Selection reads every requirement's manifest, including one the walk
+	// found nothing to read from, so a requirement that is about to be dropped
+	// is fetched and recorded like any other and then pruned away.
+	grown := &mod.File{Module: m.File.Module, Lang: m.File.Lang}
+	for path, version := range required {
+		grown.Require = append(grown.Require, mod.Requirement{Path: path, Version: version})
+	}
+	settled, err := mod.BuildList(grown, cache, func(path, version string) error {
+		return ensure(mod.Module{Path: path, Version: version})
+	})
+	if err != nil {
 		fmt.Fprintln(s.Stderr, "zyx:", err)
 		return exitError
 	}
-	var unrecorded []string
-	for _, req := range final {
-		if checks.Content(req.Path, req.Version) == "" || checks.Manifest(req.Path, req.Version) == "" {
-			unrecorded = append(unrecorded, req.Path)
+	var final []mod.Requirement
+	for _, dep := range settled {
+		if !needed[dep.Path] {
+			continue
 		}
+		final = append(final, mod.Requirement{Path: dep.Path, Version: dep.Version})
 	}
-	if len(unrecorded) != 0 {
-		for _, path := range unrecorded {
-			fmt.Fprintf(s.Stderr, "zyx: %s has no recorded hash in zyx.sum; run `zyx get %s` to fetch and record it\n", path, path)
-		}
-		return exitError
-	}
+
 	// A hash whose requirement is gone is dropped, so the file says exactly
 	// what the build depends on.
 	checks.Prune(func(path string) bool { return containsRequirement(final, path) })
 
 	m.File.Require = final
+	sumPath := filepath.Join(m.Root, "zyx.sum")
 	if err := writeAtomically(sumPath, checks.Format()); err != nil {
 		fmt.Fprintln(s.Stderr, "zyx:", err)
 		return exitError
@@ -194,6 +242,23 @@ func (s *Session) modTidy(args []string) int {
 		return exitError
 	}
 	return exitOK
+}
+
+// fetcher returns the source list a module command fetches from, or nil when
+// nothing is configured to fetch.
+func (s *Session) fetcher() (*mod.Fetcher, error) {
+	sources, err := mod.ParseSources(s.env("ZYXPROXY"))
+	if err != nil {
+		return nil, err
+	}
+	if len(sources) == 0 {
+		return nil, nil
+	}
+	return &mod.Fetcher{
+		Sources: sources,
+		NoProxy: mod.ParsePatterns(s.env("ZYXNOPROXY")),
+		Private: mod.ParsePatterns(s.env("ZYXPRIVATE")),
+	}, nil
 }
 
 // writeAtomically replaces a file: a reader sees the whole old file or the
@@ -285,18 +350,13 @@ func (s *Session) moduleFetch(m *module) func(path, version string) error {
 	if sum == nil {
 		return nil
 	}
-	sources, err := mod.ParseSources(s.env("ZYXPROXY"))
-	if err != nil || len(sources) == 0 {
+	fetcher, err := s.fetcher()
+	if err != nil || fetcher == nil {
 		return nil
 	}
 	cache := s.moduleCache(m)
 	if cache == nil {
 		return nil
-	}
-	fetcher := &mod.Fetcher{
-		Sources: sources,
-		NoProxy: mod.ParsePatterns(s.env("ZYXNOPROXY")),
-		Private: mod.ParsePatterns(s.env("ZYXPRIVATE")),
 	}
 	return func(path, version string) error {
 		return fetcher.FetchInto(cache, sum, path, version)
