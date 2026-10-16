@@ -52,6 +52,14 @@ func (g *generator) load(v *value) *value {
 	return &value{text: reg, ll: v.ll, typ: v.typ}
 }
 
+// inlineObject returns the value that names an object lying at addr. The
+// storage is the object itself rather than a reference to it, so its type is
+// the object's own: a load reads the whole object, and the address is what a
+// field access or a store reaches through.
+func (g *generator) inlineObject(addr string, typ *types.Type) *value {
+	return &value{text: addr, ll: g.llType(typ), typ: typ, lvalue: true, inline: true}
+}
+
 // addrText returns the address of the object a value names, materializing
 // one when the value lives in a register.
 func (g *generator) addrText(v *value) string {
@@ -1172,23 +1180,29 @@ func (g *generator) index(module string, n *zyxc.Node) *value {
 		g.emit("  %s = getelementptr inbounds i8, ptr %s, i64 %s", reg, ptrReg, idx.text)
 		return &value{text: reg, ll: "i8", typ: types.Uint8, lvalue: true, inline: true}
 	case types.KindContainer:
-		if recv.typ.Name != "Array" {
-			break
+		switch recv.typ.Name {
+		case "Array":
+			// The element lives in the buffer the runtime owns, so the access
+			// answers its address: an assignment through it writes the element
+			// itself rather than a copy of it. The address stays valid until
+			// the array is structurally modified, which the language forbids
+			// while a borrow is live.
+			elem := arg(recv.typ, 0)
+			g.declareRuntime("zyxrt_array_len", g.ptrInt(), "ptr")
+			length := g.newReg()
+			g.emit("  %s = call %s @zyxrt_array_len(ptr %s)", length, g.ptrInt(), recv.text)
+			g.guardIndex(idx.text, length)
+			g.declareRuntime("zyxrt_array_slot", "ptr", "ptr", g.ptrInt())
+			slot := g.newReg()
+			g.emit("  %s = call ptr @zyxrt_array_slot(ptr %s, %s %s)", slot, recv.text, idx.ll, idx.text)
+			return g.inlineObject(slot, elem)
+		case "Map":
+			place, ok := g.mapPlaceOf(module, n, recv.typ)
+			if !ok {
+				return nil
+			}
+			return g.inlineObject(g.mapSlot(place), arg(recv.typ, 1))
 		}
-		// The element lives in the buffer the runtime owns, so the access
-		// answers its address: an assignment through it writes the element
-		// itself rather than a copy of it. The address stays valid until the
-		// array is structurally modified, which the language forbids while a
-		// borrow is live.
-		elem := arg(recv.typ, 0)
-		g.declareRuntime("zyxrt_array_len", g.ptrInt(), "ptr")
-		length := g.newReg()
-		g.emit("  %s = call %s @zyxrt_array_len(ptr %s)", length, g.ptrInt(), recv.text)
-		g.guardIndex(idx.text, length)
-		g.declareRuntime("zyxrt_array_slot", "ptr", "ptr", g.ptrInt())
-		slot := g.newReg()
-		g.emit("  %s = call ptr @zyxrt_array_slot(ptr %s, %s %s)", slot, recv.text, idx.ll, idx.text)
-		return &value{text: slot, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true}
 	}
 	g.fail(fmt.Errorf("llvmgen: indexing %s is not lowered", recv.typ))
 	return nil

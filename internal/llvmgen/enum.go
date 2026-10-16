@@ -79,7 +79,7 @@ func (g *generator) payloadUnion(variants []layout.Variant, shape layout.EnumSha
 // object.
 func (g *generator) payloadValue(base string, typ *types.Type, elem *types.Type, index int) *value {
 	addr := g.payloadElement(base, typ, []*types.Type{elem}, index)
-	return g.load(&value{text: addr, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true})
+	return g.load(g.inlineObject(addr, elem))
 }
 
 // variantOf returns the position and payload of one variant of an enum.
@@ -279,7 +279,7 @@ func (g *generator) unwrapOr(module string, n *zyxc.Node, typ *types.Type, base,
 	g.storeInto(slot, elem, fallback, false)
 	g.branch("  br label %%%s", endLabel)
 	g.label(endLabel)
-	return &value{text: slot, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true}
+	return g.inlineObject(slot, elem)
 }
 
 // resultAsOption lowers Result.Ok and Result.Err: the value the named variant

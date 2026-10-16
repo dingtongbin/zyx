@@ -171,9 +171,8 @@ func (c *checker) checkCond(e ast.Expr) {
 }
 
 // checkAssignTarget reports a target that has no storage to write. An array
-// element is a place, a slice is a read-only view, and a str is immutable. A
-// map is not indexed for writing: its entry is written through Insert and read
-// through Get.
+// element and a map entry are places, a slice is a read-only view, and a str
+// is immutable.
 func (c *checker) checkAssignTarget(target ast.Expr) {
 	index, ok := target.(*ast.IndexExpr)
 	if !ok {
@@ -184,12 +183,6 @@ func (c *checker) checkAssignTarget(target ast.Expr) {
 		return
 	}
 	switch base.Kind {
-	case types.KindContainer:
-		if base.Name == "Map" {
-			c.errorHelp(diag.CodeTypeMismatch, target.Span(),
-				"write a map entry through Insert, or read it through Get",
-				"a %s entry is written through Insert", base)
-		}
 	case types.KindSlice:
 		c.errorHelp(diag.CodeTypeMismatch, target.Span(),
 			"assign to a name, a field, or an element of a fixed-size array",

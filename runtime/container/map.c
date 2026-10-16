@@ -127,6 +127,16 @@ int zyxrt_map_get(void *handle, const void *key, void *out) {
   return 1;
 }
 
+/* zyxrt_map_slot returns the address of the value of a key, or NULL when the
+   key is not there. An entry is allocated once and its value is written in
+   place, so the address stays valid until the entry is removed. */
+void *zyxrt_map_slot(void *handle, const void *key) {
+  zyxrt_map *m = (zyxrt_map *)handle;
+  if (m == NULL) return NULL;
+  zyxrt_map_entry *e = find(m, key);
+  return e == NULL ? NULL : e->value;
+}
+
 int zyxrt_map_contains(void *handle, const void *key) {
   zyxrt_map *m = (zyxrt_map *)handle;
   return m != NULL && find(m, key) != NULL;

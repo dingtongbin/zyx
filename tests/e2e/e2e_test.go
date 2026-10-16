@@ -174,6 +174,8 @@ func TestInsertedChecksPanic(t *testing.T) {
 		{"index leaves the view", "var xs: [i64; 4] = [1, 2, 3, 4]\n\tvar view = xs[1..3]\n\tfmt.PrintI64(view[9])", "panic: index out of range"},
 		{"index leaves the string", "var text = \"abc\"\n\tfmt.PrintU64(u64(text[9]))", "panic: index out of range"},
 		{"a negative index reads as a large one", "var xs: [i64; 4] = [1, 2, 3, 4]\n\tvar at: i64 = -1\n\tfmt.PrintI64(xs[usize(at)])", "panic: index out of range"},
+		{"a map key that is not there", "var m = new Map<str, i64>()\n\tm[\"a\"] = 1\n\tfmt.PrintI64(m[\"b\"])", "panic: map key not found"},
+		{"a compound assignment to a key that is not there", "var m = new Map<str, i64>()\n\tm[\"a\"] = 1\n\tm[\"b\"] += 1\n\tfmt.PrintI64(m[\"a\"])", "panic: map key not found"},
 	}
 	for _, level := range []string{"-O0", "-O2", "-O3"} {
 		for _, c := range cases {

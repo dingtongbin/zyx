@@ -121,7 +121,7 @@ func (g *generator) recvPair(module string, n *zyxc.Node, slot string, elem *typ
 		g.fail(fmt.Errorf("llvmgen: the result of a receive is not settled"))
 		return nil
 	}
-	element := g.load(&value{text: slot, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true})
+	element := g.load(g.inlineObject(slot, elem))
 	first := g.newReg()
 	g.emit("  %s = insertvalue %s undef, %s %s, 0", first, g.llType(typ), g.llPass(elem), element.text)
 	// A bool is stored as a byte, so the flag is widened to the width the
@@ -307,7 +307,7 @@ func (g *generator) selectRecv(module string, arm *zyxc.Node, ch *value, end str
 	g.declareRuntime("zyxrt_chan_recv", "i32", "ptr", "ptr")
 	reg := g.newReg()
 	g.emit("  %s = call i32 @zyxrt_chan_recv(ptr %s, ptr %s)", reg, ch.text, slot)
-	element := &value{text: slot, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true}
+	element := g.inlineObject(slot, elem)
 	g.bindArmName(arm, 0, element)
 	g.bindArmName(arm, 1, g.boolFrom(reg))
 	g.stmt(module, g.wrapped(arm, "body"))

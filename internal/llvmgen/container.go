@@ -253,7 +253,7 @@ func (g *generator) arrayCall(module string, n *zyxc.Node, recv *value, name str
 		g.declareRuntime("zyxrt_array_get_unchecked", "void", "ptr", g.ptrInt(), "ptr")
 		g.emit("  call void @zyxrt_array_get_unchecked(ptr %s, %s %s, ptr %s)",
 			recv.text, index.ll, index.text, slot)
-		return g.load(&value{text: slot, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true})
+		return g.load(g.inlineObject(slot, elem))
 	}
 	g.fail(fmt.Errorf("llvmgen: Array.%s is not lowered", name))
 	return nil
@@ -308,9 +308,69 @@ func (g *generator) mapCall(module string, n *zyxc.Node, recv *value, name strin
 	return nil
 }
 
+// A mapPlace is a map entry that is being read or written: the map and the key
+// are evaluated once, so a compound assignment reaches the same entry twice
+// without evaluating anything twice.
+type mapPlace struct {
+	recv string
+	key  string
+	typ  *types.Type
+}
+
+// mapPlaceOf evaluates the map and the key of an index node.
+func (g *generator) mapPlaceOf(module string, n *zyxc.Node, typ *types.Type) (mapPlace, bool) {
+	recv := g.load(g.expr(module, g.wrapped(n, "recv"), nil))
+	if recv == nil {
+		return mapPlace{}, false
+	}
+	key, ok := g.namedSlot(module, n, "idx", arg(typ, 0))
+	if !ok {
+		return mapPlace{}, false
+	}
+	return mapPlace{recv: recv.text, key: key, typ: typ}, true
+}
+
+// mapSlot answers the address of the value an entry holds. The runtime reports
+// a key that is not there with a null pointer, which is a fault rather than an
+// absent value, because that is what Get is for.
+func (g *generator) mapSlot(place mapPlace) string {
+	g.declareRuntime("zyxrt_map_slot", "ptr", "ptr", "ptr")
+	slot := g.newReg()
+	g.emit("  %s = call ptr @zyxrt_map_slot(ptr %s, ptr %s)", slot, place.recv, place.key)
+	absent := g.newReg()
+	g.emit("  %s = icmp eq ptr %s, null", absent, slot)
+	g.guard(absent, "map key not found")
+	return slot
+}
+
+// mapWrite writes one already-evaluated value into an entry, adding the key
+// when it is not there.
+func (g *generator) mapWrite(place mapPlace, valSlot string) {
+	g.declareRuntime("zyxrt_map_set", "void", "ptr", "ptr", "ptr")
+	g.emit("  call void @zyxrt_map_set(ptr %s, ptr %s, ptr %s)", place.recv, place.key, valSlot)
+}
+
+// mapIndexOf reports whether an index node reads a map, and answers the map's
+// type when it does. The type comes from the annotation the front end wrote,
+// so nothing has to be evaluated to decide it.
+func (g *generator) mapIndexOf(module string, n *zyxc.Node) (*types.Type, bool) {
+	if n == nil || n.Kind != "index" {
+		return nil, false
+	}
+	recv := g.wrapped(n, "recv")
+	if recv == nil {
+		return nil, false
+	}
+	t := g.typeOfNode(recv.First("type"), module)
+	if t == nil || t.Kind != types.KindContainer || t.Name != "Map" {
+		return nil, false
+	}
+	return t, true
+}
+
 // mapTake lowers Get and Remove, which yield an Option of the value.
 func (g *generator) mapTake(module string, n *zyxc.Node, recv *value, keySlot string, val *types.Type, remove bool) *value {
-	slot := g.alloca(val)
+	slot := g.objectAlloca(val)
 	fn := "zyxrt_map_get"
 	if remove {
 		fn = "zyxrt_map_remove"
@@ -349,7 +409,7 @@ func (g *generator) optionValue(module string, n *zyxc.Node, slot string, elem *
 	endLabel := g.newLabel("some.end")
 	g.terminator("  br i1 %s, label %%%s, label %%%s", present, someLabel, endLabel)
 	g.label(someLabel)
-	element := g.load(&value{text: slot, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true})
+	element := g.load(g.inlineObject(slot, elem))
 	g.storeInto(g.payloadElement(obj, typ, []*types.Type{elem}, 0), elem, element, true)
 	g.terminator("  br label %%%s", endLabel)
 	g.label(endLabel)
@@ -608,7 +668,7 @@ func (g *generator) bqueueCall(module string, n *zyxc.Node, recv *value, name st
 		slot := g.objectAlloca(elem)
 		g.declareRuntime("zyxrt_bqueue_pop", "void", "ptr", "ptr")
 		g.emit("  call void @zyxrt_bqueue_pop(ptr %s, ptr %s)", recv.text, slot)
-		return g.load(&value{text: slot, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true})
+		return g.load(g.inlineObject(slot, elem))
 	case "TryPop":
 		slot := g.objectAlloca(elem)
 		g.declareRuntime("zyxrt_bqueue_try_pop", "i32", "ptr", "ptr")
@@ -918,7 +978,7 @@ func (g *generator) arrayTake(module string, n *zyxc.Node, recv *value, elem *ty
 	end := g.newLabel("take.end")
 	g.terminator("  br i1 %s, label %%%s, label %%%s", present, some, end)
 	g.label(some)
-	element := g.load(&value{text: slot, ll: g.llPass(elem), typ: elem, lvalue: true, inline: true})
+	element := g.load(g.inlineObject(slot, elem))
 	g.storeInto(g.payloadElement(obj, typ, []*types.Type{elem}, 0), elem, element, true)
 	g.terminator("  br label %%%s", end)
 	g.label(end)

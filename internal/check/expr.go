@@ -704,22 +704,30 @@ func (c *checker) indexType(v *ast.IndexExpr) *types.Type {
 	if t == nil || t.Kind == types.Invalid {
 		return nil
 	}
-	c.checkExpr(v.Index, types.Usize)
 	switch t.Kind {
 	case types.KindStr:
+		c.checkExpr(v.Index, types.Usize)
 		return types.Uint8
 	case types.KindSlice:
+		c.checkExpr(v.Index, types.Usize)
 		return t.Elem
 	case types.KindArray:
+		c.checkExpr(v.Index, types.Usize)
 		return t.Elem
 	case types.KindContainer:
 		switch t.Name {
 		case "Array":
+			c.checkExpr(v.Index, types.Usize)
 			return arg(t, 0)
 		case "Map":
-			return types.Option.Instantiate(arg(t, 1))
+			// A map is indexed by its key and answers the value that key
+			// holds. A key that is not there is a fault rather than an
+			// absent value, which is what Get is for.
+			c.checkExpr(v.Index, arg(t, 0))
+			return arg(t, 1)
 		}
 	}
+	c.checkExpr(v.Index, nil)
 	c.errorHelp(diag.CodeIndex, v.Sp,
 		"index a container, a fixed-size array, a slice, or str",
 		"%s cannot be indexed", t)

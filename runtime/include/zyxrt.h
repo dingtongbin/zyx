@@ -47,6 +47,9 @@ void *zyxrt_map_new(size_t key_size, size_t val_size, void *hash, void *eq);
 size_t zyxrt_map_len(void *handle);
 void zyxrt_map_set(void *handle, const void *key, const void *value);
 int zyxrt_map_get(void *handle, const void *key, void *out);
+/* zyxrt_map_slot is the address of the value of a key, or NULL when the key is
+   not there. It stays valid until the entry is removed. */
+void *zyxrt_map_slot(void *handle, const void *key);
 int zyxrt_map_contains(void *handle, const void *key);
 int zyxrt_map_remove(void *handle, const void *key, void *out);
 void zyxrt_map_keys(void *handle, void *out);
