@@ -86,6 +86,31 @@ func TestHostTarget(t *testing.T) {
 	}
 }
 
+func TestLoopBackendPerPlatform(t *testing.T) {
+	// Every platform of the matrix has an event loop backend, so a new
+	// platform cannot be added without one.
+	tc := &Toolchain{}
+	want := map[string]string{
+		"linux":   "loop_epoll.c",
+		"android": "loop_epoll.c",
+		"harmony": "loop_epoll.c",
+		"darwin":  "loop_kqueue.c",
+		"ios":     "loop_kqueue.c",
+		"windows": "loop_winsock.c",
+		"wasm":    "loop_wasi.c",
+	}
+	for _, os := range OperatingSystems() {
+		name, ok := want[os]
+		if !ok {
+			t.Errorf("the platform matrix lists %s and the test does not", os)
+			continue
+		}
+		if got := tc.loopBackend(Target{OS: os}); got != name {
+			t.Errorf("the event loop of %s is %q, want %q", os, got, name)
+		}
+	}
+}
+
 func TestPlatformMatrix(t *testing.T) {
 	if len(OperatingSystems()) == 0 || len(Architectures()) == 0 {
 		t.Fatal("the platform matrix must not be empty")

@@ -644,6 +644,29 @@ var h: Array<i64> = [1]
 	}
 }
 
+func TestUnitType(t *testing.T) {
+	// `()` is the unit type, which is what a Result whose success carries
+	// nothing is parameterized by.
+	src := "package main\nfunc f() -> Result<(), str> {\n\treturn Result.Ok()\n}\n"
+	f, diags := parseSrc(t, src)
+	assertClean(t, diags)
+	named, ok := findNode(f, isType[*ast.TypeName]).(*ast.TypeName)
+	if !ok {
+		t.Fatal("no type name in the tree")
+	}
+	if named.Name.Name != "Result" || len(named.Args) != 2 {
+		t.Fatalf("%s has %d arguments, want Result with 2", named.Name.Name, len(named.Args))
+	}
+	unit, ok := named.Args[0].(*ast.TypeName)
+	if !ok || unit.Name.Name != "void" {
+		t.Fatalf("the first argument is %v, want the unit type", named.Args[0])
+	}
+	fail, ok := named.Args[1].(*ast.TypeName)
+	if !ok || fail.Name.Name != "str" {
+		t.Fatalf("the second argument is %v, want str", named.Args[1])
+	}
+}
+
 func TestExternUnion(t *testing.T) {
 	src := "package main\nimport c \"sys/epoll.h\"\nextern union epoll_data_t {\n\tptr: raw\n\tfd: i32\n\tu64v: u64\n}\n"
 	f, diags := parseSrc(t, src)

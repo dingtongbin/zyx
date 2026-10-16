@@ -262,25 +262,136 @@ func (g *generator) directCall(module string, n *zyxc.Node, sym string, recv *va
 	return &value{text: reg, ll: retLL, typ: result}
 }
 
-// cArguments renders one argument in the form the C ABI uses: a fat pointer
-// crosses as its address and its length.
-func (g *generator) cArguments(a *value) []string {
+// blockingCall lowers a C call that may block through the blocking pool: the
+// arguments are spilled where a pool thread can read them, a thunk makes the
+// call, and the calling coroutine parks until it is done.
+func (g *generator) blockingCall(symbol string, args []*value, result *types.Type, retLL string) *value {
+	var values [][]cArgValue
+	var fields []string
+	for _, a := range args {
+		vals := g.cValues(a)
+		if vals == nil {
+			return nil
+		}
+		values = append(values, vals)
+		for _, v := range vals {
+			fields = append(fields, v.ll)
+		}
+	}
+	resultField := -1
+	if result != nil {
+		resultField = len(fields)
+		fields = append(fields, retLL)
+	}
+	ctxType := "{}"
+	if len(fields) > 0 {
+		ctxType = "{ " + strings.Join(fields, ", ") + " }"
+	}
+	base := g.allocaCtx(ctxType)
+	at := 0
+	for _, vals := range values {
+		for _, v := range vals {
+			g.emit("  store %s %s, ptr %s", v.ll, v.text, g.ctxField(base, ctxType, at))
+			at++
+		}
+	}
+	thunk := g.blockThunk(symbol, values, result, retLL, ctxType, resultField)
+	g.declareRuntime("zyxrt_block_run", "void", "ptr", "ptr")
+	g.emit("  call void @zyxrt_block_run(ptr @%s, ptr %s)", thunk, base)
+	if result == nil {
+		return &value{ll: "void"}
+	}
+	reg := g.newReg()
+	g.emit("  %s = load %s, ptr %s", reg, retLL, g.ctxField(base, ctxType, resultField))
+	return &value{text: reg, ll: retLL, typ: result}
+}
+
+// allocaCtx reserves the block a blocking call marshals its arguments into.
+// The block lives in the caller's frame, which stays alive while the
+// coroutine is parked.
+func (g *generator) allocaCtx(ll string) string {
+	reg := g.newReg()
+	fmt.Fprintf(&g.fn.allocas, "  %s = alloca %s\n", reg, ll)
+	return reg
+}
+
+// ctxField returns the address of one field of a marshalling block.
+func (g *generator) ctxField(base, ctxType string, index int) string {
+	reg := g.newReg()
+	g.emit("  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d", reg, ctxType, base, index)
+	return reg
+}
+
+// blockThunk emits the entry a blocking call runs on a pool thread: it reads
+// the marshalled arguments back, makes the call, and stores the result.
+func (g *generator) blockThunk(symbol string, values [][]cArgValue, result *types.Type, retLL, ctxType string, resultField int) string {
+	g.thunks++
+	name := fmt.Sprintf("zyx.block.%d", g.thunks)
+	saved := g.fn
+	g.fn = &funcState{symbol: name, vars: map[string]*varSlot{}}
+	g.fn.entry = g.newLabel("block")
+	g.fn.ret = g.newLabel("block.done")
+
+	var parts []string
+	at := 0
+	for _, vals := range values {
+		for _, v := range vals {
+			reg := g.newReg()
+			g.emit("  %s = load %s, ptr %s", reg, v.ll, g.ctxField("%ctx", ctxType, at))
+			parts = append(parts, v.ll+" "+reg)
+			at++
+		}
+	}
+	if result == nil {
+		g.terminator("  call void @%s(%s)", llvmName(symbol), strings.Join(parts, ", "))
+		g.terminator("  ret void")
+	} else {
+		reg := g.newReg()
+		g.emit("  %s = call %s @%s(%s)", reg, retLL, llvmName(symbol), strings.Join(parts, ", "))
+		g.emit("  store %s %s, ptr %s", retLL, reg, g.ctxField("%ctx", ctxType, resultField))
+		g.terminator("  ret void")
+	}
+	g.emitThunk(name, "void", "ptr %ctx")
+	g.fn = saved
+	return name
+}
+
+// cArgValue is one value a C call passes for an argument, in ABI order.
+type cArgValue struct {
+	ll   string
+	text string
+}
+
+// cValues returns the values a C call passes for one argument: a fat pointer
+// crosses as its address and its length, and a record as the target places
+// it. The ABI spelling of a call and the marshalling of a blocking call both
+// read from here, so the two never disagree about how an argument crosses.
+func (g *generator) cValues(a *value) []cArgValue {
 	if g.target.ABIKind(a.typ) == toolchain.ABIAggregate {
-		return g.recordArguments(a)
+		return g.recordValues(a)
 	}
 	lls := g.abiArgs(a.typ)
-	if len(lls) == 1 {
-		v := g.load(a)
-		return []string{lls[0] + " " + v.text}
-	}
 	v := g.load(a)
-	parts := make([]string, 0, len(lls))
+	if len(lls) == 1 {
+		return []cArgValue{{ll: lls[0], text: v.text}}
+	}
+	out := make([]cArgValue, 0, len(lls))
 	for i, ll := range lls {
 		reg := g.newReg()
 		g.emit("  %s = extractvalue %s %s, %d", reg, v.ll, v.text, i)
-		parts = append(parts, ll+" "+reg)
+		out = append(out, cArgValue{ll: ll, text: reg})
 	}
-	return parts
+	return out
+}
+
+// cArguments renders one argument in the form the C ABI uses.
+func (g *generator) cArguments(a *value) []string {
+	values := g.cValues(a)
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		out = append(out, v.ll+" "+v.text)
+	}
+	return out
 }
 
 // cCall lowers a call into the C namespace. The C namespace carries no
@@ -292,7 +403,7 @@ func (g *generator) cCall(module string, n *zyxc.Node) *value {
 		return nil
 	}
 	symbol := n.Payload[0]
-	var parts []string
+	var args []*value
 	var types []string
 	for _, child := range n.Children {
 		if child.Kind != "arg" {
@@ -302,8 +413,7 @@ func (g *generator) cCall(module string, n *zyxc.Node) *value {
 		if v == nil {
 			return nil
 		}
-		args := g.cArguments(v)
-		parts = append(parts, args...)
+		args = append(args, v)
 		types = append(types, g.cDeclared(v.typ)...)
 	}
 	result := g.typeOfNode(n.First("type"), module)
@@ -322,6 +432,15 @@ func (g *generator) cCall(module string, n *zyxc.Node) *value {
 		// signature, so the calls agree on the shape.
 		g.m.declared[symbol] = true
 		fmt.Fprintf(&g.m.funcs, "declare %s @%s(%s)\n", ret, llvmName(symbol), strings.Join(types, ", "))
+	}
+	if hasMark(n, "c-blocking") {
+		// The call may block, so it runs on a pool thread and the calling
+		// coroutine parks until it is done.
+		return g.blockingCall(symbol, args, result, ret)
+	}
+	var parts []string
+	for _, v := range args {
+		parts = append(parts, g.cArguments(v)...)
 	}
 	if result == nil {
 		g.emit("  call void @%s(%s)", llvmName(symbol), strings.Join(parts, ", "))

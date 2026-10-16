@@ -165,8 +165,22 @@ func (b *builder) qualified(t *types.Type) *types.Type {
 		out.Elem = b.qualified(t.Elem)
 		return &out
 	}
-	if !t.IsNamed() || t.Pkg == "" || t.Pkg == b.pkg.Path || t.Qual != "" {
+	if !t.IsNamed() {
 		return t
+	}
+	if t.Pkg == "" || t.Pkg == b.pkg.Path || t.Qual != "" {
+		// The type itself needs no qualifier, but its arguments can name a
+		// package this one does not declare, which is how `Result<void, E>`
+		// carries a type from the package that declared it.
+		if len(t.Args) == 0 {
+			return t
+		}
+		out := *t
+		out.Args = make([]*types.Type, len(t.Args))
+		for i, a := range t.Args {
+			out.Args[i] = b.qualified(a)
+		}
+		return &out
 	}
 	out := *t
 	out.Qual = packageQualifier(t.Pkg)

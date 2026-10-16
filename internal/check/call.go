@@ -395,10 +395,19 @@ func (c *checker) checkVariantCall(sel *ast.SelectorExpr, v *ast.CallExpr, sym *
 		}
 	}
 	if len(v.Args) != len(variant.Payload) {
-		c.errorHelp(diag.CodeArgCount, sel.Name.Sp,
-			"pass the declared number of arguments",
-			"%s.%s takes %d arguments, got %d",
-			enum.Name, variant.Name, len(variant.Payload), len(v.Args))
+		// A variant whose payload is the unit type carries nothing, so it is
+		// written without arguments rather than with a value that says
+		// nothing.
+		unit := false
+		if len(v.Args) == 0 && len(variant.Payload) == 1 {
+			unit = types.Substitute(variant.Payload[0], bindings).ID == "void"
+		}
+		if !unit {
+			c.errorHelp(diag.CodeArgCount, sel.Name.Sp,
+				"pass the declared number of arguments",
+				"%s.%s takes %d arguments, got %d",
+				enum.Name, variant.Name, len(variant.Payload), len(v.Args))
+		}
 	}
 	return inst
 }

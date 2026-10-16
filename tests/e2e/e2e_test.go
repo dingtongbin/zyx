@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"zyx/internal/cli"
@@ -17,16 +18,30 @@ import (
 )
 
 // env gives the compiler the standard library and the runtime tree of the
-// checkout, so a test needs no installation.
+// checkout, so a test needs no installation. The cache is one directory for
+// the whole test binary, so every corpus reuses the runtime library and the
+// artifacts it shares rather than building its own copy.
 func env(name string) string {
 	switch name {
 	case "ZYX_STD":
 		return filepath.Join(repoRoot(), "std")
 	case "ZYX_RUNTIME":
 		return filepath.Join(repoRoot(), "runtime")
+	case "ZYX_CACHE":
+		return sharedCache()
 	}
 	return ""
 }
+
+// sharedCache returns the cache directory the tests share, creating it the
+// first time it is asked for.
+var sharedCache = sync.OnceValue(func() string {
+	dir, err := os.MkdirTemp("", "zyx-test-cache-")
+	if err != nil {
+		panic(err)
+	}
+	return dir
+})
 
 // repoRoot walks up from the working directory to the module root.
 func repoRoot() string {
@@ -163,6 +178,7 @@ func TestInsertedChecksPanic(t *testing.T) {
 	for _, level := range []string{"-O0", "-O2", "-O3"} {
 		for _, c := range cases {
 			t.Run(level+"/"+c.name, func(t *testing.T) {
+				t.Parallel()
 				dir := t.TempDir()
 				writeProgram(t, dir,
 					"package main\n\nimport \"std/fmt\"\n\nfunc main() {\n\t"+c.body+"\n}\n")
@@ -221,6 +237,11 @@ func TestPrograms(t *testing.T) {
 	}
 	for _, name := range programs(t) {
 		t.Run(name, func(t *testing.T) {
+			// A corpus program is built in a directory of its own and shares
+			// nothing with the others but the cache, so the corpus runs in
+			// parallel: a build spends most of its time in the toolchain, and
+			// one program at a time would leave the machine idle.
+			t.Parallel()
 			dir := copyTree(t, filepath.Join("testdata", name))
 			want, err := os.ReadFile(filepath.Join(dir, "want.txt"))
 			if err != nil {
@@ -250,6 +271,7 @@ func TestPrograms(t *testing.T) {
 func TestCorpusChecks(t *testing.T) {
 	for _, name := range corpus(t) {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			dir := copyTree(t, filepath.Join("corpus", name))
 			_, stderr, code := run(dir, "check", "./...")
 			if code != 0 {
@@ -284,6 +306,7 @@ func corpus(t *testing.T) []string {
 func TestFormatIsIdempotent(t *testing.T) {
 	for _, name := range programs(t) {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			dir := copyTree(t, filepath.Join("testdata", name))
 			if _, stderr, code := run(dir, "fmt", "./..."); code != 0 {
 				t.Fatalf("fmt failed with %d:\n%s", code, stderr)
@@ -334,6 +357,7 @@ func readSources(t *testing.T, dir string) string {
 func TestEmitZyxcRoundTrips(t *testing.T) {
 	for _, name := range programs(t) {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			dir := copyTree(t, filepath.Join("testdata", name))
 			stdout, stderr, code := run(dir, "emit-zyxc", ".")
 			if code != 0 {

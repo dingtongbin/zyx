@@ -256,5 +256,17 @@ int zyxrt_chan_send_ready(void *ch);
    deadline of zero means the select has no timeout. */
 void zyxrt_select_wait(void *const *handles, const int *recv_arms, size_t n, uint64_t deadline);
 void zyxrt_chan_close(void *ch);
+/* The event loop. zyxrt_loop_wait parks the running coroutine until the file
+   descriptor is ready for the events asked for, which are ZYXRT_FD_READ and
+   ZYXRT_FD_WRITE. It answers 0 when the descriptor is ready, 1 when the
+   descriptor was released, and 2 when the target has no event loop. The
+   descriptor must be non-blocking and pollable; everything else goes through
+   the blocking pool. zyxrt_loop_release unregisters a descriptor and wakes
+   everyone waiting on it, and zyxrt_loop_fds is how many are registered. */
+#define ZYXRT_FD_READ 1
+#define ZYXRT_FD_WRITE 2
+int zyxrt_loop_wait(int fd, int events);
+void zyxrt_loop_release(int fd);
+size_t zyxrt_loop_fds(void);
 
 #endif /* ZYXRUNTIME_H */

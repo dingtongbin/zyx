@@ -1,0 +1,7 @@
+waiting
+ready
+writable
+releasing
+closed
+refused
+done

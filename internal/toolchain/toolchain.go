@@ -4,10 +4,16 @@ package toolchain
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
+
+	"zyx/internal/cache"
 )
 
 // A Toolchain holds the programs that turn generated code into an
@@ -23,8 +29,41 @@ type Toolchain struct {
 	Opt string
 	// CC compiles the C runtime and performs the link.
 	CC string
+	// Archiver puts the runtime objects into the library a program links.
+	Archiver string
 	// Runtime is the runtime tree, which holds include/ and the sources.
 	Runtime string
+
+	// id is the identity of the C compiler and ar is the identity of the
+	// archiver, each of which enters the key of every artifact it produced.
+	// They are pointers so a toolchain stays a value a caller may copy.
+	id *compilerIdentity
+	ar *compilerIdentity
+}
+
+// compilerIdentity is the identity of a tool. It is a pointer so a toolchain
+// stays a value a caller may copy.
+type compilerIdentity struct {
+	once  sync.Once
+	value string
+}
+
+// toolIdentity returns the identity of a program: the hash of its version
+// text, which is a fixed-width input to a cache key. A tool that changes its
+// version changes what it produces, and the key has to say so.
+func toolIdentity(program string, id *compilerIdentity) string {
+	if program == "" || id == nil {
+		return cache.HashString("unknown tool")
+	}
+	id.once.Do(func() {
+		out, err := exec.Command(program, "--version").Output()
+		if err != nil {
+			id.value = cache.HashString("unknown tool")
+			return
+		}
+		id.value = cache.HashString(string(out))
+	})
+	return id.value
 }
 
 // CompileOptions carries the settings every step shares.
@@ -52,11 +91,17 @@ type CompileOptions struct {
 func Locate() (*Toolchain, error) {
 	dirs := candidateDirs()
 	t := &Toolchain{
-		Clang:   findTool("clang", dirs),
-		LLC:     findTool("llc", dirs),
-		Opt:     findTool("opt", dirs),
-		CC:      findTool("clang", dirs),
-		Runtime: findRuntime(),
+		Clang:    findTool("clang", dirs),
+		LLC:      findTool("llc", dirs),
+		Opt:      findTool("opt", dirs),
+		CC:       findTool("clang", dirs),
+		Archiver: findTool("llvm-ar", dirs),
+		Runtime:  findRuntime(),
+		id:       &compilerIdentity{},
+		ar:       &compilerIdentity{},
+	}
+	if t.Archiver == "" {
+		t.Archiver = findTool("ar", dirs)
 	}
 	if t.CC == "" {
 		t.CC = firstOf([]string{"gcc", "cc"}, dirs)
@@ -205,6 +250,9 @@ func (t *Toolchain) Sources(target Target) []string {
 		filepath.Join(t.Runtime, "mem", "stack.c"),
 		filepath.Join(t.Runtime, "sched", "sched.c"),
 		filepath.Join(t.Runtime, "sched", "timer.c"),
+		filepath.Join(t.Runtime, "io", "blockpool.c"),
+		filepath.Join(t.Runtime, "io", "loop.c"),
+		filepath.Join(t.Runtime, "io", t.loopBackend(target)),
 		filepath.Join(t.Runtime, "chan", "chan.c"),
 		filepath.Join(t.Runtime, "sync", "sync.c"),
 		filepath.Join(t.Runtime, "container", "array.c"),
@@ -220,6 +268,162 @@ func (t *Toolchain) Sources(target Target) []string {
 		sources = append(sources, asm)
 	}
 	return append(sources, platform)
+}
+
+// runtimeLibraryName is the file name of the runtime library. The archive
+// format is the one the linker reads on every target, so one name serves
+// them all.
+const runtimeLibraryName = "libzyxrt.a"
+
+// runtimeInputs returns every file of the runtime tree, named by its path
+// within the tree, in byte order. The key of a runtime artifact covers the
+// whole tree rather than the translation units alone: a header changes what
+// every unit produces just as surely as a source does.
+func (t *Toolchain) runtimeInputs() ([]string, []string, error) {
+	var names []string
+	err := filepath.WalkDir(t.Runtime, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(t.Runtime, path)
+		if err != nil {
+			return err
+		}
+		names = append(names, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	sort.Strings(names)
+	hashes := make([]string, len(names))
+	for i, name := range names {
+		hash, err := cache.HashFile(filepath.Join(t.Runtime, filepath.FromSlash(name)))
+		if err != nil {
+			return nil, nil, err
+		}
+		hashes[i] = hash
+	}
+	return names, hashes, nil
+}
+
+// RuntimeLibrary returns the path of the runtime static library for a
+// configuration. The library depends on the C compiler, the archiver, the
+// target, the optimization level, the debug setting, and the runtime tree,
+// and on nothing else, so every program of a module links the same one: the
+// runtime is compiled once and reused rather than recompiled for each
+// program.
+//
+// When a cache is given the library is built into it and reused across
+// builds; otherwise it is built in scratch, which the caller owns. A cache
+// that cannot be written only costs speed, so the build goes on without it.
+func (t *Toolchain) RuntimeLibrary(target Target, opts CompileOptions, c *cache.Cache, scratch string) (string, error) {
+	sources := t.Sources(target)
+	names, hashes, err := t.runtimeInputs()
+	if err != nil {
+		return "", err
+	}
+	key := cache.NewKey()
+	key.Add("zyxruntime", t.compilerID(), t.archiverID(), target.Triple, opts.Level,
+		strconv.FormatBool(opts.Debug), strconv.FormatBool(opts.FastMath))
+	for i, name := range names {
+		key.Add(name, hashes[i])
+	}
+	sum := key.Sum()
+
+	if c == nil {
+		return t.archiveRuntime(sources, scratch, opts)
+	}
+	if out, ok := c.Lookup(sum); ok {
+		return filepath.Join(out, runtimeLibraryName), nil
+	}
+	release, err := c.Lock(sum)
+	if err != nil {
+		return t.archiveRuntime(sources, scratch, opts)
+	}
+	defer release()
+	// Another builder may have published the entry while this one waited for
+	// the lock.
+	if out, ok := c.Lookup(sum); ok {
+		return filepath.Join(out, runtimeLibraryName), nil
+	}
+	entry, err := c.New(sum)
+	if err != nil {
+		return t.archiveRuntime(sources, scratch, opts)
+	}
+	entry.Input("compiler", t.compilerID())
+	entry.Input("archiver", t.archiverID())
+	entry.Input("target", target.Triple)
+	entry.Input("level", opts.Level)
+	entry.Input("debug", strconv.FormatBool(opts.Debug))
+	entry.Input("fast-math", strconv.FormatBool(opts.FastMath))
+	for i, name := range names {
+		entry.Input(name, hashes[i])
+	}
+	lib, err := t.archiveRuntime(sources, entry.Out(), opts)
+	if err != nil {
+		entry.Discard()
+		return "", err
+	}
+	if err := entry.Add(filepath.Base(lib)); err != nil {
+		entry.Discard()
+		return t.archiveRuntime(sources, scratch, opts)
+	}
+	published, won, err := entry.Publish()
+	if err != nil || !won {
+		return t.archiveRuntime(sources, scratch, opts)
+	}
+	// Publishing moved the entry, so the library now lives where the cache
+	// says it does.
+	return filepath.Join(published, runtimeLibraryName), nil
+}
+
+// archiveRuntime compiles the runtime sources and puts the objects into the
+// one library a program links against.
+func (t *Toolchain) archiveRuntime(sources []string, dir string, opts CompileOptions) (string, error) {
+	if t.Archiver == "" {
+		return "", fmt.Errorf("no archiver found: install llvm-ar")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	objects := make([]string, 0, len(sources))
+	for i, src := range sources {
+		out := filepath.Join(dir, fmt.Sprintf("runtime%d.o", i))
+		if err := t.CompileC(src, out, opts); err != nil {
+			return "", err
+		}
+		objects = append(objects, out)
+	}
+	lib := filepath.Join(dir, runtimeLibraryName)
+	if err := t.run(t.Archiver, append([]string{"rcs", lib}, objects...)); err != nil {
+		return "", err
+	}
+	return lib, nil
+}
+
+// compilerID returns the identity of the C compiler.
+func (t *Toolchain) compilerID() string { return toolIdentity(t.CC, t.id) }
+
+// archiverID returns the identity of the archiver.
+func (t *Toolchain) archiverID() string { return toolIdentity(t.Archiver, t.ar) }
+
+// loopBackend returns the runtime file that implements the event loop for a
+// target over its kernel facility.
+func (t *Toolchain) loopBackend(target Target) string {
+	switch target.OS {
+	case "darwin", "ios":
+		return "loop_kqueue.c"
+	case "windows":
+		return "loop_winsock.c"
+	case "wasm":
+		return "loop_wasi.c"
+	default:
+		return "loop_epoll.c"
+	}
 }
 
 // switchSource returns the assembly unit that switches coroutine stacks, or
@@ -340,8 +544,9 @@ func (t *Toolchain) CompileC(src, out string, opts CompileOptions) error {
 }
 
 // Link turns object files into an executable. It appends the runtime
-// objects the caller names and the libraries the program needs.
-func (t *Toolchain) Link(objects []string, out string, libs, libDirs []string) error {
+// objects the caller names, the libraries the program needs, and the
+// libraries the platform itself requires.
+func (t *Toolchain) Link(target Target, objects []string, out string, libs, libDirs []string) error {
 	args := []string{"-o", out}
 	args = append(args, objects...)
 	for _, dir := range libDirs {
@@ -350,11 +555,26 @@ func (t *Toolchain) Link(objects []string, out string, libs, libDirs []string) e
 	for _, lib := range libs {
 		args = append(args, "-l"+lib)
 	}
+	for _, lib := range platformLibs(target) {
+		args = append(args, "-l"+lib)
+	}
 	args = append(args, "-lm")
 	// A static link keeps the unwinder and the C runtime inside the
 	// executable, so a built program runs wherever it is copied to.
 	args = append(args, "-static")
 	return t.run(t.CC, args)
+}
+
+// platformLibs lists the libraries a platform's own runtime calls need
+// beyond the C runtime itself, such as the socket library Windows keeps
+// apart.
+func platformLibs(target Target) []string {
+	switch target.OS {
+	case "windows":
+		return []string{"ws2_32"}
+	default:
+		return nil
+	}
 }
 
 // run executes a program and reports its output on failure.

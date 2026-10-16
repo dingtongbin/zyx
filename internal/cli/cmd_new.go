@@ -30,7 +30,7 @@ func (s *Session) newProject(args []string) int {
 	files := map[string]string{
 		"zyx.mod":    fmt.Sprintf("module %s\n\nzyx 0.1\n", modulePath),
 		"main.zyx":   "package main\n\nimport \"std/fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello, world\")\n}\n",
-		".gitignore": "build/\n",
+		".gitignore": "build/\n.zyx-cache/\n",
 	}
 	for name, body := range files {
 		full := filepath.Join(dir, name)

@@ -1,6 +1,19 @@
 package sync
 
-import c "zyxrt.h"
+// The sync entry points park the calling coroutine rather than the thread, so
+// they must run on the scheduler's thread: the linkage declares them fast, and
+// a call to one never goes through the blocking pool.
+
+import c "zyxrt.h" {
+    fast zyxrt_wg_new, zyxrt_wg_add, zyxrt_wg_wait
+    fast zyxrt_once_new, zyxrt_once_enter, zyxrt_once_leave
+    fast zyxrt_sem_new, zyxrt_sem_acquire, zyxrt_sem_try_acquire, zyxrt_sem_release
+    fast zyxrt_mutex_new, zyxrt_mutex_lock, zyxrt_mutex_try_lock, zyxrt_mutex_unlock
+    fast zyxrt_mutex_wait, zyxrt_mutex_notify_one, zyxrt_mutex_notify_all
+    fast zyxrt_atomic_new, zyxrt_atomic_load, zyxrt_atomic_store, zyxrt_atomic_add
+    fast zyxrt_atomic_sub, zyxrt_atomic_swap, zyxrt_atomic_cas, zyxrt_atomic_fence
+    fast zyxrt_static_wg, zyxrt_static_once, zyxrt_static_mutex, zyxrt_static_atomic
+}
 
 // The sync primitives the language builds in. Each one is a handle to an
 // object the runtime owns, and each wait parks the calling coroutine rather

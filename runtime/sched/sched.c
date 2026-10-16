@@ -3,6 +3,7 @@
    the next ready one. */
 
 #include "zyxrt_internal.h"
+#include "thread.h"
 
 #include <stdlib.h>
 
@@ -15,6 +16,7 @@ static void *sched_ctx;
 void zyxrt_sched_init(void) {
   ready_head = ready_tail = current = NULL;
   sched_ctx = zyxrt_ctx_thread();
+  zyxrt_sched_post_init();
 }
 
 void zyxrt_sched_shutdown(void) {
@@ -37,6 +39,49 @@ void zyxrt_sched_ready(zyxrt_coro *c) {
     ready_head = c;
   }
   ready_tail = c;
+}
+
+/* posted holds the coroutines another thread made ready, and post_lock guards
+   it. A pool thread or a poller thread appends to the list and signals the
+   wakeup handle; the scheduler drains the list on its own thread. */
+static zyxrt_lock post_lock;
+static zyxrt_coro *post_head;
+static int post_ready;
+
+void zyxrt_sched_post_init(void) {
+  zyxrt_lock_init(&post_lock);
+  post_ready = 1;
+}
+
+void zyxrt_sched_post(zyxrt_coro *c) {
+  if (!post_ready) {
+    /* Without the lock there is no other thread to race with. */
+    zyxrt_sched_ready(c);
+    return;
+  }
+  zyxrt_lock_hold(&post_lock);
+  c->post_next = post_head;
+  post_head = c;
+  zyxrt_lock_drop(&post_lock);
+  zyxrt_wakeup_signal();
+}
+
+int zyxrt_sched_drain(void) {
+  if (!post_ready) return 0;
+  int readied = 0;
+  for (;;) {
+    zyxrt_lock_hold(&post_lock);
+    zyxrt_coro *c = post_head;
+    post_head = NULL;
+    zyxrt_lock_drop(&post_lock);
+    if (c == NULL) return readied;
+    while (c != NULL) {
+      zyxrt_coro *next = c->post_next;
+      zyxrt_sched_ready(c);
+      c = next;
+      readied = 1;
+    }
+  }
 }
 
 /* take_ready removes the first ready coroutine. */
@@ -101,6 +146,13 @@ void zyxrt_sched_abandon(zyxrt_coro *c) {
 /* sleepers holds the waiters of the deadlines. */
 static zyxrt_waitlist sleepers;
 
+/* externals counts the coroutines waiting for something outside the
+   scheduler, which is what tells the main loop to wait on the wakeup handle
+   rather than ending the program. */
+static int externals;
+
+void zyxrt_sched_external(int delta) { externals += delta; }
+
 zyxrt_waitlist *zyxrt_sched_sleepers(void) { return &sleepers; }
 
 void zyxrt_sched_park(uint64_t deadline) {
@@ -142,6 +194,16 @@ int64_t zyxrt_sched_wait(void) {
      sleep. */
   if (readied) {
     return 0;
+  }
+  /* A target whose event loop has no poller thread watches the descriptors
+     here, so one wait covers both the deadlines and the descriptors. */
+  if (externals > 0 && zyxrt_loop_poll_once(wait)) {
+    return 0;
+  }
+  if (wait < 0 && externals > 0) {
+    /* Nothing is due, but a coroutine waits for something the scheduler
+       cannot see, so the loop waits on the wakeup handle. */
+    return ZYXRT_WAIT_EXTERNAL;
   }
   return wait;
 }

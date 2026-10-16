@@ -1319,6 +1319,33 @@ func Work(s: str) -> Result<i32, PanicError> {
 	wantCode(t, diags, diag.CodeTryResult)
 }
 
+func TestUnitPayloadResult(t *testing.T) {
+	// A Result whose success carries nothing is written with the unit type and
+	// built without an argument.
+	src := `package server
+
+func Wait(fd: i32) -> Result<(), str> {
+	if fd < 0 {
+		return Result.Err("bad")
+	}
+	return Result.Ok()
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+func TestUnitPayloadIsTheOnlyOneWithoutAnArgument(t *testing.T) {
+	src := `package server
+
+func Bad() -> Result<i32, str> {
+	return Result.Ok()
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeArgCount)
+}
+
 func TestSpawnNeedsRegion(t *testing.T) {
 	src := `package server
 

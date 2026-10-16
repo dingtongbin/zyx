@@ -144,6 +144,13 @@ func (p *parser) parseBracketType(start source.Span) ast.TypeExpr {
 // tuple type.
 func (p *parser) parseTupleType(start source.Span) ast.TypeExpr {
 	p.advance() // (
+	if p.at(token.RParen) {
+		// `()` is the unit type: the type of a value that carries nothing,
+		// which is what a variant with no payload has and what a Result whose
+		// success carries nothing is parameterized by.
+		p.advance()
+		return &ast.TypeName{Sp: p.spanFrom(start), Name: &ast.Ident{Sp: start, Name: "void"}}
+	}
 	t := &ast.TupleType{Elems: []ast.TypeExpr{p.parseType()}}
 	for p.accept(token.Comma) {
 		if p.at(token.RParen) {

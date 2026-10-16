@@ -118,6 +118,12 @@ func (g *generator) variantLit(module string, n *zyxc.Node) *value {
 	args := g.argNodes(n)
 	values := make([]*value, 0, len(payload))
 	for i, pt := range payload {
+		if pt.ID == "void" {
+			// A payload of the unit type carries nothing, so the variant is
+			// written without an argument for it.
+			values = append(values, nil)
+			continue
+		}
 		if i >= len(args) {
 			g.fail(fmt.Errorf("llvmgen: %s.%s takes %d values, got %d", typ, name, len(payload), len(args)))
 			return nil
@@ -147,7 +153,10 @@ func (g *generator) buildVariant(n *zyxc.Node, typ *types.Type, name string, arg
 	base := g.allocateIn(n, typ)
 	g.emit("  store %s %d, ptr %s", g.tagType(g.tagSize(typ)), index, base)
 	for i, pt := range payload {
-		if i >= len(args) {
+		if pt.ID == "void" {
+			continue
+		}
+		if i >= len(args) || args[i] == nil {
 			g.fail(fmt.Errorf("llvmgen: %s.%s takes %d values, got %d", typ, name, len(payload), len(args)))
 			return ""
 		}

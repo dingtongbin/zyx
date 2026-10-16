@@ -2,6 +2,7 @@
    and the fiber API elsewhere. */
 
 #include "zyxrt_internal.h"
+#include "wakeup.h"
 
 #include <fcntl.h>
 #include <io.h>

@@ -39,7 +39,31 @@ func main() {
     // calling coroutine rather than through the blocking pool.
     fmt.PrintI64(i64(c.add(4, 5)))
     fmt.PrintNl()
+    // A call that is not declared fast runs on a pool thread, so two
+    // coroutines can be inside one at the same time. The sum is the same
+    // whichever order they finish in.
+    var results = new chan<i64>(2)
+    region {
+        var a = spawn addInto(1, results)
+        var b = spawn addInto(2, results)
+        a.Join()
+        b.Join()
+    }
+    var total = 0
+    for i in 0 .. 2 {
+        var v, ok = results.Recv()
+        total += v
+    }
+    fmt.PrintI64(total)
+    fmt.PrintNl()
 }
+
+// addInto adds one through the C side and hands the result over.
+
+func addInto(n: i64, out: chan<i64>) {
+    out.Send(i64(c.add(i32(n), 1)))
+}
+
 // The header's own tag and a declaration of the same name are one type.
 
 extern struct Point {

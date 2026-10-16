@@ -12,18 +12,21 @@ import (
 	"zyx/internal/toolchain"
 )
 
-// backendOptions turns the parsed flags into the backend's settings.
-func (s *Session) backendOptions(o *options, output string) build.BackendOptions {
-	cache := o.cacheDir
-	if cache == "" {
-		cache = s.env("ZYX_CACHE")
+// backendOptions turns the parsed flags into the backend's settings. The
+// cache is content-addressed and belongs to the project, so it lives under
+// the module root unless the caller named a directory or the environment
+// points at a shared one.
+func (s *Session) backendOptions(o *options, output, root string) build.BackendOptions {
+	cacheDir := o.cacheDir
+	if cacheDir == "" {
+		cacheDir = s.env("ZYX_CACHE")
+	}
+	if cacheDir == "" {
+		cacheDir = filepath.Join(root, ".zyx-cache")
 	}
 	if o.noCache {
-		// A run that disables the cache keeps its intermediates in a
-		// directory of its own and removes it afterwards.
-		if dir, err := os.MkdirTemp("", "zyx-build-"); err == nil {
-			cache = dir
-		}
+		// A run that disables the cache neither reads nor writes one.
+		cacheDir = ""
 	}
 	return build.BackendOptions{
 		Output:       output,
@@ -33,7 +36,7 @@ func (s *Session) backendOptions(o *options, output string) build.BackendOptions
 		Freestanding: o.freestanding,
 		Libs:         o.libs,
 		LibDirs:      o.libDirs,
-		CacheDir:     cache,
+		CacheDir:     cacheDir,
 	}
 }
 
@@ -71,7 +74,7 @@ func (s *Session) build(args []string) int {
 		if out == "" {
 			out = build.ExecutablePath(m.Root, path)
 		}
-		if _, err := session.Link(path, results, s.backendOptions(o, out)); err != nil {
+		if _, err := session.Link(path, results, s.backendOptions(o, out, m.Root)); err != nil {
 			fmt.Fprintln(s.Stderr, "zyx:", err)
 			return exitError
 		}
@@ -122,7 +125,7 @@ func (s *Session) run(args []string) int {
 			continue
 		}
 		out := build.ExecutablePath(m.Root, path)
-		if _, err := session.Link(path, results, s.backendOptions(o, out)); err != nil {
+		if _, err := session.Link(path, results, s.backendOptions(o, out, m.Root)); err != nil {
 			fmt.Fprintln(s.Stderr, "zyx:", err)
 			return exitError
 		}

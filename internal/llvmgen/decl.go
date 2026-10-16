@@ -360,9 +360,9 @@ func (g *generator) recordFields(t *types.Type, base uint64, out []toolchain.Rec
 	return out
 }
 
-// recordArguments returns the argument list a record contributes to a C call,
-// placed the way the target places one.
-func (g *generator) recordArguments(a *value) []string {
+// recordValues returns the values a record contributes to a C call, placed the
+// way the target places one.
+func (g *generator) recordValues(a *value) []cArgValue {
 	args, ok := g.recordPlacement(a.typ)
 	if !ok {
 		return nil
@@ -374,9 +374,9 @@ func (g *generator) recordArguments(a *value) []string {
 		// byval, which is what tells the callee it may keep the copy.
 		slot := g.objectAlloca(a.typ)
 		g.copyObject(slot, addr, a.typ)
-		return []string{"ptr " + slot}
+		return []cArgValue{{ll: "ptr", text: slot}}
 	}
-	parts := make([]string, 0, len(args))
+	out := make([]cArgValue, 0, len(args))
 	for _, arg := range args {
 		reg := g.newReg()
 		at := addr
@@ -386,13 +386,13 @@ func (g *generator) recordArguments(a *value) []string {
 		switch arg.Class {
 		case toolchain.RecordInteger:
 			g.emit("  %s = load i%d, ptr %s", reg, arg.Width, at)
-			parts = append(parts, fmt.Sprintf("i%d %s", arg.Width, reg))
+			out = append(out, cArgValue{ll: fmt.Sprintf("i%d", arg.Width), text: reg})
 		default:
 			g.emit("  %s = load double, ptr %s", reg, at)
-			parts = append(parts, "double "+reg)
+			out = append(out, cArgValue{ll: "double", text: reg})
 		}
 	}
-	return parts
+	return out
 }
 
 // gepOffset returns the address of a byte offset inside an object.

@@ -45,6 +45,17 @@ func buildSource(t *testing.T, src string) *File {
 	return ir
 }
 
+func TestTypeArgumentOfAnotherPackage(t *testing.T) {
+	// A type the package does not declare is qualified wherever it appears,
+	// including as the argument of a type every package shares.
+	b := &builder{pkg: &resolve.Package{Path: "example.com/app/server"}}
+	entry := types.Named(types.KindStruct, "example.com/app/store", "", "Entry", 0)
+	got := b.typeText(types.Result.Instantiate(types.Void, entry))
+	if got != "Result<void, store.Entry>" {
+		t.Errorf("type = %q, want Result<void, store.Entry>", got)
+	}
+}
+
 func TestFormatHeader(t *testing.T) {
 	f := buildSource(t, `package server
 
