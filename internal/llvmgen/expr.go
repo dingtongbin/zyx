@@ -1395,6 +1395,31 @@ func (g *generator) tupleLit(module string, n *zyxc.Node) *value {
 	return &value{text: reg, ll: ll, typ: typ}
 }
 
+// linkName returns the name a function carries in the object code. A C ABI
+// function keeps its own name, because that is the name the C side defines;
+// every other function is named by its symbol id, which carries the package
+// and cannot collide.
+func (g *generator) linkName(sym string) string {
+	decl := g.tab.decl(sym)
+	if decl != nil && len(decl.Payload) >= 2 {
+		switch decl.Payload[1] {
+		case "c", "extern":
+			return decl.Payload[0]
+		}
+	}
+	return sym
+}
+
+// cABIFunc reports whether a function crosses the C boundary, which is what
+// decides how a call to it passes its arguments.
+func (g *generator) cABIFunc(sym string) bool {
+	decl := g.tab.decl(sym)
+	if decl == nil || len(decl.Payload) < 2 {
+		return false
+	}
+	return decl.Payload[1] == "c" || decl.Payload[1] == "extern"
+}
+
 // addressOf lowers `&x`, which only appears as a C call argument.
 func (g *generator) addressOf(module string, n *zyxc.Node) *value {
 	v := g.expr(module, g.wrapped(n, "operand"), nil)
@@ -1419,15 +1444,6 @@ func (g *generator) funcRef(n *zyxc.Node) *value {
 		g.fail(fmt.Errorf("llvmgen: no declaration for %s", sym))
 		return nil
 	}
-	if len(decl.Payload) >= 2 {
-		qual := decl.Payload[1]
-		if qual == "extern" || qual == "c" {
-			// A C function follows the C ABI, which has no room for the
-			// receiver a function value carries.
-			g.fail(fmt.Errorf("llvmgen: %s is a C function, which is not a function value yet", sym))
-			return nil
-		}
-	}
 	return g.functionValue(sym, g.funcType(decl))
 }
 
@@ -1446,12 +1462,18 @@ func (g *generator) functionValue(sym string, typ *types.Type) *value {
 // dropReceiver returns the name of the thunk that ignores the receiver a
 // function value carries and calls the function itself. One thunk serves
 // every value of one function.
+//
+// A C function is called the way C is called: its arguments are placed by the
+// C ABI rather than passed as they arrive, and the symbol it is called by is
+// the name the C side defines.
 func (g *generator) dropReceiver(sym string, typ *types.Type) string {
 	if name, ok := g.m.receivers[sym]; ok {
 		return "@" + name
 	}
 	name := fmt.Sprintf("zyx.drop.%d", len(g.m.receivers))
 	g.m.receivers[sym] = name
+
+	cABI := g.cABIFunc(sym)
 
 	saved := g.fn
 	g.fn = &funcState{symbol: name, vars: map[string]*varSlot{}}
@@ -1460,20 +1482,45 @@ func (g *generator) dropReceiver(sym string, typ *types.Type) string {
 	var params, args []string
 	for i, pt := range typ.Elems {
 		ll := g.llPass(pt)
-		params = append(params, fmt.Sprintf("%s %%p%d_0", ll, i+1))
-		args = append(args, fmt.Sprintf("%s %%p%d_0", ll, i+1))
+		arg := fmt.Sprintf("%%p%d_0", i+1)
+		params = append(params, fmt.Sprintf("%s %s", ll, arg))
+		if !cABI {
+			args = append(args, fmt.Sprintf("%s %s", ll, arg))
+			continue
+		}
+		// The C ABI reads an argument from where it lies, so the value is
+		// spilled first and then placed the way the target places it.
+		slot := g.alloca(pt)
+		g.emit("  store %s %s, ptr %s", ll, arg, slot)
+		args = append(args, g.cArguments(&value{text: slot, ll: ll, typ: pt, lvalue: true})...)
 	}
-	ret := "void"
+	ret, callRet := "void", "void"
 	if typ.Result != nil {
 		ret = g.llPass(typ.Result)
+		callRet = ret
+		if cABI {
+			// A C function answers with what its own ABI returns.
+			var ok bool
+			callRet, ok = g.cReturn(typ.Result)
+			if !ok {
+				g.fn = saved
+				return "@" + name
+			}
+		}
 	}
 	if typ.Result == nil {
-		g.terminator("  call void @%s(%s)", llvmName(sym), strings.Join(args, ", "))
+		g.terminator("  call void @%s(%s)", llvmName(g.linkName(sym)), strings.Join(args, ", "))
 		g.terminator("  ret void")
 	} else {
 		reg := g.newReg()
-		g.emit("  %s = call %s @%s(%s)", reg, ret, llvmName(sym), strings.Join(args, ", "))
-		g.terminator("  ret %s %s", ret, reg)
+		g.emit("  %s = call %s @%s(%s)", reg, callRet, llvmName(g.linkName(sym)), strings.Join(args, ", "))
+		if callRet == ret {
+			g.terminator("  ret %s %s", ret, reg)
+		} else {
+			// A result that crosses as something else than it lies is
+			// converted back to the value a function value answers with.
+			g.terminator("  ret %s %s", ret, g.conform(&value{text: reg, ll: callRet, typ: typ.Result}, typ.Result).text)
+		}
 	}
 	g.emitThunk(name, ret, strings.Join(append([]string{"ptr %p0_0"}, params...), ", "))
 	g.fn = saved

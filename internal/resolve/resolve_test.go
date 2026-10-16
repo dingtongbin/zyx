@@ -955,3 +955,20 @@ func Work() {
 	_, diags := resolve(t, "server", nil, src)
 	wantCode(t, diags, diag.CodeImportRelative)
 }
+
+// TestCFunctionValueIsRejected checks that a C symbol reached through the C
+// namespace cannot be taken as a function value: a header declares a symbol,
+// not a value the language carries. A C symbol declared by its own linkage is
+// the way to get a C function pointer.
+func TestCFunctionValueIsRejected(t *testing.T) {
+	src := `package server
+
+import c "stdio.h"
+
+func Work() {
+	var f = func c.printf
+}
+`
+	_, diags := resolve(t, "server", nil, src)
+	wantCode(t, diags, diag.CodeUndefinedName)
+}

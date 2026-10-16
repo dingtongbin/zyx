@@ -329,12 +329,24 @@ func (p *parser) parseNew() ast.Expr {
 	return e
 }
 
+// funcRefName consumes the first name of a function value reference. The C
+// namespace is a keyword, so it is accepted here the way it is accepted where
+// it opens an expression.
+func (p *parser) funcRefName() *ast.Ident {
+	if p.at(token.C) {
+		id := &ast.Ident{Sp: p.tok.Span, Name: p.tok.Text()}
+		p.advance()
+		return id
+	}
+	return p.name()
+}
+
 // parseFuncExpr parses a function value reference or a lambda.
 func (p *parser) parseFuncExpr() ast.Expr {
 	start := p.tok.Span
 	p.advance() // func
 	if !p.at(token.LParen) {
-		ref := &ast.FuncRefExpr{Name: p.name()}
+		ref := &ast.FuncRefExpr{Name: p.funcRefName()}
 		if p.accept(token.Dot) {
 			ref.Qualifier = ref.Name
 			ref.Name = p.name()

@@ -782,3 +782,32 @@ func TestBlockCommentsAreRejected(t *testing.T) {
 		t.Fatal("block comment accepted")
 	}
 }
+
+// TestFuncRefNames checks the names a function value reference accepts. The C
+// namespace is a keyword, so it has to be accepted where it qualifies a name,
+// and a package name is a plain identifier.
+func TestFuncRefNames(t *testing.T) {
+	src := "package main\nfunc use() {\n\tvar a = func lib.Fn\n\tvar b = func c.printf\n}\n"
+	f, diags := parseSrc(t, src)
+	assertClean(t, diags)
+	var qualified, cQualified bool
+	ast.Walk(f, func(n ast.Node) bool {
+		if ref, ok := n.(*ast.FuncRefExpr); ok && ref.Qualifier != nil {
+			switch ref.Qualifier.Name {
+			case "lib":
+				qualified = true
+			case "c":
+				cQualified = true
+			}
+		}
+		return true
+	})
+	for name, ok := range map[string]bool{
+		"a package-qualified reference": qualified,
+		"a reference through c":         cQualified,
+	} {
+		if !ok {
+			t.Errorf("no %s in the tree", name)
+		}
+	}
+}

@@ -67,11 +67,11 @@ var deferredKinds = map[string]string{}
 var specMarks = []string{
 	"alias", "boundary-clone", "boundary-share", "c-blocking", "c-fast",
 	"chan:close", "chan:recv", "chan:select", "chan:send", "chan:try",
-	"coro:body", "coro:handoff", "coro:host", "coro:panic-path", "coro:region",
-	"coro:spawn", "defer-site", "defers", "entry", "home", "init", "iter-guard",
-	"last-use", "mono-rule", "move", "region:enter", "region:exit", "shared-bind",
-	"shared-ref", "shared-store", "static-release", "transfer", "view-borrow",
-	"watched",
+	"coro:handoff", "coro:host", "coro:panic-path", "coro:region",
+	"coro:spawn", "defer-site", "defers", "entry", "home", "init",
+	"iter-guard", "last-use", "mono-rule", "move", "region:enter",
+	"region:exit", "shared-bind", "shared-ref", "shared-store",
+	"static-release", "transfer", "view-borrow", "watched",
 }
 
 // coveredMarks lists the marks the corpus emits. It grows as the corpus
@@ -89,7 +89,6 @@ var coveredMarks = []string{
 // yet, with the reason. Every entry is work the front end still owes, not a
 // decision to drop the mark.
 var deferredMarks = map[string]string{
-	"coro:body": notEmitted,
 	"mono-rule": notEmitted,
 }
 

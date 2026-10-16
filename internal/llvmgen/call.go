@@ -226,12 +226,7 @@ func (g *generator) directCall(module string, n *zyxc.Node, sym string, recv *va
 		return nil
 	}
 
-	symbol := sym
-	if qual == "c" || qual == "extern" {
-		// A function with the C ABI keeps its own name in the object code,
-		// because that is the name the C side defines.
-		symbol = decl.Payload[0]
-	}
+	symbol := g.linkName(sym)
 	if qual == "extern" {
 		params, res, retLL := g.signature(dm, decl)
 		g.declare(symbol, params, res, retLL)

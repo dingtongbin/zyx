@@ -20,6 +20,10 @@ extern union Bits {
 
 fast extern func zyxrt_hash_bytes(p: raw, n: usize) -> u64
 
+extern func abs(x: i32) -> i32
+
+extern func zyxrt_str_eq(a: str, b: str) -> i32
+
 func main() {
     var pair = Pair { left: 3, right: 4 }
     fmt.PrintI64(i64(pair.left) + i64(pair.right))
@@ -40,5 +44,14 @@ func main() {
     fmt.PrintNl()
     // The same symbol reached by its own declaration is the same function.
     fmt.PrintBool(zyxrt_hash_bytes(& one, 1) == c.zyxrt_hash_bytes(& two, 1))
+    fmt.PrintNl()
+    // A C symbol declared by its own linkage can be taken as a value, which is
+    // a C function pointer: the value carries a thunk that calls the symbol
+    // the way C calls it.
+    var magnitude = func abs
+    fmt.PrintI64(i64(magnitude(- 9)))
+    fmt.PrintNl()
+    var length = func zyxrt_str_eq
+    fmt.PrintBool(length("abcd", "abcd") != 0)
     fmt.PrintNl()
 }

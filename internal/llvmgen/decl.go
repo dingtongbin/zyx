@@ -381,20 +381,13 @@ func (g *generator) function(module string, n *zyxc.Node) {
 	if len(n.Payload) < 3 {
 		return
 	}
-	name, qual, sym := n.Payload[0], n.Payload[1], n.Payload[2]
+	qual, sym := n.Payload[1], n.Payload[2]
 	if qual == "comptime" {
 		// A compile-time function never reaches the object code; the front
 		// end folds every call it can.
 		return
 	}
-	symbol := sym
-	if qual == "c" || qual == "extern" {
-		// A function with the C ABI keeps its own name in the object code,
-		// because that is the name the C side defines. Every other function
-		// is named by its symbol id, which carries the package and cannot
-		// collide.
-		symbol = name
-	}
+	symbol := g.linkName(sym)
 	params, result, retLL := g.signature(module, n)
 	if qual == "extern" {
 		g.declare(symbol, params, result, retLL)
