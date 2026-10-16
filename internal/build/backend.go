@@ -62,7 +62,7 @@ type BackendOptions struct {
 // Link compiles the trees of one entry package and links them with the
 // runtime. It returns the path of the executable.
 func (s *Session) Link(entry string, results []*Result, opts BackendOptions) (string, error) {
-	ir, err := s.IRText(entry, results)
+	prog, err := s.monoProgram(entry, results)
 	if err != nil {
 		return "", err
 	}
@@ -83,31 +83,35 @@ func (s *Session) Link(entry string, results []*Result, opts BackendOptions) (st
 		FastMath: opts.FastMath,
 	}
 
-	irPath := filepath.Join(dir, "module.ll")
-	if err := os.WriteFile(irPath, ir, 0o644); err != nil {
-		return "", err
-	}
-	if opts.Level != "-O0" {
-		optimized, err := t.Optimize(ir, copts)
+	// Every package becomes an object of its own, so a change to one package
+	// is a change to one object: the module defines the package and declares
+	// what the others hold, and the link brings them together.
+	var objects []string
+	for i, pkg := range prog.Order {
+		if prog.Files[pkg] == nil {
+			continue
+		}
+		ir, err := llvmgen.Generate(prog, pkg, s.Loader.Target)
 		if err != nil {
 			return "", err
 		}
-		ir = optimized
-		if err := os.WriteFile(irPath, ir, 0o644); err != nil {
+		if opts.Level != "-O0" {
+			ir, err = t.Optimize(ir, copts)
+			if err != nil {
+				return "", err
+			}
+		}
+		if opts.KeepIR && pkg == entry {
+			if err := os.WriteFile(opts.Output+".ll", ir, 0o644); err != nil {
+				return "", err
+			}
+		}
+		out := filepath.Join(dir, fmt.Sprintf("module%d.o", i))
+		if err := t.CompileIR(ir, out, copts); err != nil {
 			return "", err
 		}
+		objects = append(objects, out)
 	}
-	if opts.KeepIR {
-		if err := os.WriteFile(opts.Output+".ll", ir, 0o644); err != nil {
-			return "", err
-		}
-	}
-
-	object := filepath.Join(dir, "module.o")
-	if err := t.CompileIR(ir, object, copts); err != nil {
-		return "", err
-	}
-	objects := []string{object}
 	// A package's own C sources are translation units of their own: a header
 	// declares what a C file defines, and the two meet at the link.
 	at := 0
@@ -168,13 +172,13 @@ func (s *Session) monoProgram(entry string, results []*Result) (*llvmgen.Program
 	return &llvmgen.Program{Entry: prog.Entry, Order: prog.Order, Files: prog.Files}, nil
 }
 
-// IRText returns the LLVM IR of an entry package without compiling it. The
-// trees pass through monomorphization first, so the backend sees only
-// concrete declarations.
-func (s *Session) IRText(entry string, results []*Result) ([]byte, error) {
+// IRText returns the LLVM IR of one package of a program, before
+// optimization. The trees pass through monomorphization first, so the backend
+// sees only concrete declarations.
+func (s *Session) IRText(entry, pkg string, results []*Result) ([]byte, error) {
 	prog, err := s.monoProgram(entry, results)
 	if err != nil {
 		return nil, err
 	}
-	return llvmgen.Generate(prog, "", s.Loader.Target)
+	return llvmgen.Generate(prog, pkg, s.Loader.Target)
 }

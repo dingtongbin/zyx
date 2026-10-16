@@ -191,7 +191,7 @@ func (s *Session) emitBackend(command string, args []string) int {
 	if s.reportOnce(results, map[string]bool{}) {
 		return exitError
 	}
-	ir, err := session.IRText(paths[0], results)
+	ir, err := session.IRText(paths[0], paths[0], results)
 	if err != nil {
 		fmt.Fprintln(s.Stderr, "zyx:", err)
 		return exitError
