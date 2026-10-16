@@ -216,6 +216,10 @@ int zyxrt_loop_wait(int fd, int events) {
   e->events = want;
   zyxrt_lock_drop(&loop_lock);
 
+  /* The wait is counted before the kernel is asked to watch the descriptor, so
+     a readiness that arrives at once cannot leave the scheduler with a
+     coroutine waiting for something it cannot see and no count to say so. */
+  zyxrt_sched_external(1);
   if (changed) {
     /* A descriptor the kernel does not watch yet has to be registered before
        the wait, and the poller has to look again. */
@@ -227,14 +231,12 @@ int zyxrt_loop_wait(int fd, int events) {
         if (back->writers == &w) back->writers = w.next;
       }
       zyxrt_lock_drop(&loop_lock);
+      zyxrt_sched_external(-1);
       return 2;
     }
     zyxrt_loop_backend_wake();
   }
 
-  /* The wait is for something the scheduler cannot see, so the main loop
-     keeps running and waits on the wakeup handle. */
-  zyxrt_sched_external(1);
   zyxrt_sched_suspend(self);
   zyxrt_sched_external(-1);
 

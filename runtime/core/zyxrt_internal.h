@@ -7,6 +7,19 @@
 
 #include <stdatomic.h>
 
+/* The bits of a coroutine's scheduling word. QUEUED says a ready queue holds
+   it, PARKED says no thread has it on its stack, DONE says it has finished,
+   and WOKEN says a waker asked for it while neither queueing nor finishing
+   was possible yet. Whoever takes the word from "a thread has it on its
+   stack" to "a queue may hold it" is the one that queues it, which is what
+   keeps two threads from running one stack; a coroutine that has finished is
+   never queued at all, because the region that started it may release it as
+   soon as the finish is published. */
+#define ZYXXRT_CORO_QUEUED 1u
+#define ZYXXRT_CORO_WOKEN 2u
+#define ZYXXRT_CORO_PARKED 4u
+#define ZYXXRT_CORO_DONE 8u
+
 /* A slab is a run of equal-sized objects. Its size class is implied by the
    list it is on, so no object carries a header. */
 typedef struct zyxrt_slab {
@@ -101,11 +114,16 @@ typedef struct zyxrt_coro {
   /* root marks the coroutine that runs the language main function. */
   int root;
   int done;
-  /* queued marks a coroutine that is already on a ready queue. Two wait lists
-     can wake one coroutine, because a select waits on several channels, and
-     the queue holds it once; the flag is atomic because the wakers may be on
-     different threads. */
-  _Atomic int queued;
+  /* sched is the coroutine's scheduling word, which a waker and the thread
+     running it both change: a coroutine a thread still has on its stack must
+     not go on a ready queue, because another thread that took it off one would
+     then run a stack this one is still using. The bits are ZYXXRT_CORO_QUEUED,
+     ZYXXRT_CORO_WOKEN, and ZYXXRT_CORO_PARKED. */
+  _Atomic unsigned sched;
+  /* exit marks a coroutine whose body has returned. It is set on the
+     coroutine's own stack and read by the scheduler thread that takes that
+     stack off, which is what then publishes the finish. */
+  int exit;
   /* preempt marks a coroutine the monitor has asked to let another one run,
      which it notices at the next loop back edge. */
   _Atomic int preempt;
@@ -170,23 +188,24 @@ void zyxrt_sched_shutdown(void);
 void zyxrt_sched_abandon(zyxrt_coro *c);
 void zyxrt_sched_yield(void);
 /* zyxrt_sched_sleep suspends the running coroutine until a deadline, and
-   zyxrt_sched_wait readies every timer that has come due and reports how long
-   the scheduler should wait for the next one, or -1 when none is waiting. */
+   zyxrt_sched_advance readies every timer that has come due. */
 void zyxrt_sched_sleep(uint64_t ns);
+void zyxrt_sched_advance(void);
 /* zyxrt_sched_external records that a coroutine waits for something outside
    the scheduler, such as a call handed to the blocking pool. A scheduler
    thread waits on the wakeup handle while any such wait is outstanding rather
    than deciding the program is over. */
 void zyxrt_sched_external(int delta);
-/* What zyxrt_sched_wait reports beyond a timeout: nothing can make progress,
-   so the program ends, or a coroutine waits outside the scheduler, so the
-   main loop waits on the wakeup handle. */
-#define ZYXRT_WAIT_DONE (-1)
+/* What a scheduler thread answers itself with when it has nothing to run:
+   ZYXRT_WAIT_EXTERNAL means a coroutine waits outside the scheduler, and a
+   negative wait other than that means no deadline is waiting either. */
 #define ZYXRT_WAIT_EXTERNAL (-2)
 /* The wakeup handle. A thread outside the scheduler signals it, and the
-   scheduler waits on it. */
+   scheduler waits on it. zyxrt_wakeup_signal releases one waiting thread and
+   zyxrt_wakeup_signal_all releases count of them. */
 void zyxrt_wakeup_init(void);
 void zyxrt_wakeup_signal(void);
+void zyxrt_wakeup_signal_all(size_t count);
 /* zyxrt_wakeup_wait waits for the handle, up to ns nanoseconds, or forever
    when ns is negative. */
 void zyxrt_wakeup_wait(int64_t ns);
@@ -239,13 +258,11 @@ void zyxrt_region_adopt(void *region, void *coro);
 void zyxrt_region_detach(void *region, void *coro);
 void *zyxrt_region_take_child(void *region);
 void zyxrt_region_wait(void *region);
-int64_t zyxrt_sched_wait(void);
 /* The clock. zyxrt_now is the monotonic time in nanoseconds, zyxrt_sleep
    waits on the scheduler's thread, and zyxrt_timer_init prepares the clock. */
 void zyxrt_timer_init(void);
 uint64_t zyxrt_now(void);
 void zyxrt_sleep(uint64_t ns);
-int zyxrt_sched_run_once(void);
 zyxrt_coro *zyxrt_sched_current(void);
 /* The wait lists. zyxrt_wait_add puts a node at the head of a list, and
    zyxrt_wait_remove takes it off, which a waiter does with the lists it did
@@ -263,6 +280,10 @@ void zyxrt_sched_park(uint64_t deadline);
    quantum; zyxrt_preempt_thread gives a scheduler thread its slot;
    zyxrt_preempt_enter and zyxrt_preempt_leave record which coroutine a thread
    is running; zyxrt_preempt_check is what a loop back edge calls. */
+/* The slots the monitor watches, one per scheduler thread. The scheduler
+   starts no more threads than this, because a thread the monitor cannot watch
+   is a thread a coroutine can hold for as long as it likes. */
+#define ZYXXRT_PREEMPT_SLOTS 256
 void zyxrt_preempt_init(void);
 void zyxrt_preempt_thread(void);
 void zyxrt_preempt_enter(zyxrt_coro *c);

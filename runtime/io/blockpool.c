@@ -116,6 +116,11 @@ void zyxrt_block_run(zyxrt_block_fn fn, void *ctx) {
   job->ctx = ctx;
   job->coro = self;
   job->next = NULL;
+  /* The wait is counted before the job can run: a worker that finished first
+     would leave the scheduler with a coroutine waiting for something it cannot
+     see and no count to say so, and a thread could decide the program is over
+     with that coroutine still to run. */
+  zyxrt_sched_external(1);
   zyxrt_lock_hold(&queue_lock);
   if (queue_tail != NULL) {
     queue_tail->next = job;
@@ -125,9 +130,6 @@ void zyxrt_block_run(zyxrt_block_fn fn, void *ctx) {
   queue_tail = job;
   zyxrt_cond_signal(&queue_cond);
   zyxrt_lock_drop(&queue_lock);
-  /* The coroutine waits for something the scheduler cannot see, so the main
-     loop waits on the wakeup handle until the pool signals it. */
-  zyxrt_sched_external(1);
   zyxrt_sched_suspend(self);
   zyxrt_sched_external(-1);
 }

@@ -12,7 +12,6 @@
 
 /* One slot per scheduler thread, claimed when the thread starts. The monitor
    walks them, so a busy thread is marked whoever else is running. */
-#define ZYXXRT_PREEMPT_SLOTS 256
 
 static _Atomic(zyxrt_coro *) running[ZYXXRT_PREEMPT_SLOTS];
 

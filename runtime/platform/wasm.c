@@ -5,6 +5,7 @@
 
 void zyxrt_wakeup_init(void) {}
 void zyxrt_wakeup_signal(void) {}
+void zyxrt_wakeup_signal_all(size_t count) { (void)count; }
 void zyxrt_wakeup_wait(int64_t ns) { (void)ns; }
 
 void zyxrt_platform_init(void) {}

@@ -60,7 +60,8 @@ void zyxrt_sched_external(int delta) {
   atomic_fetch_add_explicit(&externals, delta, memory_order_acq_rel);
 }
 
-/* queue_push links a coroutine onto a queue. */
+/* queue_push links a coroutine onto a queue. The lock covers the links, and
+   the scheduling word says which queue may hold it at all. */
 static void queue_push(zyxrt_coro **head, zyxrt_coro **tail, zyxrt_lock *lock, zyxrt_coro *c) {
   c->wait_next = NULL;
   zyxrt_lock_hold(lock);
@@ -73,7 +74,12 @@ static void queue_push(zyxrt_coro **head, zyxrt_coro **tail, zyxrt_lock *lock, z
   zyxrt_lock_drop(lock);
 }
 
-/* queue_pop takes the oldest coroutine off a queue, or NULL. */
+/* queue_pop takes the oldest coroutine off a queue, or NULL. Taking it off is
+   also what claims it for the thread that is about to run it, and the claim is
+   a test: the word must still say a queue holds it, because only a coroutine a
+   queue holds is one a thread may run. A second entry for a coroutine that
+   another thread has already taken is dropped rather than run, so two threads
+   can never share one stack. */
 static zyxrt_coro *queue_pop(zyxrt_coro **head, zyxrt_coro **tail, zyxrt_lock *lock) {
   zyxrt_lock_hold(lock);
   zyxrt_coro *c = *head;
@@ -83,20 +89,22 @@ static zyxrt_coro *queue_pop(zyxrt_coro **head, zyxrt_coro **tail, zyxrt_lock *l
       *tail = NULL;
     }
     c->wait_next = NULL;
-    atomic_store_explicit(&c->queued, 0, memory_order_release);
   }
   zyxrt_lock_drop(lock);
+  if (c != NULL) {
+    unsigned word = atomic_fetch_and_explicit(&c->sched,
+                                              ~(ZYXXRT_CORO_QUEUED | ZYXXRT_CORO_PARKED),
+                                              memory_order_acq_rel);
+    if ((word & ZYXXRT_CORO_QUEUED) == 0) return NULL;
+  }
   return c;
 }
 
-void zyxrt_sched_ready(zyxrt_coro *c) {
-  if (c == NULL) return;
-  /* A select waits on several lists, so more than one of them can wake it.
-     The queue holds it once, and the claim is atomic because the wakers may
-     be on different threads. */
-  if (atomic_exchange_explicit(&c->queued, 1, memory_order_acq_rel)) {
-    return;
-  }
+/* sched_push puts a coroutine on a ready queue: the calling thread's own when
+   it is a scheduler thread, and the handoff queue otherwise, which is what a
+   thread outside the scheduler uses and what every thread uses once the
+   program is over. */
+static void sched_push(zyxrt_coro *c) {
   zyxrt_thread *self = self_thread;
   if (self != NULL && !atomic_load_explicit(&stopping, memory_order_acquire)) {
     queue_push(&self->head, &self->tail, &self->lock, c);
@@ -114,6 +122,40 @@ void zyxrt_sched_ready(zyxrt_coro *c) {
   zyxrt_wakeup_signal();
 }
 
+/* sched_offer offers a coroutine to a ready queue. A coroutine a thread still
+   has on its stack is not queued: the offer stays in the scheduling word, and
+   the thread that takes the coroutine off its stack offers it again from
+   there. The one that turns the offer into a queue entry takes the queue slot
+   in the same compare-and-swap, so a second waker finds the slot taken. A
+   coroutine that has finished is never queued: the region that started it
+   releases it as soon as its finish is published, so a queue entry for it
+   would point at storage that is already gone. */
+static void sched_offer(zyxrt_coro *c) {
+  unsigned word = atomic_load_explicit(&c->sched, memory_order_acquire);
+  for (;;) {
+    if (word & (ZYXXRT_CORO_QUEUED | ZYXXRT_CORO_DONE)) return;
+    if (word & ZYXXRT_CORO_PARKED) {
+      unsigned next = (word & ~ZYXXRT_CORO_WOKEN) | ZYXXRT_CORO_QUEUED;
+      if (atomic_compare_exchange_weak_explicit(&c->sched, &word, next,
+                                                memory_order_acq_rel, memory_order_acquire)) {
+        sched_push(c);
+        return;
+      }
+      continue;
+    }
+    unsigned next = word | ZYXXRT_CORO_WOKEN;
+    if (atomic_compare_exchange_weak_explicit(&c->sched, &word, next,
+                                              memory_order_acq_rel, memory_order_acquire)) {
+      return;
+    }
+  }
+}
+
+void zyxrt_sched_ready(zyxrt_coro *c) {
+  if (c == NULL) return;
+  sched_offer(c);
+}
+
 /* incoming_ready reports whether work from outside the scheduler is waiting,
    which is a load rather than a lock. */
 static int incoming_ready(void) {
@@ -128,9 +170,14 @@ static zyxrt_coro *incoming_pop(void) {
     atomic_store_explicit(&incoming_head, c->wait_next, memory_order_release);
     if (c->wait_next == NULL) incoming_tail = NULL;
     c->wait_next = NULL;
-    atomic_store_explicit(&c->queued, 0, memory_order_release);
   }
   zyxrt_lock_drop(&incoming_lock);
+  if (c != NULL) {
+    unsigned word = atomic_fetch_and_explicit(&c->sched,
+                                              ~(ZYXXRT_CORO_QUEUED | ZYXXRT_CORO_PARKED),
+                                              memory_order_acq_rel);
+    if ((word & ZYXXRT_CORO_QUEUED) == 0) return NULL;
+  }
   return c;
 }
 
@@ -166,8 +213,19 @@ void zyxrt_sched_suspend(zyxrt_coro *c) {
   zyxrt_ctx_switch(c->ctx, t->ctx);
 }
 
-/* run_once runs one ready coroutine until it suspends. It answers whether
-   there was one. */
+/* sched_finish publishes a coroutine that has finished. It runs on the thread
+   that had the coroutine on its stack, after the switch back, and it is the
+   last thing that touches the coroutine: the region that started it releases
+   it as soon as it sees it done. */
+static void sched_finish(zyxrt_coro *c) {
+  zyxrt_lock_hold(&c->lock);
+  c->done = 1;
+  zyxrt_wait_wake(&c->waiters);
+  zyxrt_lock_drop(&c->lock);
+}
+
+/* run_once runs one ready coroutine until it suspends or finishes. It answers
+   whether there was one. */
 static int run_once(zyxrt_thread *t) {
   zyxrt_coro *c = take_ready(t);
   if (c == NULL) return 0;
@@ -178,23 +236,36 @@ static int run_once(zyxrt_thread *t) {
   zyxrt_ctx_switch(t->ctx, c->ctx);
   zyxrt_preempt_leave();
   t->current = NULL;
+  /* The coroutine is off this thread's stack now, and this thread is the one
+     that says what becomes of it. A waker that asked for it while it was
+     running could not queue it; it is queued here instead. Both decisions
+     belong to this thread for the same reason: while the stack was in use, a
+     queue entry for it would have let another thread run it. A coroutine that
+     finished is marked done in the same step as parking it, so a waker that
+     arrives after this point finds it done rather than queued, and the finish
+     that follows may release it at once. */
+  unsigned park = ZYXXRT_CORO_PARKED | (c->exit ? ZYXXRT_CORO_DONE : 0u);
+  unsigned word = atomic_fetch_or_explicit(&c->sched, park, memory_order_acq_rel);
+  if (c->exit) {
+    sched_finish(c);
+    return 1;
+  }
+  if (word & ZYXXRT_CORO_WOKEN) sched_offer(c);
   return 1;
 }
 
 /* zyxrt_sched_enter runs on a coroutine's own stack. It owns a region, runs
-   the body, releases the region, and returns to the scheduler. */
+   the body, releases the region, and returns to the scheduler. The finish is
+   left to the scheduler thread that takes this stack off, which publishes it
+   only once nothing reads the stack any more. */
 void zyxrt_sched_enter(void) {
   zyxrt_coro *c = zyxrt_sched_current();
   c->region = zyxrt_region_new();
   c->fn(c->arg);
   zyxrt_region_free(c->region);
   c->region = NULL;
-  zyxrt_lock_hold(&c->lock);
-  c->done = 1;
-  zyxrt_wait_wake(&c->waiters);
-  zyxrt_lock_drop(&c->lock);
+  c->exit = 1;
   zyxrt_thread *t = self_thread;
-  t->current = NULL;
   zyxrt_ctx_switch(c->ctx, t->ctx);
 }
 
@@ -213,12 +284,8 @@ void zyxrt_sched_abandon(zyxrt_coro *c) {
     zyxrt_region_free(c->region);
     c->region = NULL;
   }
-  zyxrt_lock_hold(&c->lock);
-  c->done = 1;
-  zyxrt_wait_wake(&c->waiters);
-  zyxrt_lock_drop(&c->lock);
+  c->exit = 1;
   zyxrt_thread *t = self_thread;
-  t->current = NULL;
   zyxrt_ctx_switch(c->ctx, t->ctx);
 }
 
@@ -242,21 +309,40 @@ void zyxrt_sched_sleep(uint64_t ns) {
   zyxrt_sched_park(zyxrt_now() + ns);
 }
 
-int64_t zyxrt_sched_wait(void) {
-  uint64_t now = zyxrt_now();
-  zyxrt_wheel_advance(now);
-  int64_t wait = zyxrt_wheel_next(now);
-  /* A target whose event loop has no poller thread watches the descriptors
-     here, so one wait covers both the deadlines and the descriptors. */
-  if (atomic_load_explicit(&externals, memory_order_acquire) > 0 && zyxrt_loop_poll_once(wait)) {
-    return 0;
-  }
+/* zyxrt_sched_advance takes in what the event loop found and fires every
+   deadline that has come due, so the run that follows sees everything that is
+   ready now. */
+void zyxrt_sched_advance(void) {
+  zyxrt_loop_drain();
+  zyxrt_wheel_advance(zyxrt_now());
+}
+
+/* sched_idle_wait answers how long a thread with nothing to run may sleep:
+   the distance to the next deadline, -1 when the wheel holds none, or
+   ZYXRT_WAIT_EXTERNAL when a coroutine also waits for something the scheduler
+   cannot see. A wait of -1 therefore means that neither is outstanding. The
+   caller holds state_lock, which is what makes the answer worth having: a
+   deadline added after it belongs to a thread that has already gone idle, so
+   that thread wakes this one instead of being missed. */
+static int64_t sched_idle_wait(void) {
+  int64_t wait = zyxrt_wheel_next(zyxrt_now());
   if (wait < 0 && atomic_load_explicit(&externals, memory_order_acquire) > 0) {
-    /* Nothing is due, but a coroutine waits for something the scheduler
-       cannot see, so the loop waits on the wakeup handle. */
     return ZYXRT_WAIT_EXTERNAL;
   }
   return wait;
+}
+
+/* sched_sleep sleeps until a deadline, until work arrives, or until a
+   descriptor becomes ready. A target without a poller thread of its own sleeps
+   in the poll, because it has no thread to be woken by. */
+static void sched_sleep(int64_t wait) {
+  if (zyxrt_loop_poll_once(wait)) return;
+  if (wait < 0) {
+    /* Nothing is waiting, so any arrival is a reason to look again. */
+    zyxrt_wakeup_wait(-1);
+  } else if (wait > 0) {
+    zyxrt_wakeup_wait(wait);
+  }
 }
 
 void zyxrt_sched_yield(void) {
@@ -325,6 +411,9 @@ void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, voi
   /* The region the spawner is running in waits for this coroutine before it
      releases its memory, so the coroutine never reads freed storage. */
   zyxrt_region_adopt(zyxrt_region_current(), c);
+  /* No thread has this one on its stack yet, so a waker may queue it at once
+     rather than leave the offer for a thread to pick up. */
+  atomic_store_explicit(&c->sched, ZYXXRT_CORO_PARKED, memory_order_relaxed);
   zyxrt_sched_ready(c);
   return c;
 }
@@ -411,15 +500,16 @@ void *zyxrt_coro_panic(void *handle) {
 }
 
 /* scheduler_threads returns how many threads the scheduler runs. ZYX_THREADS
-   names it; without it the scheduler runs one thread, in which case the
-   program's own thread is the scheduler and a coroutine that blocks suspends
-   while the next one runs, exactly as before the scheduler could run on more
-   than one. */
+   names it, and the scheduler runs one when it says nothing: a coroutine that
+   blocks then suspends while the next one runs, and the program's own thread
+   runs coroutines rather than watching them. */
 static size_t scheduler_threads(void) {
   const char *set = getenv("ZYX_THREADS");
   if (set != NULL && set[0] != '\0') {
     long n = strtol(set, NULL, 10);
-    if (n > 0) return (size_t)n;
+    if (n > 0) {
+      return (size_t)n > ZYXXRT_PREEMPT_SLOTS ? ZYXXRT_PREEMPT_SLOTS : (size_t)n;
+    }
   }
   return 1;
 }
@@ -433,33 +523,38 @@ static void thread_main(void *arg) {
   zyxrt_sched_run();
 }
 
-/* zyxrt_sched_run is the scheduler loop of the calling thread: run what is
-   ready, take what arrives, wait for a deadline or for work, and stop when
-   every thread has nothing left to do. */
+/* zyxrt_sched_run is the scheduler loop of the calling thread: take in what
+   arrived, run what is ready, and stop when every thread has nothing left to do
+   and nothing is on its way. */
 void zyxrt_sched_run(void) {
   zyxrt_thread *t = self_thread;
   for (;;) {
-    int64_t wait = zyxrt_sched_wait();
-    zyxrt_loop_drain();
+    zyxrt_sched_advance();
     if (run_once(t)) continue;
     /* Nothing to run here. Two threads may arrive at this at once, so the
-       decision is made under the lock: the program is over when every thread
-       has nothing, no deadline is waiting, and nothing is on its way. */
+       decision is made under the lock, and the evidence for it is read under
+       the same lock: a deadline added after the wait was computed belongs to a
+       thread that has already gone idle, and deciding the program is over on
+       the strength of the earlier reading would leave that deadline to fire
+       with nobody to run it. Reading the wheel here instead cannot race with a
+       thread that is about to park, because a thread parks before it goes
+       idle. */
     zyxrt_lock_hold(&state_lock);
     idle_threads++;
-    int over = idle_threads == thread_count &&
-               wait < 0 &&
-               atomic_load_explicit(&externals, memory_order_acquire) == 0;
+    int64_t wait = sched_idle_wait();
+    int over = idle_threads == thread_count && wait == -1 && !incoming_ready();
     if (over) {
       atomic_store_explicit(&stopping, 1, memory_order_release);
     }
     zyxrt_lock_drop(&state_lock);
-    if (over) return;
-    if (wait == ZYXRT_WAIT_EXTERNAL) {
-      zyxrt_wakeup_wait(-1);
-    } else if (wait > 0) {
-      zyxrt_wakeup_wait(wait);
+    if (over) {
+      /* Every other thread is waiting on the wakeup handle and nothing will
+         wake it, so each one is released; each of them then finds the program
+         over and returns. */
+      zyxrt_wakeup_signal_all(thread_count - 1);
+      return;
     }
+    sched_sleep(wait);
     zyxrt_lock_hold(&state_lock);
     idle_threads--;
     zyxrt_lock_drop(&state_lock);
@@ -500,7 +595,5 @@ void zyxrt_sched_init(void) {
    courtesy rather than a requirement. */
 void zyxrt_sched_shutdown(void) {
   atomic_store_explicit(&stopping, 1, memory_order_release);
-  for (size_t i = 1; i < thread_count; i++) {
-    zyxrt_wakeup_signal();
-  }
+  zyxrt_wakeup_signal_all(thread_count - 1);
 }
