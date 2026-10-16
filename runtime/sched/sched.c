@@ -197,9 +197,10 @@ static zyxrt_coro *incoming_pop(void) {
 
 /* take_ready returns the next coroutine this thread should run: work that
    arrived from outside the scheduler, which no thread owns yet, and then the
-   thread's own next. A coroutine is resumed only on the thread that owns it,
-   so there is nothing to take from another thread: a wake hands it to its
-   owner instead. */
+   thread's own next. A coroutine is resumed only on the thread that owns it:
+   a stack this runtime saves is continued by the thread that saved it, so
+   there is nothing to take from another thread, and a wake hands the
+   coroutine to its owner instead. */
 static zyxrt_coro *take_ready(zyxrt_thread *t) {
   if (incoming_ready()) {
     zyxrt_coro *c = incoming_pop();
