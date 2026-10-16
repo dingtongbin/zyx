@@ -462,6 +462,19 @@ func (t *Toolchain) IncludeFlags() []string {
 	}
 }
 
+// sanitizeFlags returns the flags that instrument a build for a sanitizer.
+// ZYX_SANITIZE names one, such as "address", and a build with it must use a
+// cache of its own: the flag is not part of what a cache key covers, so the
+// artifacts of an instrumented build and a plain one must not share a
+// directory.
+func sanitizeFlags() []string {
+	name := os.Getenv("ZYX_SANITIZE")
+	if name == "" {
+		return nil
+	}
+	return []string{"-fsanitize=" + name, "-fno-omit-frame-pointer"}
+}
+
 // CompileIR turns LLVM IR text into an object file.
 func (t *Toolchain) CompileIR(ir []byte, out string, opts CompileOptions) error {
 	src, err := writeTemp(ir, "zyx-*.ll")
@@ -482,6 +495,7 @@ func (t *Toolchain) CompileIR(ir []byte, out string, opts CompileOptions) error 
 		if opts.Debug {
 			args = append(args, "-g")
 		}
+		args = append(args, sanitizeFlags()...)
 		return t.run(t.Clang, args)
 	}
 	args := []string{"-filetype=obj", "-o", out, src}
@@ -549,6 +563,7 @@ func (t *Toolchain) CompileC(src, out string, opts CompileOptions) error {
 	if opts.Debug {
 		args = append(args, "-g")
 	}
+	args = append(args, sanitizeFlags()...)
 	return t.run(t.CC, args)
 }
 
@@ -568,9 +583,13 @@ func (t *Toolchain) Link(target Target, objects []string, out string, libs, libD
 		args = append(args, "-l"+lib)
 	}
 	args = append(args, "-lm")
+	args = append(args, sanitizeFlags()...)
 	// A static link keeps the unwinder and the C runtime inside the
-	// executable, so a built program runs wherever it is copied to.
-	args = append(args, "-static")
+	// executable, so a built program runs wherever it is copied to. An
+	// instrumented build keeps the sanitizer runtime beside it instead.
+	if os.Getenv("ZYX_SANITIZE") == "" {
+		args = append(args, "-static")
+	}
 	return t.run(t.CC, args)
 }
 
