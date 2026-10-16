@@ -18,6 +18,16 @@ func Note() {
 // Quiet returns nothing, so its handle carries no value to report.
 
 func Quiet() { }
+// A static sync object lives in static storage rather than in a region, so a
+// top-level binding can hold one. Its constructor runs before the program.
+
+var sharedGroup = sync.StaticWaitGroup()
+
+var sharedOnce = sync.StaticOnce()
+
+var sharedCounter = sync.StaticAtomic(7)
+
+var sharedGuard = sync.StaticMutex(41)
 // waitFor holds the lock until the guarded data changes. A monitor wait
 // releases the lock while it waits, so the notifier can take it.
 
@@ -116,5 +126,21 @@ func main() {
     fmt.PrintNl()
     sync.Fence(sync.Order.Acquire)
     fmt.PrintI64(7)
+    fmt.PrintNl()
+    // A top-level binding holds a static sync object: it outlives every
+    // region and was built before the program started.
+    sharedGroup.Add(1)
+    sharedGroup.Done()
+    sharedGroup.Wait()
+    fmt.PrintI64(1)
+    fmt.PrintNl()
+    sharedOnce.Do(func Note)
+    fmt.PrintI64(sharedCounter.Load())
+    fmt.PrintI64(sharedCounter.Add(1))
+    fmt.PrintNl()
+    sharedGuard.Lock()
+    sharedGuard.Data = 42
+    fmt.PrintI64(sharedGuard.Data)
+    sharedGuard.Unlock()
     fmt.PrintNl()
 }

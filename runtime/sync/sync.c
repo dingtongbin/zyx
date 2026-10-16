@@ -334,3 +334,75 @@ void zyxrt_sem_release(void *handle) {
   s->count++;
   if (s->waiters.head) zyxrt_wait_wake(&s->waiters);
 }
+
+/* Statics. A sync object a top-level binding holds lives in static storage,
+   so it outlives every region and is built before the program runs. The
+   slots are the program's static sync objects, and a program that asks for
+   more than the pool holds is a program that asked for too many. */
+#define ZYXRT_STATIC_SLOTS 1024
+
+static zyxrt_wg static_wgs[ZYXRT_STATIC_SLOTS];
+static size_t static_wg_count;
+
+void *zyxrt_static_wg(void) {
+  if (static_wg_count >= ZYXRT_STATIC_SLOTS) {
+    zyxrt_panic("too many static sync objects", 29);
+  }
+  zyxrt_wg *wg = &static_wgs[static_wg_count++];
+  wg->count = 0;
+  wg->waiters.head = NULL;
+  return wg;
+}
+
+static zyxrt_once static_onces[ZYXRT_STATIC_SLOTS];
+static size_t static_once_count;
+
+void *zyxrt_static_once(void) {
+  if (static_once_count >= ZYXRT_STATIC_SLOTS) {
+    zyxrt_panic("too many static sync objects", 29);
+  }
+  zyxrt_once *o = &static_onces[static_once_count++];
+  o->done = 0;
+  o->waiters.head = NULL;
+  return o;
+}
+
+static zyxrt_mutex static_mutexes[ZYXRT_STATIC_SLOTS];
+static size_t static_mutex_count;
+
+void *zyxrt_static_mutex(void) {
+  if (static_mutex_count >= ZYXRT_STATIC_SLOTS) {
+    zyxrt_panic("too many static sync objects", 29);
+  }
+  zyxrt_mutex *m = &static_mutexes[static_mutex_count++];
+  m->locked = 0;
+  m->waiters.head = NULL;
+  m->monitors.head = NULL;
+  return m;
+}
+
+static zyxrt_atomic static_atomics[ZYXRT_STATIC_SLOTS];
+static size_t static_atomic_count;
+
+void *zyxrt_static_atomic(int64_t size, uint64_t value) {
+  if (static_atomic_count >= ZYXRT_STATIC_SLOTS) {
+    zyxrt_panic("too many static sync objects", 29);
+  }
+  zyxrt_atomic *a = &static_atomics[static_atomic_count++];
+  a->size = (size_t)size;
+  switch (a->size) {
+  case 1:
+    atomic_init(&a->cell.b8, (uint8_t)value);
+    break;
+  case 2:
+    atomic_init(&a->cell.b16, (uint16_t)value);
+    break;
+  case 4:
+    atomic_init(&a->cell.b32, (uint32_t)value);
+    break;
+  default:
+    atomic_init(&a->cell.b64, value);
+    break;
+  }
+  return a;
+}

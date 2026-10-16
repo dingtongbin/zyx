@@ -231,6 +231,12 @@ uint64_t zyxrt_atomic_sub(void *atomic, uint64_t value, int64_t order);
 uint64_t zyxrt_atomic_swap(void *atomic, uint64_t value, int64_t order);
 int zyxrt_atomic_cas(void *atomic, uint64_t expect, uint64_t value, int64_t order);
 void zyxrt_atomic_fence(int64_t order);
+/* Statics. A sync object a top-level binding holds lives in static storage
+   rather than in a region, so it is built before the program runs. */
+void *zyxrt_static_wg(void);
+void *zyxrt_static_once(void);
+void *zyxrt_static_mutex(void);
+void *zyxrt_static_atomic(int64_t size, uint64_t value);
 /* Channels. A channel carries values of one size, up to a fixed capacity. */
 void *zyxrt_chan_new(size_t elem, size_t cap);
 void zyxrt_chan_send(void *ch, const void *value);

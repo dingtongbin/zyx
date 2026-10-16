@@ -7,3 +7,6 @@ falsetrue
 5588true11false11
 0
 7
+1
+777
+42

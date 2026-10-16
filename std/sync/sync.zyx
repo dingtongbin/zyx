@@ -144,6 +144,31 @@ struct Atomic<T> {
     }
 }
 
+// StaticWaitGroup builds a wait group in static storage, for a top-level
+// binding. It lives as long as the program does rather than in a region.
+
+func StaticWaitGroup() -> WaitGroup {
+    return WaitGroup { handle: c.zyxrt_static_wg() }
+}
+
+// StaticOnce builds a once in static storage, for a top-level binding.
+
+func StaticOnce() -> Once {
+    return Once { handle: c.zyxrt_static_once() }
+}
+
+// StaticMutex builds a mutex in static storage, for a top-level binding.
+
+func StaticMutex<T>(v: T) -> Mutex<T> {
+    return Mutex<T> { handle: c.zyxrt_static_mutex(), Data: v }
+}
+
+// StaticAtomic builds an atomic in static storage, for a top-level binding.
+
+func StaticAtomic<T>(v: T) -> Atomic<T> {
+    return Atomic<T> { handle: c.zyxrt_static_atomic(meta.size_of(T), u64(v)) }
+}
+
 // A Mutex is held by one coroutine at a time. The data it guards is the Data
 // field, which the holder reads and writes directly: the language provides no
 // implicit locking, so the discipline is the program's.

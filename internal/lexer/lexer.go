@@ -67,6 +67,13 @@ func (l *lexer) run() {
 			l.pos++
 		case c == '/' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '/':
 			l.scanComment()
+		case c == '/' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '*':
+			// The language has line comments only, so a block comment is
+			// reported where it opens rather than left to the parser.
+			l.reportHelp(l.pos, l.pos+2, diag.CodeUnexpectedToken,
+				"write // for a line comment; the language has no block comments",
+				"a block comment is not part of the language")
+			l.pos += 2
 		case c == '\'':
 			l.scanChar()
 		case c == '"':

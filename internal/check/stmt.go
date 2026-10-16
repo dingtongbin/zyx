@@ -3,8 +3,11 @@
 package check
 
 import (
+	"strings"
+
 	"zyx/internal/ast"
 	"zyx/internal/diag"
+	"zyx/internal/resolve"
 	"zyx/internal/source"
 	"zyx/internal/token"
 	"zyx/internal/types"
@@ -487,7 +490,14 @@ func (c *checker) checkVarInit(v *ast.VarDecl) {
 	c.inComptime = true
 	t := c.buildType(v.Type)
 	got := c.checkExpr(v.Value, t)
-	val := c.requireConst(v.Value, "a top-level var initializer")
+	var val *Value
+	if c.staticSyncCall(v.Value) {
+		// A static sync object lives in static storage rather than in a
+		// region, so its constructor is a call the backend runs before the
+		// program does rather than a compile-time value.
+	} else {
+		val = c.requireConst(v.Value, "a top-level var initializer")
+	}
 	c.inComptime = prev
 	if len(v.Names) == 1 && val != nil {
 		c.out.Consts[v.Names[0].Name] = val
@@ -514,6 +524,33 @@ func (c *checker) checkVarInit(v *ast.VarDecl) {
 	default:
 		c.bindTuple(v.Names, v.Value, got)
 	}
+}
+
+// staticSyncCall reports whether an initializer builds a static sync object,
+// which is what the standard library's Static* constructors do. Such a value
+// lives in static storage rather than in a region, so it needs no region to
+// exist yet, and the initializer runs before the program does.
+func (c *checker) staticSyncCall(e ast.Expr) bool {
+	call, ok := e.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := call.Fn.(*ast.SelectorExpr)
+	if !ok || sel.Name == nil {
+		return false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	sym := c.symOf(id)
+	if sym == nil || sym.Kind != resolve.KindPackage {
+		return false
+	}
+	if sym.ID != "sync" && !strings.HasSuffix(sym.ID, "/sync") {
+		return false
+	}
+	return strings.HasPrefix(sel.Name.Name, "Static")
 }
 
 // checkMemberInit checks a constant declared inside a type body, which must

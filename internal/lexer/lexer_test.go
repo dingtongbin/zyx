@@ -329,3 +329,16 @@ func TestCKeywordOutsideBlocks(t *testing.T) {
 		})
 	}
 }
+
+// TestBlockCommentIsReported checks that a block comment is reported where it
+// opens: the language has line comments only, so leaving it to the parser
+// would report the slashes rather than the mistake.
+func TestBlockCommentIsReported(t *testing.T) {
+	_, diags := lexSrc(t, "package main\n/* a block */\n")
+	if len(diags) == 0 {
+		t.Fatal("a block comment was accepted")
+	}
+	if !strings.Contains(diags[0].Message, "block comment") {
+		t.Errorf("the diagnostic does not name the mistake: %s", diags[0].Message)
+	}
+}

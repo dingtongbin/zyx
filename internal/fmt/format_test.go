@@ -145,3 +145,19 @@ func TestFormatKeepsFastDeclarations(t *testing.T) {
 		t.Errorf("format is not idempotent:\n--- first ---\n%s\n--- second ---\n%s", got, again)
 	}
 }
+
+// TestFormatKeepsATrailingComment checks that a comment the program wrote at
+// the end of a line stays on that line. The format neither wraps nor splits
+// lines, and it keeps a line comment where it was written.
+func TestFormatKeepsATrailingComment(t *testing.T) {
+	src := "package main\nfunc f() {\nvar x = 1 // after a binding\n} // after a block\n"
+	got := format(src)
+	for _, want := range []string{"var x = 1 // after a binding", "} // after a block"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the formatted source moved a trailing comment:\n%s", got)
+		}
+	}
+	if again := format(got); again != got {
+		t.Errorf("format is not idempotent:\n--- first ---\n%s\n--- second ---\n%s", got, again)
+	}
+}

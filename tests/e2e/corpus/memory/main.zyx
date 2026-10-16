@@ -9,8 +9,7 @@ struct Holder {
 }
 
 struct Shelf {
-    items: Array<i64>
-}
+    items: Array<i64>}
 
 func shelved() -> i64 {
     var shelf = Shelf { items: new Array<i64>(2) }

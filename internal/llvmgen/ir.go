@@ -308,11 +308,10 @@ func byAddress(t *types.Type) bool {
 
 // zero renders the LLVM zero value of a type.
 func (g *generator) zero(t *types.Type) string {
-	ll := g.llPass(t)
-	if byAddress(t) {
-		return "null"
-	}
-	if strings.HasPrefix(ll, "{") || strings.HasPrefix(ll, "[") {
+	// A global is declared with the type the object lies in, which is llType
+	// rather than the type a value of it passes as.
+	ll := g.llType(t)
+	if strings.HasPrefix(ll, "{") || strings.HasPrefix(ll, "[") || strings.HasPrefix(ll, "%") {
 		return "zeroinitializer"
 	}
 	if ll == "float" || ll == "double" {

@@ -55,6 +55,9 @@ type printer struct {
 	// lastDecl is the last top-level declaration keyword written, which
 	// decides where a blank line separates declarations.
 	lastDecl token.Kind
+	// pending marks a line deferNewline left open, which a comment on the
+	// same line is written into before it ends.
+	pending bool
 }
 
 // run writes the whole token stream.
@@ -87,6 +90,20 @@ func (p *printer) token(toks []token.Token, i int) {
 		return
 	}
 	if t.Kind == token.Comment {
+		if p.pending && line == p.line {
+			// The comment stands on the line the printer has not ended yet,
+			// which is where the program wrote it.
+			p.pending = false
+		} else {
+			p.flushPending()
+		}
+		// A comment at the top level opens the run that belongs to the
+		// declaration below it, so the blank line goes before the run, and
+		// only when the comment starts a line of its own.
+		if p.lineStart && p.separates() && p.indent == 0 && p.lastDecl != token.Invalid &&
+			(p.prev == nil || p.prev.Kind != token.Comment) {
+			p.blankLine()
+		}
 		if !p.lineStart {
 			p.space()
 		}
@@ -97,6 +114,7 @@ func (p *printer) token(toks []token.Token, i int) {
 		p.line = line
 		return
 	}
+	p.flushPending()
 
 	// A blank line in the source stays a blank line, and a top-level
 	// declaration is separated from the one before it by one blank line.
@@ -106,12 +124,16 @@ func (p *printer) token(toks []token.Token, i int) {
 		case p.line > 0 && line > p.line+1:
 			p.blankLine()
 		case isDeclKeyword(t.Kind) && p.lineStart && p.lastDecl != token.Invalid &&
+			(p.prev == nil || !p.prev.Doc) &&
 			!(p.lastDecl == token.Import && t.Kind == token.Import):
+			// A doc comment belongs to the declaration it precedes, so no
+			// blank line is written between them.
 			p.blankLine()
 		}
 	}
 	if t.Kind == token.RBrace && p.inBlock() && !p.emptyBody {
-		p.newline()
+		// The line is ended after the brace, and after any comment the
+		// program wrote beside it, which the switch below defers.
 		if p.indent > 0 {
 			p.indent--
 		}
@@ -140,7 +162,7 @@ func (p *printer) token(toks []token.Token, i int) {
 			break
 		}
 		p.indent++
-		p.newline()
+		p.deferNewline()
 	case token.RBrace:
 		block := p.inBlock()
 		if n := len(p.braces); n > 0 {
@@ -157,12 +179,12 @@ func (p *printer) token(toks []token.Token, i int) {
 			p.space()
 			break
 		}
-		p.newline()
+		p.deferNewline()
 	case token.Semicolon:
 		// A semicolon between statements ends a line; one inside brackets
 		// separates the parts of a type or a literal, which stay together.
 		if p.separates() {
-			p.newline()
+			p.deferNewline()
 		}
 	case token.Lt:
 		if p.angles > 0 || opensAType(p.prevKind(), p.prevText) {
@@ -345,6 +367,27 @@ func (p *printer) newline() {
 	if p.lineStart {
 		return
 	}
+	p.buf.WriteByte('\n')
+	p.lineStart = true
+	p.pending = false
+}
+
+// deferNewline ends the current line, unless a comment the program wrote on
+// the same line follows: the format keeps a trailing comment where it was
+// written, so the line is ended after that comment rather than before it.
+func (p *printer) deferNewline() {
+	if p.lineStart {
+		return
+	}
+	p.pending = true
+}
+
+// flushPending ends a line that deferNewline left open.
+func (p *printer) flushPending() {
+	if !p.pending {
+		return
+	}
+	p.pending = false
 	p.buf.WriteByte('\n')
 	p.lineStart = true
 }
