@@ -13,8 +13,8 @@ import (
 
 // ErrUnknown reports a type whose layout is not settled, because it
 // mentions a type parameter or a declaration the provider does not know.
-// The caller keeps a mono-rule:layout for it and the backend settles it
-// once the type is instantiated.
+// The caller leaves the query as it is and the backend settles it once the
+// type is instantiated.
 var ErrUnknown = errors.New("layout: size is not settled")
 
 // A Target gives the layout properties of a target.

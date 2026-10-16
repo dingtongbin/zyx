@@ -131,7 +131,7 @@ func TestMarkArgumentsSurviveARoundTrip(t *testing.T) {
 	file := &File{Target: "amd64-unknown-linux-gnu", Module: "example.com/app"}
 	file.Decls = []*Node{
 		New("func", "f", "plain", "example.com/app.f").
-			Mark("mono-rule", "eval meta.size_of(T)").
+			Mark("move", "r1").
 			Mark("home", "r0").
 			Mark("coro:region", "c0").
 			Mark("coro:spawn", "").
@@ -149,7 +149,7 @@ func TestMarkArgumentsSurviveARoundTrip(t *testing.T) {
 		{Name: "coro:region", Arg: "c0"},
 		{Name: "coro:spawn"},
 		{Name: "home", Arg: "r0"},
-		{Name: "mono-rule", Arg: "eval meta.size_of(T)"},
+		{Name: "move", Arg: "r1"},
 	}
 	marks := back.Decls[0].Marks
 	if len(marks) != len(want) {

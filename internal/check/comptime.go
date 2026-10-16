@@ -1065,7 +1065,7 @@ func (c *checker) metaAttr(v *ast.CallExpr) *Value {
 
 // reportLayout reports a layout query that failed. A query that depends on
 // a type parameter is not an error: the backend settles it once the type is
-// instantiated, and the node keeps a mono-rule:layout.
+// instantiated, so the node stays as it is.
 func (c *checker) reportLayout(err error, v *ast.CallExpr) {
 	if errors.Is(err, layout.ErrUnknown) {
 		return

@@ -69,7 +69,7 @@ var specMarks = []string{
 	"chan:close", "chan:recv", "chan:select", "chan:send", "chan:try",
 	"coro:handoff", "coro:host", "coro:panic-path", "coro:region",
 	"coro:spawn", "defer-site", "defers", "entry", "home", "init",
-	"iter-guard", "last-use", "mono-rule", "move", "region:enter",
+	"iter-guard", "last-use", "move", "region:enter",
 	"region:exit", "shared-bind", "shared-ref", "shared-store",
 	"static-release", "transfer", "view-borrow", "watched",
 }
@@ -87,14 +87,9 @@ var coveredMarks = []string{
 
 // deferredMarks lists the marks the format defines that no corpus reaches
 // yet, with the reason. Every entry is work the front end still owes, not a
-// decision to drop the mark.
-var deferredMarks = map[string]string{
-	"mono-rule": notEmitted,
-}
-
-// notEmitted is the reason a mark the format defines is deferred: the pass
-// that would produce it does not run yet.
-const notEmitted = "the pass that produces it does not run yet"
+// decision to drop the mark. It is empty: the format defines no mark the
+// front end leaves unproduced.
+var deferredMarks = map[string]string{}
 
 // emitMarks returns every mark the intermediate form of a package writes,
 // read back through the format's own reader. Reading the text rather than
