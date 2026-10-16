@@ -325,6 +325,12 @@ func (s *Session) FrontEnd(entry string) ([]*Result, error) {
 func (s *Session) frontEndPackage(pkg *Package, resolveIfaces map[string]*resolve.Interface, checkIfaces map[string]*check.Interface) *Result {
 	res := &Result{Package: pkg}
 	res.Diags = append(res.Diags, pkg.Diags...)
+	if len(pkg.Diags) != 0 {
+		// A file the lexer or the parser could not read leaves a tree that is
+		// only partly there, so the stages that read it are not run. The
+		// diagnostics already say what is wrong.
+		return res
+	}
 
 	rpkg := &resolve.Package{Path: pkg.ImportPath, Files: pkg.Syntax}
 	rinfo, rdiags := resolve.Resolve(rpkg, resolveDeps(resolveIfaces))

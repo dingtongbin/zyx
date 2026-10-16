@@ -271,7 +271,7 @@ func (c *checker) checkFuncShape(v *ast.FuncDecl, ctx funcContext) {
 				"an interface method has no body")
 		}
 	default:
-		if !hasBody {
+		if !hasBody && v.Name != nil {
 			c.errorHelp(diag.CodeMissingBody, nameSpan(v),
 				"write the body, or mark the function extern",
 				"function %q has no body", v.Name.Name)
