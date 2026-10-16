@@ -1,0 +1,39 @@
+package main
+
+import "std/fmt"
+
+// Many coroutines in nested regions, each one contributing a value, and every
+// region waiting for its own children. The sum must not depend on how many
+// threads the scheduler runs the coroutines on.
+
+func contribute(out: chan<i64>, value: i64) {
+    out.Send(value)
+}
+
+func inner(out: chan<i64>, base: i64) {
+    region {
+        spawn contribute(out, base)
+        spawn contribute(out, base + 1)
+        spawn contribute(out, base + 2)
+    }
+}
+
+func main() {
+    // The channel holds every value, so no sender ever waits and the region
+    // ends once its children have finished.
+    var out = new chan<i64>(128)
+    region {
+        for i in 0..32 {
+            inner(out, i * 3)
+        }
+    }
+    var sum: i64 = 0
+    for i in 0..96 {
+        var v, ok = out.Recv()
+        if ok {
+            sum = sum + v
+        }
+    }
+    fmt.PrintI64(sum)
+    fmt.PrintNl()
+}
