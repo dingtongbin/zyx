@@ -109,7 +109,24 @@ func (g *generator) deferStmt(module string, n *zyxc.Node) {
 		g.fail(fmt.Errorf("llvmgen: defer needs a call"))
 		return
 	}
-	sym := g.calleeSymbol(g.wrapped(call, "callee"))
+	// A method call reaches the defer as the call itself rather than as a
+	// callee beside its arguments, because its callee is a method.
+	if inner := g.sole(call); inner != nil && inner.Kind == "mcall" {
+		call = inner
+	}
+	sym := ""
+	if call.Kind == "mcall" {
+		// A method call carries its callee in the call itself, and its
+		// receiver as a child, because the receiver is evaluated where the
+		// deferred statement stands.
+		if len(call.Payload) < 2 {
+			g.fail(fmt.Errorf("llvmgen: defer needs a named method"))
+			return
+		}
+		sym = call.Payload[1]
+	} else {
+		sym = g.calleeSymbol(g.wrapped(call, "callee"))
+	}
 	if sym == "" {
 		g.fail(fmt.Errorf("llvmgen: defer needs a named function"))
 		return
@@ -134,6 +151,9 @@ func (g *generator) deferStmt(module string, n *zyxc.Node) {
 		}
 	}
 	var args []*zyxc.Node
+	if call.Kind == "mcall" {
+		args = append(args, g.wrapped(call, "recv"))
+	}
 	for _, child := range call.Children {
 		if child.Kind == "arg" {
 			args = append(args, g.sole(child))

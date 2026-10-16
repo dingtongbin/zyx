@@ -24,7 +24,7 @@ func (g *generator) newExpr(module string, n *zyxc.Node) *value {
 		return g.newChan(module, n, typ)
 	case types.KindContainer:
 		return g.newContainer(module, n, typ)
-	case types.KindStruct:
+	case types.KindStruct, types.KindExternStruct:
 		return g.newStruct(module, n, typ)
 	}
 	g.fail(fmt.Errorf("llvmgen: new %s is not lowered", typ))

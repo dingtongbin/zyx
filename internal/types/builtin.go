@@ -25,6 +25,10 @@ var (
 	Str       = basic(KindStr)
 	Raw       = basic(KindRaw)
 	TypeValue = basic(KindTypeValue)
+	// Void is the result of a function that returns nothing. It carries no
+	// value, and it is a type so that a container or a handle can name it as
+	// a type argument.
+	Void = &Type{Kind: Invalid, ID: "void", Name: "void"}
 )
 
 // basic returns the singleton of a basic kind.
@@ -201,6 +205,7 @@ var predeclared = map[string]*Type{
 	"Buf":           Buf,
 	"Ring":          Ring,
 	"JoinHandle":    JoinHandle,
+	"void":          Void,
 	"Duration":      Duration,
 	"PanicError":    PanicError,
 	"Value":         Value,

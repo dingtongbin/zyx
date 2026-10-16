@@ -28,8 +28,9 @@ import (
 )
 
 // void is the type of an expression that produces no value, such as a call
-// to a function with no result.
-var void = &types.Type{Kind: types.Invalid}
+// to a function with no result. It is named so that a handle or a container
+// can carry it as a type argument.
+var void = types.Void
 
 // Imports supplies the checked surface of imported packages. The caller
 // checks imported packages first, so the graph is traversed in dependency

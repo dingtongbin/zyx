@@ -174,7 +174,7 @@ func (g *generator) declaration(module string, n *zyxc.Node) {
 		g.function(module, n)
 	case "const", "var":
 		g.global(module, n)
-	case "struct", "enum":
+	case "struct", "enum", "extern-struct", "extern-union":
 		// The type is emitted on first use; the members may hold methods.
 		for _, child := range n.Children {
 			switch child.Kind {

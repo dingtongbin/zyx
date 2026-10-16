@@ -263,6 +263,11 @@ func (g *generator) llType(t *types.Type) string {
 		return "{" + strings.Join(parts, ", ") + "}"
 	case types.KindStruct, types.KindExternStruct, types.KindUnion, types.KindEnum:
 		return g.structName(t)
+	case types.Invalid:
+		if t.ID == "void" {
+			// A function that returns nothing has a result of no size.
+			return "{}"
+		}
 	}
 	g.fail(fmt.Errorf("llvmgen: %s has no LLVM type", t))
 	return "i64"
@@ -323,6 +328,11 @@ func (g *generator) zero(t *types.Type) string {
 func (g *generator) typeOfNode(n *zyxc.Node, module string) *types.Type {
 	if n == nil || len(n.Payload) == 0 {
 		return nil
+	}
+	if n.Payload[0] == "void" {
+		// The result of a function that returns nothing is a predeclared
+		// type, so a handle can carry it as a type argument.
+		return types.Void
 	}
 	t, err := g.tab.parse(module, n.Payload[0])
 	if err != nil {

@@ -206,6 +206,7 @@ func (t *Toolchain) Sources(target Target) []string {
 		filepath.Join(t.Runtime, "sched", "sched.c"),
 		filepath.Join(t.Runtime, "sched", "timer.c"),
 		filepath.Join(t.Runtime, "chan", "chan.c"),
+		filepath.Join(t.Runtime, "sync", "sync.c"),
 		filepath.Join(t.Runtime, "container", "array.c"),
 		filepath.Join(t.Runtime, "container", "map.c"),
 		filepath.Join(t.Runtime, "container", "queue.c"),

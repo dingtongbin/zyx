@@ -201,6 +201,11 @@ func (t *Type) String() string {
 	if t == nil {
 		return "<nil>"
 	}
+	if t.ID == "void" {
+		// The result of a function that returns nothing is a type a handle
+		// or a container can carry as a type argument, so it has a name.
+		return "void"
+	}
 	switch t.Kind {
 	case KindTuple:
 		return "(" + joinTypes(t.Elems) + ")"

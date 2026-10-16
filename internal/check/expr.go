@@ -774,8 +774,11 @@ func (c *checker) spawnType(v *ast.SpawnExpr) *types.Type {
 	}
 	r := c.checkExpr(v.X, nil)
 	c.checkExpr(v.Watcher, nil)
-	if r == nil || r.Kind == types.Invalid {
-		return nil
+	if r == nil {
+		// A call that returns nothing reports no type, and a coroutine that
+		// returns nothing is still joinable: its handle carries no value to
+		// report, which is what void marks.
+		r = void
 	}
 	return types.JoinHandle.Instantiate(r)
 }

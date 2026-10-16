@@ -1,0 +1,65 @@
+package main
+
+import "std/fmt"
+import "std/sync"
+// A wait group counts the coroutines a caller waits for. Each producer
+// records that it finished, and the sum the reader takes is the same
+// whichever order the coroutines ran in.
+
+func produce(out: chan<i64>, n: i64, wg: sync.WaitGroup) {
+    defer wg.Done()
+    out.Send(n)
+}
+// Note runs once however many callers ask for it.
+
+func Note() {
+    fmt.PrintI64(7)
+}
+// Quiet returns nothing, so its handle carries no value to report.
+
+func Quiet() { }
+
+func main() {
+    var wg = new sync.WaitGroup()
+    var out = new chan<i64>(4)
+    region {
+        for i in 1 .. 4 {
+            wg.Add(1)
+            // A coroutine that returns nothing is started for its effect,
+            // and its handle is discarded.
+            spawn produce(out, i, wg)
+        }
+        wg.Wait()
+    }
+    var total = 0
+    for i in 0 .. 3 {
+        var v, ok = out.Recv()
+        total += v
+    }
+    fmt.PrintI64(total)
+    fmt.PrintNl()
+    // A semaphore holds a count of permits.
+    var sem = new sync.Semaphore(1)
+    sem.Acquire()
+    fmt.PrintBool(sem.TryAcquire())
+    sem.Release()
+    fmt.PrintBool(sem.TryAcquire())
+    sem.Release()
+    fmt.PrintNl()
+    // A once runs its function exactly once, and the second caller waits for
+    // the first rather than running it again.
+    var once = new sync.Once()
+    once.Do(func Note)
+    once.Do(func Note)
+    fmt.PrintNl()
+    // A coroutine that returns nothing is still joinable: the handle reports
+    // how it ended, and there is no value beside it.
+    region {
+        var h = spawn Quiet()
+        match h.Join() {
+            Ok(_) => fmt.PrintI64(5)
+            Err(e) => fmt.PrintI64(- 5)
+        }
+    }
+    fmt.PrintNl()
+}

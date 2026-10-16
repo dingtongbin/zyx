@@ -70,6 +70,12 @@ func sizeOf(t *types.Type, p Provider, target Target, seen map[string]bool) (uin
 		return namedSize(t, p, target, seen)
 	case types.KindTypeValue:
 		return 0, fmt.Errorf("layout: a type value has no size")
+	case types.Invalid:
+		if t.ID == "void" {
+			// A function that returns nothing has a result of no size, which
+			// is what a handle around it carries.
+			return 0, nil
+		}
 	}
 	return 0, fmt.Errorf("layout: %s has no size", t)
 }
@@ -102,6 +108,10 @@ func alignOf(t *types.Type, p Provider, target Target, seen map[string]bool) (ui
 		return align, err
 	case types.KindTypeValue:
 		return 0, fmt.Errorf("layout: a type value has no alignment")
+	case types.Invalid:
+		if t.ID == "void" {
+			return 1, nil
+		}
 	}
 	return 0, fmt.Errorf("layout: %s has no alignment", t)
 }

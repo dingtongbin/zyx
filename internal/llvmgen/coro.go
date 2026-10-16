@@ -164,7 +164,7 @@ func (g *generator) join(module string, n *zyxc.Node) *value {
 		return nil
 	}
 	produced := result.Args[0]
-	if !g.crossesAsRegister(produced) {
+	if produced.Kind != types.Invalid && !g.crossesAsRegister(produced) {
 		g.fail(fmt.Errorf("llvmgen: a coroutine result of %s needs a boundary copy, which is not lowered", produced))
 		return nil
 	}
@@ -243,8 +243,12 @@ func (g *generator) resultValue(typ *types.Type, raw, raised string) *value {
 	g.terminator("  br i1 %s, label %%%s, label %%%s", isErr, errLabel, okLabel)
 
 	g.label(okLabel)
-	g.emit("  store %s %s, ptr %s", g.llPass(produced), g.fromRaw(raw, produced),
-		g.payloadElement(obj, typ, []*types.Type{produced}, 0))
+	if produced.Kind != types.Invalid {
+		// A coroutine that returns nothing reports no value, so the Ok side
+		// carries no payload.
+		g.emit("  store %s %s, ptr %s", g.llPass(produced), g.fromRaw(raw, produced),
+			g.payloadElement(obj, typ, []*types.Type{produced}, 0))
+	}
 	g.terminator("  br label %%%s", endLabel)
 
 	g.label(errLabel)

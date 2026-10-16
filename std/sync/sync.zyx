@@ -1,1 +1,82 @@
 package sync
+
+import c "zyxrt.h"
+
+// The sync primitives the language builds in. Each one is a handle to an
+// object the runtime owns, and each wait parks the calling coroutine rather
+// than occupying a scheduler thread.
+//
+// A handle is a value: copying one names the same object, so the lock
+// discipline is the program's, as the language intends.
+
+// A WaitGroup waits for a set of coroutines to finish.
+extern struct WaitGroup {
+    handle: raw
+
+    // init builds a wait group.
+    func init() -> WaitGroup {
+        return WaitGroup { handle: c.zyxrt_wg_new() }
+    }
+
+    // Add records n coroutines the group waits for. A negative count records
+    // that coroutines have finished.
+    func Add(n: i64) {
+        c.zyxrt_wg_add(self.handle, n)
+    }
+
+    // Done records that one coroutine the group waits for has finished.
+    func Done() {
+        c.zyxrt_wg_add(self.handle, 0 - 1)
+    }
+
+    // Wait parks the calling coroutine until the group's count reaches zero.
+    func Wait() {
+        c.zyxrt_wg_wait(self.handle)
+    }
+}
+
+// Once runs one function exactly once. The callers that do not run it wait
+// for it to finish, so what the function builds is visible to all of them.
+extern struct Once {
+    handle: raw
+
+    // init builds a once.
+    func init() -> Once {
+        return Once { handle: c.zyxrt_once_new() }
+    }
+
+    // Do runs f if no caller has run it, and otherwise waits for the caller
+    // that did to finish.
+    func Do(f: func()) {
+        if c.zyxrt_once_enter(self.handle) != 0 {
+            f()
+            c.zyxrt_once_leave(self.handle)
+        }
+    }
+}
+
+// A Semaphore holds a count of permits.
+extern struct Semaphore {
+    handle: raw
+
+    // init builds a semaphore that holds n permits.
+    func init(n: i64) -> Semaphore {
+        return Semaphore { handle: c.zyxrt_sem_new(n) }
+    }
+
+    // Acquire takes one permit, parking the calling coroutine until one is
+    // free.
+    func Acquire() {
+        c.zyxrt_sem_acquire(self.handle)
+    }
+
+    // TryAcquire takes one permit if one is free, and answers whether it did.
+    func TryAcquire() -> bool {
+        return c.zyxrt_sem_try_acquire(self.handle) != 0
+    }
+
+    // Release returns one permit.
+    func Release() {
+        c.zyxrt_sem_release(self.handle)
+    }
+}

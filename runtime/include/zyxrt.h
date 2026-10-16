@@ -192,6 +192,24 @@ void *zyxrt_defer_mark(void);
 void zyxrt_defer_push(void (*call)(void *), void *args);
 void zyxrt_defer_run(void *mark);
 
+/* The sync primitives. Each one parks the coroutine that must wait, so a
+   wait costs no scheduler thread. A wait group counts the coroutines a
+   waiter waits for; a once runs one function exactly once, with the callers
+   that did not run it waiting for it to finish; a semaphore holds a count of
+   permits. */
+void *zyxrt_wg_new(void);
+void zyxrt_wg_add(void *wg, int64_t n);
+void zyxrt_wg_wait(void *wg);
+void *zyxrt_once_new(void);
+/* zyxrt_once_enter answers whether the caller runs the function, and
+   zyxrt_once_leave records that it has run. */
+int zyxrt_once_enter(void *once);
+void zyxrt_once_leave(void *once);
+void *zyxrt_sem_new(int64_t n);
+void zyxrt_sem_acquire(void *sem);
+int zyxrt_sem_try_acquire(void *sem);
+void zyxrt_sem_release(void *sem);
+
 /* Channels. A channel carries values of one size, up to a fixed capacity. */
 void *zyxrt_chan_new(size_t elem, size_t cap);
 void zyxrt_chan_send(void *ch, const void *value);

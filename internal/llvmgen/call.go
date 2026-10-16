@@ -85,6 +85,9 @@ func (g *generator) indirectCall(module string, n *zyxc.Node, callee *zyxc.Node)
 
 // calleeSymbol returns the symbol a callee expression names.
 func (g *generator) calleeSymbol(callee *zyxc.Node) string {
+	if callee == nil {
+		return ""
+	}
 	switch callee.Kind {
 	case "name":
 		if len(callee.Payload) >= 2 {
@@ -184,7 +187,9 @@ func (g *generator) directCall(module string, n *zyxc.Node, sym string, recv *va
 	cABI := qual == "extern" || qual == "c"
 
 	var ptypes []*types.Type
-	if recv := g.receiverType(decl); recv != nil {
+	if recv := g.receiverType(decl); recv != nil && !hasMark(decl, "init") {
+		// init constructs a value rather than reading one, so it has no
+		// receiver to pass, though it is written in a type body.
 		ptypes = append(ptypes, recv)
 	}
 	for _, child := range decl.Children {
