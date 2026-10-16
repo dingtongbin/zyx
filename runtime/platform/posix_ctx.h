@@ -40,4 +40,9 @@ void zyxrt_ctx_switch(void *from, void *to) {
 
 void zyxrt_ctx_free(void *ctx) { free(ctx); }
 
+/* A POSIX target keeps no stack record of its own, so the bounds name nothing
+   and there is nothing to update. */
+void zyxrt_ctx_bounds_thread(void) {}
+void zyxrt_ctx_bounds_coro(void *stack, size_t size) { (void)stack; (void)size; }
+
 #endif /* ZYXRUNTIME_POSIX_CTX_H */

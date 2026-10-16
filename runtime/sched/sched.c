@@ -210,7 +210,11 @@ zyxrt_coro *zyxrt_sched_current(void) {
 void zyxrt_sched_suspend(zyxrt_coro *c) {
   zyxrt_thread *t = self_thread;
   if (t == NULL) return;
+  zyxrt_ctx_bounds_thread();
   zyxrt_ctx_switch(c->ctx, t->ctx);
+  /* Control comes back here when the coroutine is resumed, on whichever
+     thread took it, so its stack is the one in use again. */
+  zyxrt_ctx_bounds_coro(c->stack, c->stack_size);
 }
 
 /* sched_finish publishes a coroutine that has finished. It runs on the thread
@@ -233,7 +237,11 @@ static int run_once(zyxrt_thread *t) {
   /* The monitor watches the coroutine the scheduler is running, so it is
      recorded before the switch and cleared after it. */
   zyxrt_preempt_enter(c);
+  /* The stack a thread runs on is recorded by the platform, so it follows the
+     stack that is in use. */
+  zyxrt_ctx_bounds_coro(c->stack, c->stack_size);
   zyxrt_ctx_switch(t->ctx, c->ctx);
+  zyxrt_ctx_bounds_thread();
   zyxrt_preempt_leave();
   t->current = NULL;
   /* The coroutine is off this thread's stack now, and this thread is the one
@@ -266,6 +274,7 @@ void zyxrt_sched_enter(void) {
   c->region = NULL;
   c->exit = 1;
   zyxrt_thread *t = self_thread;
+  zyxrt_ctx_bounds_thread();
   zyxrt_ctx_switch(c->ctx, t->ctx);
 }
 
@@ -286,6 +295,7 @@ void zyxrt_sched_abandon(zyxrt_coro *c) {
   }
   c->exit = 1;
   zyxrt_thread *t = self_thread;
+  zyxrt_ctx_bounds_thread();
   zyxrt_ctx_switch(c->ctx, t->ctx);
 }
 

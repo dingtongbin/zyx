@@ -12,6 +12,44 @@
 
 #include "switch_ctx.h"
 
+/* Windows keeps the bounds of the stack a thread runs on in the thread
+   environment block, and its stack probe reads them to decide whether an
+   allocation leaves the stack. A coroutine runs on a reservation of its own,
+   so the bounds move with the stack that is in use: the thread's own while
+   the scheduler runs and the coroutine's while it does. The fiber API does
+   this itself, which is why a target that falls back to fibers needs none of
+   it. */
+static _Thread_local void *stack_bounds_base;
+static _Thread_local void *stack_bounds_limit;
+static _Thread_local int stack_bounds_known;
+
+static void stack_bounds(void) {
+  /* The first call happens before any coroutine runs on the thread, so what
+     the block holds then is the thread's own stack. */
+  if (!stack_bounds_known) {
+    NT_TIB *tib = (NT_TIB *)NtCurrentTeb();
+    stack_bounds_base = tib->StackBase;
+    stack_bounds_limit = tib->StackLimit;
+    stack_bounds_known = 1;
+  }
+}
+
+void zyxrt_ctx_bounds_thread(void) {
+  NT_TIB *tib;
+  stack_bounds();
+  tib = (NT_TIB *)NtCurrentTeb();
+  tib->StackBase = stack_bounds_base;
+  tib->StackLimit = stack_bounds_limit;
+}
+
+void zyxrt_ctx_bounds_coro(void *stack, size_t size) {
+  NT_TIB *tib;
+  stack_bounds();
+  tib = (NT_TIB *)NtCurrentTeb();
+  tib->StackBase = (char *)stack + size;
+  tib->StackLimit = (char *)stack;
+}
+
 #else
 
 #include <windows.h>
@@ -29,6 +67,10 @@ void zyxrt_ctx_switch(void *from, void *to) {
 }
 
 void zyxrt_ctx_free(void *ctx) { DeleteFiber(ctx); }
+
+/* A fiber carries its own stack bounds, so there is nothing to update. */
+void zyxrt_ctx_bounds_thread(void) {}
+void zyxrt_ctx_bounds_coro(void *stack, size_t size) { (void)stack; (void)size; }
 
 #endif
 

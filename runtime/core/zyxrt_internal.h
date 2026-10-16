@@ -157,6 +157,14 @@ void zyxrt_sched_enter(void);
 void zyxrt_ctx_switch(void *from, void *to);
 void zyxrt_ctx_free(void *ctx);
 
+/* A platform that records the stack a thread runs on has to be told which
+   stack is in use, because a coroutine runs on a reservation of its own
+   rather than on the thread's stack. zyxrt_ctx_bounds_thread names the
+   thread's own stack and zyxrt_ctx_bounds_coro names a coroutine's; a
+   platform that keeps no such record defines both as nothing. */
+void zyxrt_ctx_bounds_thread(void);
+void zyxrt_ctx_bounds_coro(void *stack, size_t size);
+
 /* The stack of a coroutine is reserved in full and committed page by page
    as it is touched, so a coroutine that uses little memory costs little
    memory and one that uses much still has room. An inaccessible page below

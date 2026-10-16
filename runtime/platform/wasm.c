@@ -8,4 +8,7 @@ void zyxrt_wakeup_signal(void) {}
 void zyxrt_wakeup_signal_all(size_t count) { (void)count; }
 void zyxrt_wakeup_wait(int64_t ns) { (void)ns; }
 
+void zyxrt_ctx_bounds_thread(void) {}
+void zyxrt_ctx_bounds_coro(void *stack, size_t size) { (void)stack; (void)size; }
+
 void zyxrt_platform_init(void) {}
