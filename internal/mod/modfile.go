@@ -379,6 +379,27 @@ func ParseVersion(s string) (Version, error) {
 	return v, nil
 }
 
+// LatestStable returns the highest version of a list that is a release, which
+// is what a requirement written without a version resolves to. A pre-release
+// is left out, and a pseudo-version carries one, so both are left out
+// together: a build reads releases.
+func LatestStable(versions []string) (string, error) {
+	best := ""
+	for _, version := range versions {
+		parsed, err := ParseVersion(version)
+		if err != nil || parsed.Pre != "" {
+			continue
+		}
+		if best == "" || Compare(version, best) > 0 {
+			best = version
+		}
+	}
+	if best == "" {
+		return "", fmt.Errorf("no release is available: %d versions were listed and every one is a pre-release", len(versions))
+	}
+	return best, nil
+}
+
 // Compare orders two versions: it returns a negative number when a sorts
 // before b, zero when they are equal, and a positive number otherwise. A
 // pre-release sorts before the release it belongs to.

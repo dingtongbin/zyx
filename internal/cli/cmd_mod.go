@@ -289,6 +289,129 @@ func (s *Session) moduleCache(m *module) *mod.ModuleCache {
 	return c
 }
 
+// get adds or upgrades a requirement: it resolves the version, fetches the
+// module, records the hashes a build fixes it by, and writes the requirement
+// into the manifest. Nothing is written until every path has resolved and
+// checked, so a failure leaves the manifest and the checksum file as they
+// were.
+func (s *Session) get(args []string) int {
+	o, err := s.parseOptions(args)
+	if err != nil {
+		return s.usageError(err)
+	}
+	if len(o.paths) == 0 {
+		return s.usageError(fmt.Errorf("get takes at least one module path"))
+	}
+	m, err := s.findModule(s.Dir)
+	if err != nil {
+		return s.usageError(err)
+	}
+	if err := mod.CheckLang(m.File, Version); err != nil {
+		fmt.Fprintln(s.Stderr, "zyx:", err)
+		return exitError
+	}
+	sources, err := mod.ParseSources(s.env("ZYXPROXY"))
+	if err != nil {
+		return s.usageError(err)
+	}
+	if len(sources) == 0 {
+		fmt.Fprintln(s.Stderr, "zyx: no module source is configured; set ZYXPROXY to a module proxy")
+		return exitError
+	}
+	fetcher := &mod.Fetcher{
+		Sources: sources,
+		NoProxy: mod.ParsePatterns(s.env("ZYXNOPROXY")),
+		Private: mod.ParsePatterns(s.env("ZYXPRIVATE")),
+	}
+	cache, err := mod.OpenModuleCache(s.moduleCacheRoot(m))
+	if err != nil {
+		fmt.Fprintln(s.Stderr, "zyx:", err)
+		return exitError
+	}
+	checks := s.readSum(m)
+	if checks == nil {
+		checks = &mod.Sum{}
+	}
+
+	type fetched struct {
+		path     string
+		version  string
+		content  string
+		manifest string
+	}
+	var additions []fetched
+	for _, spec := range o.paths {
+		path, version, err := splitRequirement(spec)
+		if err != nil {
+			return s.usageError(err)
+		}
+		if version == "" {
+			version, err = fetcher.Latest(path)
+			if err != nil {
+				fmt.Fprintln(s.Stderr, "zyx:", err)
+				return exitError
+			}
+		}
+		content, manifest, err := fetcher.FetchNew(cache, path, version)
+		if err != nil {
+			fmt.Fprintln(s.Stderr, "zyx:", err)
+			return exitError
+		}
+		additions = append(additions, fetched{path: path, version: version, content: content, manifest: manifest})
+	}
+
+	for _, add := range additions {
+		checks.Add(add.path, add.version, add.content, add.manifest)
+		setRequirement(m.File, add.path, add.version)
+	}
+	if err := writeAtomically(filepath.Join(m.Root, "zyx.sum"), checks.Format()); err != nil {
+		fmt.Fprintln(s.Stderr, "zyx:", err)
+		return exitError
+	}
+	if err := writeAtomically(filepath.Join(m.Root, "zyx.mod"), m.File.Format()); err != nil {
+		fmt.Fprintln(s.Stderr, "zyx:", err)
+		return exitError
+	}
+	if isDirectory(filepath.Join(m.Root, "vendor")) {
+		fmt.Fprintln(s.Stderr, "zyx: a vendor directory is present; run `zyx mod vendor` to sync it")
+	}
+	return exitOK
+}
+
+// splitRequirement reads one argument of get: a module path, with a version
+// after an at sign when one is named. The queries go has, which ask for a
+// version relative to another, do not exist here.
+func splitRequirement(spec string) (path, version string, err error) {
+	at := strings.LastIndex(spec, "@")
+	if at < 0 {
+		return spec, "", nil
+	}
+	path, version = spec[:at], spec[at+1:]
+	if path == "" {
+		return "", "", fmt.Errorf("%q names no module", spec)
+	}
+	switch version {
+	case "upgrade", "patch", "none", "latest":
+		return "", "", fmt.Errorf("%q asks for %s, which zyx does not support; name a version or leave it out", spec, version)
+	}
+	if version == "" {
+		return "", "", fmt.Errorf("%q has an empty version", spec)
+	}
+	return path, version, nil
+}
+
+// setRequirement writes a requirement into a manifest, replacing what the
+// manifest held for the module. Other requirements are left alone.
+func setRequirement(f *mod.File, path, version string) {
+	for i := range f.Require {
+		if f.Require[i].Path == path {
+			f.Require[i].Version = version
+			return
+		}
+	}
+	f.Require = append(f.Require, mod.Requirement{Path: path, Version: version})
+}
+
 // containsRequirement reports whether a requirement list holds a path.
 func containsRequirement(list []mod.Requirement, path string) bool {
 	for _, r := range list {

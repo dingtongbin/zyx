@@ -67,6 +67,8 @@ func (s *Session) Run(args []string) int {
 		return s.fmt(rest)
 	case "clean":
 		return s.clean(rest)
+	case "get":
+		return s.get(rest)
 	case "mod":
 		return s.mod(rest)
 	case "new":
@@ -94,7 +96,8 @@ commands:
   run        build with -O0 and run immediately
   fmt        rewrite sources into canonical form
   clean      remove the build tree, and the cache with --cache
-  mod        manage the module: init, tidy
+  get        add or upgrade a module requirement
+  mod        manage the module: init, tidy, vendor
   new        scaffold a project skeleton
   version    print compiler and toolchain versions
   emit-zyxc  write the intermediate representation

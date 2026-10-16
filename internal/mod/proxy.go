@@ -402,26 +402,12 @@ func ParsePatterns(list string) []string {
 	return out
 }
 
-// FetchInto reads a module version from the first source that serves it,
-// checks it against the hashes the checksum file records, and stores it in
-// the cache. A module whose hashes the file does not record is refused rather
-// than trusted: what a proxy serves is only usable once something has fixed
+// eachSource asks each source in turn for a module version, moving on the way
+// the list says to. It answers the error of the last source when none served
 // it.
-func (f *Fetcher) FetchInto(cache *ModuleCache, sum *Sum, path, version string) error {
-	if cache == nil {
-		return fmt.Errorf("module %s %s: there is no cache to store it in", path, version)
-	}
+func (f *Fetcher) eachSource(path, version string, use func(*Proxy) error) error {
 	if MatchPatterns(f.Private, path) || MatchPatterns(f.NoProxy, path) {
 		return fmt.Errorf("module %s is private, so it is not fetched from a proxy", path)
-	}
-	wantContent := ""
-	wantManifest := ""
-	if sum != nil {
-		wantContent = sum.Content(path, version)
-		wantManifest = sum.Manifest(path, version)
-	}
-	if wantContent == "" || wantManifest == "" {
-		return fmt.Errorf("module %s %s has no recorded hash in zyx.sum", path, version)
 	}
 	var last error
 	for _, source := range f.Sources {
@@ -435,13 +421,61 @@ func (f *Fetcher) FetchInto(cache *ModuleCache, sum *Sum, path, version string) 
 			}
 			return last
 		}
-		proxy := &Proxy{Base: source.Proxy, Client: f.Client}
+		err := use(&Proxy{Base: source.Proxy, Client: f.Client})
+		if err == nil {
+			return nil
+		}
+		last = err
+		if source.FallbackOnAny || errors.Is(err, ErrNotThere) {
+			continue
+		}
+		return err
+	}
+	if last == nil {
+		last = fmt.Errorf("module %s %s: no source is configured to fetch it", path, version)
+	}
+	return last
+}
+
+// Latest returns the highest release a source lists for a module.
+func (f *Fetcher) Latest(path string) (string, error) {
+	latest := ""
+	err := f.eachSource(path, "latest", func(proxy *Proxy) error {
+		versions, err := proxy.Versions(path)
+		if err != nil {
+			return err
+		}
+		version, err := LatestStable(versions)
+		if err != nil {
+			return err
+		}
+		latest = version
+		return nil
+	})
+	return latest, err
+}
+
+// FetchInto reads a module version from the first source that serves it,
+// checks it against the hashes the checksum file records, and stores it in
+// the cache. A module whose hashes the file does not record is refused rather
+// than trusted: what a proxy serves is only usable once something has fixed
+// it.
+func (f *Fetcher) FetchInto(cache *ModuleCache, sum *Sum, path, version string) error {
+	if cache == nil {
+		return fmt.Errorf("module %s %s: there is no cache to store it in", path, version)
+	}
+	wantContent := ""
+	wantManifest := ""
+	if sum != nil {
+		wantContent = sum.Content(path, version)
+		wantManifest = sum.Manifest(path, version)
+	}
+	if wantContent == "" || wantManifest == "" {
+		return fmt.Errorf("module %s %s has no recorded hash in zyx.sum", path, version)
+	}
+	return f.eachSource(path, version, func(proxy *Proxy) error {
 		manifest, err := proxy.Manifest(path, version)
 		if err != nil {
-			last = err
-			if source.FallbackOnAny || errors.Is(err, ErrNotThere) {
-				continue
-			}
 			return err
 		}
 		if got := HashManifest(path, version, manifest); got != wantManifest {
@@ -449,19 +483,47 @@ func (f *Fetcher) FetchInto(cache *ModuleCache, sum *Sum, path, version string) 
 		}
 		archive, err := proxy.Archive(path, version)
 		if err != nil {
-			last = err
-			if source.FallbackOnAny || errors.Is(err, ErrNotThere) {
-				continue
-			}
 			return err
 		}
-		if err := cache.Put(path, version, wantContent, archive); err != nil {
+		return cache.Put(path, version, wantContent, archive)
+	})
+}
+
+// FetchNew reads a module version from the first source that serves it and
+// stores it, answering the two hashes a checksum file records for it. It is
+// what a fetch that has nothing to check against uses: the hashes it answers
+// with are the ones every later fetch is checked against.
+func (f *Fetcher) FetchNew(cache *ModuleCache, path, version string) (content, manifest string, err error) {
+	if cache == nil {
+		return "", "", fmt.Errorf("module %s %s: there is no cache to store it in", path, version)
+	}
+	err = f.eachSource(path, version, func(proxy *Proxy) error {
+		served, err := proxy.Manifest(path, version)
+		if err != nil {
 			return err
+		}
+		archive, err := proxy.Archive(path, version)
+		if err != nil {
+			return err
+		}
+		content, err = HashContent(archive)
+		if err != nil {
+			return err
+		}
+		manifest = HashManifest(path, version, served)
+		if err := cache.Put(path, version, content, archive); err != nil {
+			return err
+		}
+		// The manifest a source served has to be the one inside the archive it
+		// served, or the two halves of what a build reads would disagree.
+		stored, err := cache.ManifestHash(path, version)
+		if err != nil {
+			return err
+		}
+		if stored != manifest {
+			return fmt.Errorf("module %s %s: the manifest a source served is not the one in the archive", path, version)
 		}
 		return nil
-	}
-	if last == nil {
-		last = fmt.Errorf("module %s %s: no source is configured to fetch it", path, version)
-	}
-	return last
+	})
+	return content, manifest, err
 }
