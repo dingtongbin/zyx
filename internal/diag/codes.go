@@ -240,6 +240,9 @@ const (
 	// CodeViewLifetime reports a view stored where it outlives the
 	// container it borrows.
 	CodeViewLifetime Code = "E5001"
+	// CodeBorrowMoved reports an address taken into a container held across
+	// a call, which may move the buffer the address lies in.
+	CodeBorrowMoved Code = "E5002"
 )
 
 // Concurrency diagnostics occupy the E6001-E6099 range.

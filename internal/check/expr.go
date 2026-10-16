@@ -87,14 +87,14 @@ func (c *checker) identType(id *ast.Ident, want *types.Type) *types.Type {
 	}
 	c.checkStaticUse(sym, id)
 	// A type written where a type value is expected stands for that value.
-	if isTypeSymbol(sym) && want != nil && want.IsTypeValue() {
+	if IsTypeSymbol(sym) && want != nil && want.IsTypeValue() {
 		c.out.Nodes[id] = types.TypeValue
 		return types.TypeValue
 	}
 	if t, ok := c.bySym[sym.ID]; ok {
 		return t
 	}
-	if isTypeSymbol(sym) {
+	if IsTypeSymbol(sym) {
 		return c.typeOfSymbol(sym)
 	}
 	return nil
@@ -461,7 +461,7 @@ func (c *checker) selectorType(v *ast.SelectorExpr, want *types.Type) *types.Typ
 		switch sym := c.symOf(id); {
 		case sym != nil && sym.Kind == resolve.KindPackage:
 			return c.qualifiedValue(v, sym)
-		case isTypeSymbol(sym):
+		case IsTypeSymbol(sym):
 			return c.variantValue(v, sym, want)
 		}
 	}

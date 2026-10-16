@@ -47,9 +47,9 @@ func typeExprOf(e ast.Expr) ast.TypeExpr {
 	return nil
 }
 
-// isTypeSymbol reports whether a symbol names a type, which makes a call
+// IsTypeSymbol reports whether a symbol names a type, which makes a call
 // with that callee a conversion.
-func isTypeSymbol(sym *resolve.Symbol) bool {
+func IsTypeSymbol(sym *resolve.Symbol) bool {
 	if sym == nil {
 		return false
 	}

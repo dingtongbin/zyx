@@ -274,6 +274,7 @@ func (b *builder) regionBlock(v *ast.RegionStmt) {
 
 // assign walks an assignment and records the value's uses.
 func (b *builder) assign(v *ast.AssignStmt) {
+	b.checkElementBorrow(v)
 	// A write whose target is a value shared across coroutines is recorded,
 	// because it is the one write the language allows to be observed by
 	// another coroutine.
@@ -300,6 +301,86 @@ func (b *builder) assign(v *ast.AssignStmt) {
 	}
 	b.expr(v.Target)
 	b.expr(v.Value)
+}
+
+// checkElementBorrow reports a write through the address of an element of a
+// container when the value of the assignment can run a call. An element lies in
+// the buffer the container owns, and the buffer moves when the container grows,
+// so the address is only good until the next call. The language requires the
+// value to be settled before the address is taken, which is what the diagnostic
+// asks for.
+func (b *builder) checkElementBorrow(v *ast.AssignStmt) {
+	if b.containerOfElementPlace(v.Target) == nil {
+		return
+	}
+	if !b.runsCode(v.Value) {
+		return
+	}
+	b.diags = append(b.diags, diag.New(diag.CodeBorrowMoved, v.Value.Span(),
+		"the address of a container element is held across a call").
+		WithHelp("settle the value in a local first, then assign it"))
+}
+
+// containerOfElementPlace returns the container a target expression takes its
+// address from, or nil when the target does not reach into one. A fixed-size
+// array lies in its frame, so an element of one is not a borrow of a buffer
+// that moves.
+func (b *builder) containerOfElementPlace(target ast.Expr) *types.Type {
+	if b.cpkg == nil {
+		return nil
+	}
+	var index *ast.IndexExpr
+	for target != nil {
+		switch v := target.(type) {
+		case *ast.SelectorExpr:
+			target = v.X
+		case *ast.IndexExpr:
+			index, target = v, v.X
+		default:
+			target = nil
+		}
+	}
+	if index == nil {
+		return nil
+	}
+	t := b.cpkg.Nodes[index.X]
+	if t == nil || t.Kind != types.KindContainer {
+		return nil
+	}
+	return t
+}
+
+// runsCode reports whether an expression can run a call. A conversion is not a
+// call: it cannot reach a container. Every other call counts, because the
+// compiler does not follow what a callee does with what it is given.
+func (b *builder) runsCode(e ast.Expr) bool {
+	if e == nil {
+		return false
+	}
+	found := false
+	ast.Walk(e, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if call, ok := n.(*ast.CallExpr); ok && !b.isConversion(call) {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
+// isConversion reports whether a call names a type rather than a function,
+// which makes it a conversion.
+func (b *builder) isConversion(call *ast.CallExpr) bool {
+	switch fn := call.Fn.(type) {
+	case *ast.Ident:
+		return check.IsTypeSymbol(b.rinfo.Defs[fn])
+	case *ast.SelectorExpr:
+		id, ok := fn.X.(*ast.Ident)
+		return ok && check.IsTypeSymbol(b.rinfo.Defs[id])
+	}
+	return false
 }
 
 // expr walks one expression, attaching the marks its form requires.

@@ -156,7 +156,8 @@ struct TreeMap<K: Eq + Ord, V> {
             if !self.isRed(self.nodes[h].left) && !self.isRed(self.nodes[self.nodes[h].left].left) {
                 h = self.moveRedLeft(h)
             }
-            self.nodes[h].left = self.delete(self.nodes[h].left, k)
+            var below = self.delete(self.nodes[h].left, k)
+            self.nodes[h].left = below
             return self.fixUp(h)
         }
         if self.isRed(self.nodes[h].left) {
@@ -174,10 +175,12 @@ struct TreeMap<K: Eq + Ord, V> {
             var least = self.minimum(self.nodes[h].right)
             self.nodes[h].key = self.nodes[least].key
             self.nodes[h].value = self.nodes[least].value
-            self.nodes[h].right = self.deleteMin(self.nodes[h].right)
+            var rebuilt = self.deleteMin(self.nodes[h].right)
+            self.nodes[h].right = rebuilt
             return self.fixUp(h)
         }
-        self.nodes[h].right = self.delete(self.nodes[h].right, k)
+        var below = self.delete(self.nodes[h].right, k)
+        self.nodes[h].right = below
         return self.fixUp(h)
     }
 
@@ -189,7 +192,8 @@ struct TreeMap<K: Eq + Ord, V> {
         if !self.isRed(self.nodes[h].left) && !self.isRed(self.nodes[self.nodes[h].left].left) {
             h = self.moveRedLeft(h)
         }
-        self.nodes[h].left = self.deleteMin(self.nodes[h].left)
+        var below = self.deleteMin(self.nodes[h].left)
+        self.nodes[h].left = below
         return self.fixUp(h)
     }
 
@@ -222,7 +226,8 @@ struct TreeMap<K: Eq + Ord, V> {
     func moveRedLeft(h: i64) -> i64 {
         self.flipColors(h)
         if self.isRed(self.nodes[self.nodes[h].right].left) {
-            self.nodes[h].right = self.rotateRight(self.nodes[h].right)
+            var turned = self.rotateRight(self.nodes[h].right)
+            self.nodes[h].right = turned
             var at = self.rotateLeft(h)
             self.flipColors(at)
             return at

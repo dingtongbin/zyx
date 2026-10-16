@@ -39,11 +39,11 @@ func (c *checker) checkCall(v *ast.CallExpr, want *types.Type) *types.Type {
 func (c *checker) calleeType(fn ast.Expr) *types.Type {
 	switch v := fn.(type) {
 	case *ast.Ident:
-		if !isNamespaceName(v.Name) && isTypeSymbol(c.symOf(v)) {
+		if !isNamespaceName(v.Name) && IsTypeSymbol(c.symOf(v)) {
 			return c.buildType(typeExprOf(v))
 		}
 	case *ast.SelectorExpr:
-		if id, ok := v.X.(*ast.Ident); ok && !isNamespaceName(id.Name) && isTypeSymbol(c.symOf(id)) {
+		if id, ok := v.X.(*ast.Ident); ok && !isNamespaceName(id.Name) && IsTypeSymbol(c.symOf(id)) {
 			return c.buildType(typeExprOf(v))
 		}
 	}
@@ -119,7 +119,7 @@ func (c *checker) checkSelectorCall(sel *ast.SelectorExpr, v *ast.CallExpr, want
 		switch sym := c.symOf(id); {
 		case sym != nil && sym.Kind == resolve.KindPackage:
 			return c.checkQualifiedCall(sel, v, sym)
-		case isTypeSymbol(sym):
+		case IsTypeSymbol(sym):
 			return c.checkVariantCall(sel, v, sym, want)
 		}
 	}
