@@ -947,7 +947,7 @@ func (b *builder) exprNode(e ast.Expr) *Node {
 		}
 		n := New("call")
 		n.Child(b.wrap("callee", b.expr(v.Fn)))
-		n.Child(b.args(v.Args)...)
+		n.Child(b.args(b.callArgs(v))...)
 		return b.at(n, v.Sp)
 	case *ast.SelectorExpr:
 		return b.selector(v)
@@ -1124,6 +1124,46 @@ func (b *builder) calleeTypeNode(id *ast.Ident) *Node {
 	return nil
 }
 
+// callArgs returns a call's arguments with the defaults of the parameters the
+// call leaves out appended, so the argument list the format carries is the one
+// the call means.
+func (b *builder) callArgs(v *ast.CallExpr) []ast.Expr {
+	if decl := b.calleeDecl(v); decl != nil {
+		return ast.WithDefaults(v.Args, decl.Params)
+	}
+	return v.Args
+}
+
+// calleeDecl returns the declaration a call names, or nil when the callee is
+// a value rather than a function or a method.
+func (b *builder) calleeDecl(v *ast.CallExpr) *ast.FuncDecl {
+	switch fn := v.Fn.(type) {
+	case *ast.Ident:
+		if sym := b.rinfo.Defs[fn]; sym != nil {
+			decl, _ := sym.Decl.(*ast.FuncDecl)
+			return decl
+		}
+	case *ast.SelectorExpr:
+		// A method's declaration belongs to the type its receiver has, which
+		// the check settled.
+		recv := b.cpkg.Nodes[fn.X]
+		if recv == nil {
+			return nil
+		}
+		d := b.cpkg.Decl(recv)
+		if d == nil {
+			return nil
+		}
+		sym := d.MethodSyms[fn.Name.Name]
+		if sym == nil {
+			return nil
+		}
+		decl, _ := sym.Decl.(*ast.FuncDecl)
+		return decl
+	}
+	return nil
+}
+
 // args renders a call's arguments.
 func (b *builder) args(list []ast.Expr) []*Node {
 	out := make([]*Node, 0, len(list))
@@ -1140,7 +1180,7 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 		switch {
 		case b.isCCall(sel):
 			n := New("c-call", sel.Name.Name)
-			n.Child(b.args(v.Args)...)
+			n.Child(b.args(b.callArgs(v))...)
 			return b.at(n, v.Sp)
 		case b.namespace(sel) != "":
 			// meta.size_of(T) and dur.ms(100) are their own node kinds,
@@ -1157,7 +1197,7 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 					n.Child(b.wrap("arg", b.at(New("type", b.typeText(t)), a.Span())))
 				}
 			} else {
-				n.Child(b.args(v.Args)...)
+				n.Child(b.args(b.callArgs(v))...)
 			}
 			return b.at(n, v.Sp)
 		case b.isJoin(sel):
@@ -1166,19 +1206,19 @@ func (b *builder) callNode(v *ast.CallExpr) *Node {
 			return b.at(n, v.Sp)
 		case b.isVariant(sel):
 			n := New("variant-lit", b.typeText(b.staticType(v)), sel.Name.Name)
-			n.Child(b.args(v.Args)...)
+			n.Child(b.args(b.callArgs(v))...)
 			return b.at(n, v.Sp)
 		case b.isMethodCall(sel):
 			n := New("mcall", sel.Name.Name, b.memberID(sel.X, sel.Name.Name))
 			n.Child(b.wrap("recv", b.expr(sel.X)))
-			n.Child(b.args(v.Args)...)
+			n.Child(b.args(b.callArgs(v))...)
 			if child := b.calleeTypeNode(sel.Name); child != nil {
 				n.Child(child)
 			}
 			return b.at(n, v.Sp)
 		case b.isQualified(sel):
 			n := New("qual", nameOr(qualifierName(sel)), sel.Name.Name, b.symID(sel.Name))
-			n.Child(b.args(v.Args)...)
+			n.Child(b.args(b.callArgs(v))...)
 			if child := b.calleeTypeNode(sel.Name); child != nil {
 				n.Child(child)
 			}

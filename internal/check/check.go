@@ -76,6 +76,10 @@ type Decl struct {
 	Variants []*Variant
 	// Methods maps each method name to its signature.
 	Methods map[string]*types.Type
+	// MethodSyms maps each method name to its declaration symbol, so a pass
+	// that needs the declaration itself, such as the one that completes a
+	// call's default arguments, can reach it.
+	MethodSyms map[string]*resolve.Symbol
 	// Consts maps each constant name to its declaration.
 	Consts map[string]*Const
 	// Impls holds the interfaces the type implements, in source order.

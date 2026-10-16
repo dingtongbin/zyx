@@ -386,7 +386,8 @@ func (b *builder) call(v *ast.CallExpr) {
 			b.info.Add(v, "c-blocking", "")
 		}
 	}
-	for _, a := range v.Args {
+	// A default the call leaves out is evaluated here, so it is walked here.
+	for _, a := range ast.WithDefaults(v.Args, b.calleeParams(v)) {
 		b.expr(a)
 	}
 	if sel, ok := v.Fn.(*ast.SelectorExpr); ok {
@@ -577,6 +578,36 @@ func (b *builder) escapesTo(value ast.Expr, kind escapeKind) {
 		return
 	}
 	b.escapes[a] = kind
+}
+
+// calleeParams returns the parameters of the declaration a call names, or nil
+// when the callee is a value rather than a function or a method.
+func (b *builder) calleeParams(v *ast.CallExpr) []*ast.Param {
+	switch fn := v.Fn.(type) {
+	case *ast.Ident:
+		if sym := b.rinfo.Defs[fn]; sym != nil {
+			if decl, ok := sym.Decl.(*ast.FuncDecl); ok {
+				return decl.Params
+			}
+		}
+	case *ast.SelectorExpr:
+		recv := b.cpkg.Nodes[fn.X]
+		if recv == nil {
+			return nil
+		}
+		d := b.cpkg.Decl(recv)
+		if d == nil {
+			return nil
+		}
+		sym := d.MethodSyms[fn.Name.Name]
+		if sym == nil {
+			return nil
+		}
+		if decl, ok := sym.Decl.(*ast.FuncDecl); ok {
+			return decl.Params
+		}
+	}
+	return nil
 }
 
 // isChannelCall reports whether a selector names a channel operation.

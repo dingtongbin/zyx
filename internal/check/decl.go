@@ -524,6 +524,10 @@ func (c *checker) checkMethod(d *Decl, f *ast.FuncDecl) {
 	t := c.funcType(f)
 	if f.Name != nil {
 		d.Methods[f.Name.Name] = t
+		if d.MethodSyms == nil {
+			d.MethodSyms = map[string]*resolve.Symbol{}
+		}
+		d.MethodSyms[f.Name.Name] = c.symOf(f.Name)
 		c.recordDecl(f.Name, t)
 		if f.Name.Name == "init" {
 			c.checkInitShape(f)
