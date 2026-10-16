@@ -689,6 +689,20 @@ func (g *generator) literal(module string, n *zyxc.Node, want *types.Type) *valu
 		out := g.newReg()
 		g.emit("  %s = insertvalue { ptr, %s } %s, %s %d, 1", out, g.ptrInt(), lenReg, g.ptrInt(), len(text))
 		return &value{text: out, ll: "{ ptr, " + g.ptrInt() + " }", typ: typ}
+	case "bytes":
+		// A byte string is a view of static bytes, and it may hold a
+		// sequence that is not valid UTF-8, which is exactly what a str
+		// cannot hold.
+		global := g.m.stringGlobal(text)
+		ptr := g.newReg()
+		g.emit("  %s = getelementptr inbounds [%d x i8], ptr %s, i64 0, i64 0", ptr, len(text), global)
+		slice := types.SliceOf(types.Uint8)
+		ll := g.llType(slice)
+		first := g.newReg()
+		g.emit("  %s = insertvalue %s undef, ptr %s, 0", first, ll, ptr)
+		out := g.newReg()
+		g.emit("  %s = insertvalue %s %s, %s %d, 1", out, ll, first, g.ptrInt(), len(text))
+		return &value{text: out, ll: ll, typ: slice}
 	case "char":
 		runes := []rune(text)
 		if len(runes) != 1 {
@@ -1243,8 +1257,30 @@ func (g *generator) sliceExpr(module string, n *zyxc.Node) *value {
 	}
 	elem := recv.typ.Elem
 	base := g.addrText(recv)
-	if recv.typ.Kind == types.KindSlice {
-		base, _ = g.splitFat(recv)
+	switch recv.typ.Kind {
+	case types.KindSlice:
+		var length string
+		base, length = g.splitFat(recv)
+		g.guardRange(lo.text, hi.text, length)
+	case types.KindArray:
+		g.guardRange(lo.text, hi.text, strconv.FormatUint(recv.typ.Len, 10))
+	case types.KindContainer:
+		if recv.typ.Name != "Array" {
+			g.fail(fmt.Errorf("llvmgen: a view of %s is not lowered", recv.typ))
+			return nil
+		}
+		// The elements live in the buffer the runtime owns, so the view is
+		// that buffer and a range of it, and the bounds are checked against
+		// the length the runtime reports.
+		elem = arg(recv.typ, 0)
+		g.declareRuntime("zyxrt_array_len", g.ptrInt(), "ptr")
+		length := g.newReg()
+		g.emit("  %s = call %s @zyxrt_array_len(ptr %s)", length, g.ptrInt(), recv.text)
+		g.guardRange(lo.text, hi.text, length)
+		g.declareRuntime("zyxrt_array_slot", "ptr", "ptr", g.ptrInt())
+		first := g.newReg()
+		g.emit("  %s = call ptr @zyxrt_array_slot(ptr %s, %s 0)", first, recv.text, g.ptrInt())
+		base = first
 	}
 	ptr := g.newReg()
 	g.emit("  %s = getelementptr inbounds %s, ptr %s, %s %s", ptr, g.llType(elem), base, lo.ll, lo.text)

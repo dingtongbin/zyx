@@ -101,9 +101,7 @@ func main() {
 
     // A str that is not valid UTF-8 decodes as U+FFFD and moves on one byte.
     var bytes = new Buf()
-    bytes.WriteByte(0x61)
-    bytes.WriteByte(0xFF)
-    bytes.WriteByte(0x62)
+    bytes.Write(b"a\xFFb")
     var broken = bytes.Str()
     var count: i64 = 0
     for ch in broken {

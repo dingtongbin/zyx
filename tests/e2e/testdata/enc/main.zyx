@@ -1,0 +1,128 @@
+package main
+
+import "std/enc"
+import "std/fmt"
+
+func show(label: str, r: Result<(), enc.Error>) {
+    fmt.Print(label)
+    fmt.Print(":")
+    match r {
+        Ok(_) => fmt.Print("ok")
+        Err(e) => match e {
+            InvalidLength => fmt.Print("length")
+            InvalidChar(ch) => {
+                fmt.Print("char ")
+                fmt.PrintI64(i64(ch))
+            }
+            InvalidPadding => fmt.Print("padding")
+        }
+    }
+    fmt.PrintNl()
+}
+
+// bytesOf builds the bytes of an ASCII text. A view is what the encoders take,
+// and a container lends one for as long as its buffer stays where it is.
+func bytesOf(src: str) -> [u8] {
+    var out = new Array<u8>(0)
+    for i in 0 .. src.Len() {
+        out.Push(src[i])
+    }
+    return out[0..out.Len()]
+}
+
+func main() {
+    var one = new Buf()
+    enc.Encode(one, bytesOf("hello"))
+    fmt.Print(one.Str())
+    fmt.PrintNl()
+
+    fmt.Print(enc.EncodeToString(bytesOf("a")))
+    fmt.Print(" ")
+    fmt.Print(enc.EncodeToString(bytesOf("ab")))
+    fmt.Print(" ")
+    fmt.Print(enc.EncodeToString(bytesOf("abc")))
+    fmt.PrintNl()
+
+    var short = new Buf()
+    enc.EncodeURL(short, bytesOf("a?>"))
+    fmt.Print(short.Str())
+    fmt.PrintNl()
+
+    fmt.Print(enc.EncodeToString(bytesOf("")))
+    fmt.Print("|")
+    fmt.PrintNl()
+
+    match enc.DecodeString("aGVsbG8=") {
+        Ok(v) => fmt.PrintI64(i64(v.Len()))
+        Err(e) => fmt.Print("err")
+    }
+    fmt.Print(" ")
+    match enc.DecodeString("aGVsbG8") {
+        Ok(v) => fmt.PrintI64(i64(v.Len()))
+        Err(e) => fmt.Print("err")
+    }
+    fmt.Print(" ")
+    match enc.DecodeString("YQ==") {
+        Ok(v) => fmt.PrintI64(i64(v[0]))
+        Err(e) => fmt.Print("err")
+    }
+    fmt.Print(" ")
+    match enc.DecodeString("YWI=") {
+        Ok(v) => fmt.PrintI64(i64(v.Len()))
+        Err(e) => fmt.Print("err")
+    }
+    fmt.PrintNl()
+
+    var dst = new Buf()
+    show("empty", enc.Decode(dst, ""))
+    show("good", enc.Decode(dst, "YWJj"))
+    show("bad length", enc.Decode(dst, "YWJjZ"))
+    show("bad char", enc.Decode(dst, "YWJ!"))
+    show("bad padding", enc.Decode(dst, "Y==="))
+    show("padding inside", enc.Decode(dst, "Y=Jj"))
+    fmt.Print(dst.Str())
+    fmt.PrintNl()
+
+    var hex = new Buf()
+    enc.EncodeHex(hex, bytesOf("\u{1}\u{2}\u{FE}"))
+    fmt.Print(hex.Str())
+    fmt.Print(" ")
+    hex.Reset()
+    enc.EncodeHexUpper(hex, bytesOf("\u{1}\u{2}\u{FE}"))
+    fmt.Print(hex.Str())
+    fmt.PrintNl()
+
+    match enc.DecodeHex("0102fe") {
+        Ok(v) => fmt.PrintI64(i64(v[v.Len() - 1]))
+        Err(e) => fmt.Print("err")
+    }
+    fmt.Print(" ")
+    match enc.DecodeHex("0102FE") {
+        Ok(v) => fmt.PrintI64(i64(v[v.Len() - 1]))
+        Err(e) => fmt.Print("err")
+    }
+    fmt.Print(" ")
+    match enc.DecodeHex("010") {
+        Ok(v) => fmt.Print("ok")
+        Err(e) => fmt.Print("length")
+    }
+    fmt.Print(" ")
+    match enc.DecodeHex("01zz") {
+        Ok(v) => fmt.Print("ok")
+        Err(e) => match e {
+            InvalidChar(ch) => fmt.PrintI64(i64(ch))
+            InvalidLength => fmt.Print("length")
+            InvalidPadding => fmt.Print("padding")
+        }
+    }
+    fmt.PrintNl()
+
+    // The two alphabets are both readable, so what EncodeURL wrote decodes.
+    var url = new Buf()
+    enc.EncodeURL(url, bytesOf("\u{FF}\u{EF}\u{BF}"))
+    match enc.DecodeString(url.Str()) {
+        Ok(v) => fmt.PrintI64(i64(v[v.Len() - 1]))
+        Err(e) => fmt.Print("err")
+    }
+    fmt.PrintNl()
+}

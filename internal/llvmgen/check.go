@@ -116,6 +116,19 @@ func (g *generator) guardIndex(index, length string) {
 	g.guard(g.checkedIndex(index, length), "index out of range")
 }
 
+// guardRange panics when a view of a sequence leaves it: the lower bound may
+// not pass the upper one, and neither may pass the length. The comparisons are
+// unsigned, so a negative bound reads as the large value it is.
+func (g *generator) guardRange(lo, hi, length string) {
+	backwards := g.newReg()
+	g.emit("  %s = icmp ugt i64 %s, %s", backwards, lo, hi)
+	past := g.newReg()
+	g.emit("  %s = icmp ugt i64 %s, %s", past, hi, length)
+	outsides := g.newReg()
+	g.emit("  %s = or i1 %s, %s", outsides, backwards, past)
+	g.guard(outsides, "index out of range")
+}
+
 // guardDivisor panics when a divisor is zero, and when the signed division it
 // belongs to has no result.
 func (g *generator) guardDivisor(typ *types.Type, a, b, ll string) {
