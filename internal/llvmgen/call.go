@@ -343,6 +343,30 @@ func (g *generator) cReturn(t *types.Type) (string, bool) {
 	return "", false
 }
 
+// cGlobal lowers a reference to a global object a C header declares. The
+// object belongs to the C side, so the module names it and the link resolves
+// it.
+func (g *generator) cGlobal(module string, n *zyxc.Node) *value {
+	if len(n.Payload) == 0 {
+		g.fail(fmt.Errorf("llvmgen: a C global needs a name"))
+		return nil
+	}
+	typ := g.typeOfNode(n.First("type"), module)
+	if typ == nil {
+		g.fail(fmt.Errorf("llvmgen: the type of the C global is not settled"))
+		return nil
+	}
+	ll := g.llType(typ)
+	symbol := n.Payload[0]
+	if !g.m.declared[symbol] {
+		g.m.declared[symbol] = true
+		fmt.Fprintf(&g.m.funcs, "@%s = external global %s\n", llvmName(symbol), ll)
+	}
+	// The name is the storage of the object, so a read loads it and the
+	// value carries the type a load yields.
+	return &value{text: "@" + llvmName(symbol), ll: g.llPass(typ), typ: typ, lvalue: true}
+}
+
 // panicCall lowers the built-in panic.
 func (g *generator) panicCall(module string, n *zyxc.Node) *value {
 	g.declareRuntime("zyxrt_panic", "void", "ptr", "i64")

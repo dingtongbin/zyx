@@ -348,8 +348,18 @@ func (c *checker) declareTypes() {
 				if v.Extern {
 					kind = types.KindExternStruct
 				}
+				if kind == types.KindExternStruct {
+					if t := c.cTag(kind, v.Name); t != nil {
+						c.declareCType(v.Name, t)
+						continue
+					}
+				}
 				c.declareNamed(v.Name, kind, v.TypeParams, v)
 			case *ast.UnionDecl:
+				if t := c.cTag(types.KindUnion, v.Name); t != nil {
+					c.declareCType(v.Name, t)
+					continue
+				}
 				c.declareNamed(v.Name, types.KindUnion, nil, v)
 			case *ast.EnumDecl:
 				c.declareNamed(v.Name, types.KindEnum, v.TypeParams, v)
@@ -358,6 +368,56 @@ func (c *checker) declareTypes() {
 			}
 		}
 	}
+}
+
+// cTag returns the type a C header declares under a tag, or nil when no
+// imported header declares one. A C type belongs to the C side rather than to
+// a package, so a declaration a program writes under the header's own tag is
+// the header's type: the two meet at the boundary.
+func (c *checker) cTag(kind types.Kind, id *ast.Ident) *types.Type {
+	if id == nil {
+		return nil
+	}
+	for _, header := range sortedKeys(c.cdecls) {
+		if record, ok := c.cdecls[header].Records[id.Name]; ok {
+			want := types.KindExternStruct
+			if record.Union {
+				want = types.KindUnion
+			}
+			if want != kind {
+				continue
+			}
+			return types.Named(kind, "", "", id.Name, 0)
+		}
+	}
+	return nil
+}
+
+// declareCType registers a local declaration of a type a C header owns.
+func (c *checker) declareCType(id *ast.Ident, t *types.Type) {
+	sym := c.symOf(id)
+	if sym == nil {
+		return
+	}
+	c.bySym[sym.ID] = t
+	c.out.Types[id.Name] = t
+	c.out.Decls[id.Name] = t
+	c.out.Nodes[id] = t
+	d := &Decl{
+		Sym:              sym,
+		Type:             t,
+		Methods:          map[string]*types.Type{},
+		Consts:           map[string]*Const{},
+		ParamConstraints: map[string][]*types.Type{},
+		field:            map[string]*Field{},
+		variant:          map[string]*Variant{},
+		impl:             map[string]bool{},
+	}
+	c.out.Declared[sym.ID] = d
+	// The type names itself without a package, so the declaration is also
+	// found under the type's own id, which is what a reader looks up.
+	c.out.Declared[t.ID] = d
+	c.declOrder = append(c.declOrder, d)
 }
 
 // declareNamed registers one named type and its declared parameters.
@@ -670,7 +730,15 @@ func (c *checker) typeOfSymbol(sym *resolve.Symbol) *types.Type {
 	case resolve.KindBuiltin:
 		return types.Predeclared(sym.Name)
 	case resolve.KindCSymbol:
-		return types.Named(types.KindExternStruct, "", "", "c."+sym.Name, 0)
+		// A name the header exposes denotes the type it declares, so a
+		// declaration a program writes and the header's own type are one
+		// type.
+		for _, header := range sortedKeys(c.cdecls) {
+			if t := cTypeOf(c.cdecls[header], sym.Name); t != nil {
+				return t
+			}
+		}
+		return types.Named(types.KindExternStruct, "", "", sym.Name, 0)
 	}
 	alias, ok := sym.Decl.(*ast.TypeAlias)
 	if !ok {

@@ -43,6 +43,11 @@ var metaQueries = map[string]metaCall{
 // namespaceValue reports a bare name of the meta or dur namespace, which is
 // only usable in a call.
 func (c *checker) namespaceValue(v *ast.SelectorExpr, ns string) *types.Type {
+	if ns == "c" {
+		// The c namespace names what a C header declares, which a value
+		// position reads as a constant, a global object, or a type.
+		return c.cValue(v)
+	}
 	c.unknownNamespaceName(v, ns)
 	c.errorHelp(diag.CodeMetaName, v.Sp,
 		"call the query",

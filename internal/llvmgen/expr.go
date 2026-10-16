@@ -217,6 +217,8 @@ func (g *generator) exprValue(module string, n *zyxc.Node, want *types.Type) *va
 		return g.qualified(module, n)
 	case "c-call":
 		return g.cCall(module, n)
+	case "c-global-ref":
+		return g.cGlobal(module, n)
 	case "func-ref":
 		return g.funcRef(n)
 	case "method-value":

@@ -23,4 +23,10 @@ func main() {
     // the header declares it, and the two meet at the link.
     fmt.PrintI64(i64(c.add(2, 3)))
     fmt.PrintNl()
+    // An enumerator is an integer constant, folded where it is written.
+    fmt.PrintI64(i64(c.High))
+    fmt.PrintNl()
+    // A global object is read where the C side keeps it.
+    fmt.PrintI64(i64(c.counter))
+    fmt.PrintNl()
 }

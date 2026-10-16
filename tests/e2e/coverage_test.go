@@ -17,7 +17,7 @@ import (
 var coveredKinds = []string{
 	"addr", "alias", "arg", "arm", "array-lit", "array-repeat", "assign", "assign-op",
 	"binary",
-	"c-alias", "c-const", "c-func", "c-global", "c-record", "c-variadic",
+	"c-alias", "c-const", "c-func", "c-global", "c-global-ref", "c-record", "c-variadic",
 	"bind", "bind-const", "block", "body", "break", "c-call", "call", "callee", "callee-type", "chan", "cond", "const", "continue", "convert", "count",
 	"default-arm", "defer", "dur", "elem", "else", "entry", "enum", "expr-stmt",
 	"extern-struct", "extern-union", "field", "field-decl", "field-init", "for",
@@ -44,7 +44,7 @@ var coveredKinds = []string{
 var specKinds = []string{
 	"addr", "alias", "arm", "array-lit", "array-repeat", "assign", "assign-op",
 	"binary",
-	"c-alias", "c-const", "c-func", "c-global", "c-record", "c-variadic", "bind", "bind-const", "block", "break", "call", "c-call", "const",
+	"c-alias", "c-const", "c-func", "c-global", "c-global-ref", "c-record", "c-variadic", "bind", "bind-const", "block", "break", "call", "c-call", "const",
 	"continue", "convert", "default-arm", "defer", "dur", "enum", "expr-stmt",
 	"extern-struct", "extern-union", "field", "field-decl", "for", "for-in", "func",
 	"func-ref", "if", "impl", "import", "import-c", "index", "interface", "is",

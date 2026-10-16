@@ -1251,6 +1251,8 @@ func (b *builder) selector(v *ast.SelectorExpr) *Node {
 	case b.isQualified(v):
 		n := New("qual", nameOr(qualifierName(v)), v.Name.Name, b.symID(v.Name))
 		return b.at(n, v.Sp)
+	case b.isCValue(v):
+		return b.cValueNode(v)
 	case b.isCCall(v):
 		return b.at(New("c-call", v.Name.Name), v.Sp)
 	case b.isVariant(v):
@@ -1271,6 +1273,62 @@ func (b *builder) selector(v *ast.SelectorExpr) *Node {
 	// cannot resolve.
 	b.fail(v, "the selector "+v.Name.Name)
 	return nil
+}
+
+// isCValue reports whether a selector names a C declaration that is not a
+// function: an enumerator, which is a constant, or a global object.
+func (b *builder) isCValue(v *ast.SelectorExpr) bool {
+	id, ok := v.X.(*ast.Ident)
+	if !ok || id.Name != "c" || v.Name == nil {
+		return false
+	}
+	for _, header := range cHeaderNames(b.cdecls) {
+		table := b.cdecls[header]
+		if _, ok := table.Constants[v.Name.Name]; ok {
+			return true
+		}
+		if _, ok := table.Globals[v.Name.Name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// cValueNode renders a C constant or a C global object. A constant is folded
+// where it is written, and a global object is a name the link resolves.
+func (b *builder) cValueNode(v *ast.SelectorExpr) *Node {
+	name := v.Name.Name
+	t := b.cpkg.Nodes[v.Name]
+	for _, header := range cHeaderNames(b.cdecls) {
+		table := b.cdecls[header]
+		if value, ok := table.Constants[name]; ok {
+			n := New("lit", "int", strconv.FormatInt(value, 10))
+			if t != nil {
+				n.Child(New("type", b.typeText(t)))
+			}
+			return b.at(n, v.Sp)
+		}
+		if _, ok := table.Globals[name]; ok {
+			n := New("c-global-ref", name)
+			if t != nil {
+				n.Child(New("type", b.typeText(t)))
+			}
+			return b.at(n, v.Sp)
+		}
+	}
+	b.fail(v, "the C name "+name)
+	return nil
+}
+
+// cHeaderNames returns the headers of a table in byte order, so a lookup
+// does not depend on the order they were read in.
+func cHeaderNames(t map[string]*cheader.Table) []string {
+	out := make([]string, 0, len(t))
+	for key := range t {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // memberID returns the symbol id of a member of a receiver's type. A method

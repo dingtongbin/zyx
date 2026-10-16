@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"zyx/internal/ast"
+	"zyx/internal/cheader"
 	"zyx/internal/diag"
 	"zyx/internal/resolve"
 	"zyx/internal/token"
@@ -546,10 +547,7 @@ func (c *checker) isBuiltinMethod(recv *types.Type, name string) bool {
 // qualifiedValue returns the type of `pkg.Name` in value position.
 func (c *checker) qualifiedValue(v *ast.SelectorExpr, pkg *resolve.Symbol) *types.Type {
 	if pkg.Name == "c" {
-		c.errorHelp(diag.CodeBuiltinMethodValue, v.Name.Sp,
-			"call the C function directly",
-			"a C symbol is not a value")
-		return nil
+		return c.cValue(v)
 	}
 	t := c.importedType(pkg, v.Name.Name)
 	if t == nil {
@@ -557,6 +555,49 @@ func (c *checker) qualifiedValue(v *ast.SelectorExpr, pkg *resolve.Symbol) *type
 	}
 	c.out.Nodes[v.Name] = t
 	return t
+}
+
+// cValue returns the type of a name the c namespace exposes that is not a
+// call. An enumerator is an integer constant, a global object is a value of
+// its own type, and a type name denotes that type.
+func (c *checker) cValue(v *ast.SelectorExpr) *types.Type {
+	name := v.Name.Name
+	for _, header := range sortedKeys(c.cdecls) {
+		table := c.cdecls[header]
+		if value, ok := table.Constants[name]; ok {
+			c.out.Nodes[v.Name] = types.Int32
+			c.out.Consts[name] = intValue(types.Int32, uint64(value))
+			return types.Int32
+		}
+		if t, ok := table.Globals[name]; ok {
+			c.out.Nodes[v.Name] = t
+			return t
+		}
+		if t := cTypeOf(table, name); t != nil {
+			c.out.Nodes[v.Name] = t
+			return t
+		}
+	}
+	c.errorHelp(diag.CodeUndefinedName, v.Name.Sp,
+		"import the header that declares it",
+		"%s is not declared by an imported C header", name)
+	return nil
+}
+
+// cTypeOf returns the type a name a C header exposes denotes, or nil when the
+// header exposes no type under it.
+func cTypeOf(table *cheader.Table, name string) *types.Type {
+	if record, ok := table.Records[name]; ok {
+		kind := types.KindExternStruct
+		if record.Union {
+			kind = types.KindUnion
+		}
+		return types.Named(kind, "", "", name, 0)
+	}
+	if t, ok := table.Aliases[name]; ok {
+		return t
+	}
+	return nil
 }
 
 // variantValue returns the type of `Type.Name` in value position: a variant

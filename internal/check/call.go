@@ -222,6 +222,12 @@ func (c *checker) checkCCall(sel *ast.SelectorExpr, v *ast.CallExpr) *types.Type
 			at += width
 			continue
 		}
+		if cByValue(t) {
+			c.errorHelp(diag.CodeTypeMismatch, a.Span(),
+				"pass an address, or convert the value",
+				"a %s crosses to C by value, which is not lowered yet", t)
+			return nil
+		}
 		if !cArgFits(t, fn.Params[at:at+width]) {
 			c.errorHelp(diag.CodeTypeMismatch, a.Span(),
 				"pass a value of the declared type",
@@ -251,6 +257,18 @@ func (c *checker) cFunction(name string) (*cheader.Func, bool) {
 		}
 	}
 	return nil, false
+}
+
+// cByValue reports whether a value crosses to C as the bytes of an object
+// rather than as a scalar or an address. The C ABI places such a value in
+// registers or on the stack by rules of its own, which are not lowered yet,
+// and a pointer would be silently wrong.
+func cByValue(t *types.Type) bool {
+	switch t.Kind {
+	case types.KindExternStruct, types.KindUnion, types.KindArray:
+		return true
+	}
+	return false
 }
 
 // cArgFits reports whether a language value fits the C parameters its
