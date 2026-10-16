@@ -69,6 +69,9 @@ func Select(main *File, g Graph) ([]Module, error) {
 // there was checked against the checksum file.
 type CacheGraph struct {
 	Cache *ModuleCache
+	// Fetch fills a module the cache does not hold. A module it cannot fill
+	// stays missing, and selection reports what the build lacks.
+	Fetch func(path, version string) error
 }
 
 // Requirements returns the requirements a module version declares.
@@ -77,6 +80,11 @@ func (g CacheGraph) Requirements(path, version string) ([]Requirement, error) {
 		return nil, fmt.Errorf("module %s %s: there is no cache to read it from", path, version)
 	}
 	f, err := g.Cache.Manifest(path, version)
+	if err != nil && g.Fetch != nil {
+		if fetchErr := g.Fetch(path, version); fetchErr == nil {
+			f, err = g.Cache.Manifest(path, version)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -86,10 +94,11 @@ func (g CacheGraph) Requirements(path, version string) ([]Requirement, error) {
 // BuildList returns the modules a build reads: the main module's
 // requirements, closed over the requirements of every module they reach,
 // chosen by minimal version selection and with the main module's replacements
-// applied. A module the cache does not hold stops selection, because the
-// build would have no version to fix it by.
-func BuildList(main *File, cache *ModuleCache) ([]Module, error) {
-	return Select(main, CacheGraph{Cache: cache})
+// applied. Fetch fills a module the cache does not hold, and may be nil. A
+// module that is still missing stops selection, because the build would have
+// no version to fix it by.
+func BuildList(main *File, cache *ModuleCache, fetch func(path, version string) error) ([]Module, error) {
+	return Select(main, CacheGraph{Cache: cache, Fetch: fetch})
 }
 
 // ModuleOf returns the module an import path belongs to: the longest module

@@ -227,13 +227,52 @@ func (s *Session) prepareModule(m *module) bool {
 		fmt.Fprintln(s.Stderr, "zyx:", err)
 		return false
 	}
-	list, err := mod.BuildList(m.File, s.moduleCache(m))
+	list, err := mod.BuildList(m.File, s.moduleCache(m), s.moduleFetch(m))
 	if err != nil {
 		fmt.Fprintln(s.Stderr, "zyx:", err)
 		return false
 	}
 	m.Build = list
 	return true
+}
+
+// readSum returns the checksum file of a module, or nil when it has none.
+func (s *Session) readSum(m *module) *mod.Sum {
+	data, err := os.ReadFile(filepath.Join(m.Root, "zyx.sum"))
+	if err != nil {
+		return nil
+	}
+	sum, err := mod.ParseSum(data)
+	if err != nil {
+		return nil
+	}
+	return sum
+}
+
+// moduleFetch returns the function that fills a module the cache does not
+// hold. A build fetches only what zyx.sum already fixes by hash, so nothing a
+// proxy serves is used before something has recorded its hash.
+func (s *Session) moduleFetch(m *module) func(path, version string) error {
+	sum := s.readSum(m)
+	if sum == nil {
+		return nil
+	}
+	sources, err := mod.ParseSources(s.env("ZYXPROXY"))
+	if err != nil || len(sources) == 0 {
+		return nil
+	}
+	cache := s.moduleCache(m)
+	if cache == nil {
+		return nil
+	}
+	fetcher := &mod.Fetcher{
+		Sources: sources,
+		NoProxy: mod.ParsePatterns(s.env("ZYXNOPROXY")),
+		Private: mod.ParsePatterns(s.env("ZYXPRIVATE")),
+	}
+	return func(path, version string) error {
+		return fetcher.FetchInto(cache, sum, path, version)
+	}
 }
 
 // moduleCache returns the cache fetched modules live in. A module with no

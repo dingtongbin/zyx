@@ -3,6 +3,8 @@ package mod
 import (
 	"archive/zip"
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -414,7 +416,7 @@ func TestBuildListClosesOverTheGraph(t *testing.T) {
 			{Path: "example.com/two", Version: "v1.4.0"},
 		},
 	}
-	list, err := BuildList(main, c)
+	list, err := BuildList(main, c, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,8 +448,226 @@ func TestBuildListStopsWhenAModuleIsMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	main := &File{Module: "example.com/app", Require: []Requirement{{Path: "example.com/gone", Version: "v1.0.0"}}}
-	if _, err := BuildList(main, c); err == nil {
+	if _, err := BuildList(main, c, nil); err == nil {
 		t.Error("selection succeeded with a module the cache does not hold")
+	}
+}
+
+// proxyServer serves the files of a module over the proxy protocol, so a
+// fetch can be tested without the network.
+func proxyServer(t *testing.T, files map[string][]byte) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := files[strings.TrimPrefix(r.URL.Path, "/")]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := w.Write(body); err != nil {
+			t.Error(err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// moduleFixture is one module version as a proxy serves it.
+type moduleFixture struct {
+	manifest string
+	archive  []byte
+	content  string
+	sum      string
+}
+
+// newModuleFixture builds a module version and the hashes a checksum file
+// would record for it.
+func newModuleFixture(t *testing.T, path, version string) moduleFixture {
+	t.Helper()
+	manifest := "module " + path + "\n\nzyx 0.1\n"
+	archive := zipOf(t, map[string]string{
+		path + "@" + version + "/zyx.mod":       manifest,
+		path + "@" + version + "/util/util.zyx": "package util\n\nfunc Use() {\n}\n",
+	})
+	content, err := HashContent(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return moduleFixture{
+		manifest: manifest,
+		archive:  archive,
+		content:  content,
+		sum:      HashManifest(path, version, []byte(manifest)),
+	}
+}
+
+// serve returns the protocol paths a proxy serves for a fixture.
+func (f moduleFixture) serve(path, version string) map[string][]byte {
+	return map[string][]byte{
+		path + "/@v/list":                 []byte(version + "\n"),
+		path + "/@v/" + version + ".info": []byte(`{"Version":"` + version + `"}`),
+		path + "/@v/" + version + ".mod":  []byte(f.manifest),
+		path + "/@v/" + version + ".zip":  f.archive,
+	}
+}
+
+func TestFetchIntoStoresAModule(t *testing.T) {
+	fixture := newModuleFixture(t, "example.com/dep", "v1.0.0")
+	server := proxyServer(t, fixture.serve("example.com/dep", "v1.0.0"))
+
+	cache, err := OpenModuleCache(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := &Sum{}
+	sum.Add("example.com/dep", "v1.0.0", fixture.content, fixture.sum)
+	sources, err := ParseSources(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &Fetcher{Sources: sources}
+	if err := fetcher.FetchInto(cache, sum, "example.com/dep", "v1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if !cache.Has("example.com/dep", "v1.0.0") {
+		t.Fatal("the module is not in the cache after a fetch")
+	}
+	tree := filepath.Join(cache.Dir("example.com/dep", "v1.0.0"), "util", "util.zyx")
+	if _, err := os.Stat(tree); err != nil {
+		t.Errorf("the tree was not unpacked: %v", err)
+	}
+
+	// The proxy client reads the same paths on its own.
+	proxy := &Proxy{Base: server.URL}
+	versions, err := proxy.Versions("example.com/dep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != 1 || versions[0] != "v1.0.0" {
+		t.Errorf("versions = %v, want v1.0.0", versions)
+	}
+	info, err := proxy.InfoOf("example.com/dep", "v1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Version != "v1.0.0" {
+		t.Errorf("info version = %q, want v1.0.0", info.Version)
+	}
+}
+
+func TestFetchIntoRefusesWhatTheSumDoesNotFix(t *testing.T) {
+	fixture := newModuleFixture(t, "example.com/dep", "v1.0.0")
+	server := proxyServer(t, fixture.serve("example.com/dep", "v1.0.0"))
+	cache, err := OpenModuleCache(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources, err := ParseSources(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &Fetcher{Sources: sources}
+	// A module no checksum file records is refused rather than trusted.
+	if err := fetcher.FetchInto(cache, &Sum{}, "example.com/dep", "v1.0.0"); err == nil {
+		t.Fatal("a module with no recorded hash was fetched")
+	}
+	// A recorded hash the proxy does not match is refused too.
+	wrong := &Sum{}
+	wrong.Add("example.com/dep", "v1.0.0", "h1:wrong=", fixture.sum)
+	if err := fetcher.FetchInto(cache, wrong, "example.com/dep", "v1.0.0"); err == nil {
+		t.Fatal("a module whose hash did not match was stored")
+	}
+	if cache.Has("example.com/dep", "v1.0.0") {
+		t.Error("a refused module reached the cache")
+	}
+}
+
+func TestFetchIntoMovesOnPastAMissingModule(t *testing.T) {
+	fixture := newModuleFixture(t, "example.com/dep", "v1.0.0")
+	empty := proxyServer(t, map[string][]byte{})
+	serving := proxyServer(t, fixture.serve("example.com/dep", "v1.0.0"))
+
+	cache, err := OpenModuleCache(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := &Sum{}
+	sum.Add("example.com/dep", "v1.0.0", fixture.content, fixture.sum)
+	// A comma moves on when a source answers that it does not have the
+	// module, which is what a fallback proxy is for.
+	sources, err := ParseSources(empty.URL + "," + serving.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Fetcher{Sources: sources}).FetchInto(cache, sum, "example.com/dep", "v1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if !cache.Has("example.com/dep", "v1.0.0") {
+		t.Error("the second source was not reached")
+	}
+}
+
+func TestFetchIntoRefusesAPrivateModule(t *testing.T) {
+	fixture := newModuleFixture(t, "example.com/dep", "v1.0.0")
+	server := proxyServer(t, fixture.serve("example.com/dep", "v1.0.0"))
+	cache, err := OpenModuleCache(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := &Sum{}
+	sum.Add("example.com/dep", "v1.0.0", fixture.content, fixture.sum)
+	sources, err := ParseSources(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &Fetcher{Sources: sources, Private: []string{"example.com"}}
+	if err := fetcher.FetchInto(cache, sum, "example.com/dep", "v1.0.0"); err == nil {
+		t.Fatal("a private module was fetched from a proxy")
+	}
+	off, err := ParseSources("off")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Fetcher{Sources: off}).FetchInto(cache, sum, "example.com/dep", "v1.0.0"); err == nil {
+		t.Fatal("a source list of off fetched a module")
+	}
+}
+
+func TestParseSources(t *testing.T) {
+	sources, err := ParseSources("https://one.example,https://two.example|direct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) != 3 {
+		t.Fatalf("sources = %+v, want three", sources)
+	}
+	if sources[0].Proxy != "https://one.example" || sources[0].FallbackOnAny {
+		t.Errorf("first source = %+v", sources[0])
+	}
+	if !sources[1].FallbackOnAny {
+		t.Errorf("second source = %+v, want a pipe after it", sources[1])
+	}
+	if !sources[2].Direct {
+		t.Errorf("third source = %+v, want direct", sources[2])
+	}
+	if _, err := ParseSources("not-a-url"); err == nil {
+		t.Error("an entry that is neither a URL nor a keyword was accepted")
+	}
+	if got, err := ParseSources(""); err != nil || got != nil {
+		t.Errorf("an empty list = %v %v, want nothing", got, err)
+	}
+}
+
+func TestMatchPatterns(t *testing.T) {
+	patterns := []string{"example.com/private", "*.corp.example.com"}
+	for _, path := range []string{"example.com/private", "example.com/private/sub", "git.corp.example.com/x"} {
+		if !MatchPatterns(patterns, path) {
+			t.Errorf("%q did not match", path)
+		}
+	}
+	for _, path := range []string{"example.com/public", "example.com/privatex"} {
+		if MatchPatterns(patterns, path) {
+			t.Errorf("%q matched and should not have", path)
+		}
 	}
 }
 
