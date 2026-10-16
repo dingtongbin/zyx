@@ -63,10 +63,13 @@ type Loader struct {
 	Target toolchain.Target
 	// Testing includes test files, which an ordinary build leaves out.
 	Testing bool
-	// Requires holds the module requirements of the main module, keyed by
-	// module path. An import path outside the module and the standard
-	// library resolves to the longest requirement that is a prefix of it.
+	// Requires holds the modules a build reads, keyed by module path. An
+	// import path outside the module and the standard library resolves to the
+	// longest requirement that is a prefix of it.
 	Requires map[string]string
+	// Local holds the module paths a replacement points at a directory of the
+	// working tree for, relative to the module root.
+	Local map[string]string
 	// Modules is the cache the required modules were fetched into.
 	Modules *mod.ModuleCache
 	// Vendor is the module's vendor directory, which takes precedence over
@@ -267,14 +270,35 @@ func (l *Loader) vendorDir(importPath string) (string, bool) {
 }
 
 // requiredDir returns where an import path resolves among the required
-// modules, which live in the module cache under their path and version.
+// modules, which live in the module cache under their path and version. A
+// module a replacement points at a directory of the working tree resolves
+// there instead.
 func (l *Loader) requiredDir(importPath string) (string, bool) {
 	path, version, ok := l.moduleOf(importPath)
-	if !ok || l.Modules == nil {
+	if !ok {
 		return "", false
 	}
-	rel := strings.TrimPrefix(strings.TrimPrefix(importPath, path), "/")
-	dir := filepath.Join(l.Modules.Dir(path, version), filepath.FromSlash(rel))
+	rel := filepath.FromSlash(strings.TrimPrefix(strings.TrimPrefix(importPath, path), "/"))
+	if dir, ok := l.Local[path]; ok {
+		return resolveUnder(l.Root, dir, rel)
+	}
+	if l.Modules == nil {
+		return "", false
+	}
+	return resolveUnder("", l.Modules.Dir(path, version), rel)
+}
+
+// resolveUnder returns a directory under a base, and whether it is there. A
+// relative base is taken from the module root, which is where a replacement
+// writes it.
+func resolveUnder(root, base, rel string) (string, bool) {
+	if base == "" {
+		return "", false
+	}
+	if !filepath.IsAbs(base) {
+		base = filepath.Join(root, filepath.FromSlash(base))
+	}
+	dir := filepath.Join(base, rel)
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
 		return dir, true
 	}
@@ -291,6 +315,14 @@ func (l *Loader) moduleOf(importPath string) (path, version string, ok bool) {
 		}
 		if len(candidate) > len(path) {
 			path, version, ok = candidate, candidateVersion, true
+		}
+	}
+	for candidate := range l.Local {
+		if importPath != candidate && !strings.HasPrefix(importPath, candidate+"/") {
+			continue
+		}
+		if len(candidate) > len(path) {
+			path, version, ok = candidate, "", true
 		}
 	}
 	return path, version, ok

@@ -261,6 +261,9 @@ type module struct {
 	Root string
 	// File is the parsed zyx.mod.
 	File *mod.File
+	// Build is the module list a build reads, settled by version selection
+	// over the whole dependency graph.
+	Build []mod.Module
 }
 
 // findModule walks up from a directory to the module root.
@@ -296,14 +299,16 @@ func (s *Session) loader(m *module, o *options) *build.Loader {
 		StdRoot:    s.stdRoot(),
 		Target:     o.target,
 	}
-	requires := map[string]string{}
-	for _, req := range m.File.Require {
-		requires[req.Path] = req.Version
+	l.Requires = map[string]string{}
+	l.Local = map[string]string{}
+	for _, dep := range m.Build {
+		if dep.Dir != "" {
+			l.Local[dep.Path] = dep.Dir
+			continue
+		}
+		l.Requires[dep.Path] = dep.Version
 	}
-	l.Requires = requires
-	if c, err := mod.OpenModuleCache(s.moduleCacheRoot(m)); err == nil {
-		l.Modules = c
-	}
+	l.Modules = s.moduleCache(m)
 	if vendor := filepath.Join(m.Root, "vendor"); isDirectory(vendor) {
 		l.Vendor = vendor
 	}

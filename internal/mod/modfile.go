@@ -43,9 +43,14 @@ type Replacement struct {
 }
 
 // A Module names a module at a version.
+// A Module is one module version a build reads.
 type Module struct {
 	Path    string
 	Version string
+	// Dir is the directory a replacement points at, empty when the module
+	// comes from a proxy. A replacement to a path in the working tree keeps
+	// the module's own path, because that is what programs import.
+	Dir string
 }
 
 // A Retraction marks a range of this module's versions as withdrawn.

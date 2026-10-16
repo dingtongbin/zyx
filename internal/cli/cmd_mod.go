@@ -69,13 +69,14 @@ func (s *Session) modTidy(args []string) int {
 	if err != nil {
 		return s.usageError(err)
 	}
-	if !s.checkLang(m) {
+	if !s.prepareModule(m) {
 		return exitError
 	}
 	loader := s.loader(m, o)
 	needed := map[string]bool{}
-	// The reachable graph is the build graph together with the test graph, so
-	// a requirement only the tests need is kept as well.
+	// The reachable graph is the build graph together with the test graph, and
+	// it is closed over the imports of everything it reaches: a module only a
+	// dependency's package imports is required just the same.
 	for _, testing := range []bool{false, true} {
 		load := *loader
 		load.Testing = testing
@@ -84,29 +85,40 @@ func (s *Session) modTidy(args []string) int {
 			return s.usageError(err)
 		}
 		for _, path := range all {
-			pkg, err := load.LoadPackage(path)
+			graph, err := load.Load(path)
 			if err != nil {
 				fmt.Fprintln(s.Stderr, "zyx:", err)
 				return exitError
 			}
-			if s.report(pkg.Diags) {
-				return exitError
-			}
-			for _, imp := range pkg.Imports {
-				if strings.HasPrefix(imp, "std/") || imp == "std" {
-					continue
+			for _, pkg := range graph.Order {
+				if s.report(pkg.Diags) {
+					return exitError
 				}
-				if imp == m.File.Module || strings.HasPrefix(imp, m.File.Module+"/") {
-					continue
+				for _, imp := range pkg.Imports {
+					if strings.HasPrefix(imp, "std/") || imp == "std" {
+						continue
+					}
+					if imp == m.File.Module || strings.HasPrefix(imp, m.File.Module+"/") {
+						continue
+					}
+					// A requirement is the module an import path belongs to,
+					// which is the longest one that is a prefix of it.
+					if dep, ok := mod.ModuleOf(m.Build, imp); ok {
+						needed[dep.Path] = true
+						continue
+					}
+					needed[imp] = true
 				}
-				needed[imp] = true
 			}
 		}
 	}
 
+	// The version of a requirement is the one version selection settled on, so
+	// a module the graph raises to a higher version is written at the version
+	// the build reads.
 	known := map[string]string{}
-	for _, req := range m.File.Require {
-		known[req.Path] = req.Version
+	for _, dep := range m.Build {
+		known[dep.Path] = dep.Version
 	}
 	var missing []string
 	var kept []mod.Requirement
@@ -206,15 +218,36 @@ func writeAtomically(path string, data []byte) error {
 	return nil
 }
 
-// checkLang reports a manifest this compiler cannot serve, which is a build
-// error rather than a usage error: the module is well formed, the compiler is
-// too old for it.
-func (s *Session) checkLang(m *module) bool {
+// prepareModule checks what a build needs of a module before it starts: the
+// language version its manifest asks for, and the modules its requirements
+// resolve to. Both are build errors rather than usage errors: the module is
+// well formed, the build cannot serve it.
+func (s *Session) prepareModule(m *module) bool {
 	if err := mod.CheckLang(m.File, Version); err != nil {
 		fmt.Fprintln(s.Stderr, "zyx:", err)
 		return false
 	}
+	list, err := mod.BuildList(m.File, s.moduleCache(m))
+	if err != nil {
+		fmt.Fprintln(s.Stderr, "zyx:", err)
+		return false
+	}
+	m.Build = list
 	return true
+}
+
+// moduleCache returns the cache fetched modules live in. A module with no
+// requirements reads no cache, so a build leaves no directory behind for a
+// module that has none.
+func (s *Session) moduleCache(m *module) *mod.ModuleCache {
+	if len(m.File.Require) == 0 {
+		return nil
+	}
+	c, err := mod.OpenModuleCache(s.moduleCacheRoot(m))
+	if err != nil {
+		return nil
+	}
+	return c
 }
 
 // containsRequirement reports whether a requirement list holds a path.

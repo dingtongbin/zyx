@@ -50,7 +50,7 @@ func (s *Session) build(args []string) int {
 	if err != nil {
 		return s.usageError(err)
 	}
-	if !s.checkLang(m) {
+	if !s.prepareModule(m) {
 		return exitError
 	}
 	paths, err := s.targets(m, o)
@@ -114,7 +114,7 @@ func (s *Session) run(args []string) int {
 	if err != nil {
 		return s.usageError(err)
 	}
-	if !s.checkLang(m) {
+	if !s.prepareModule(m) {
 		return exitError
 	}
 	paths, err := s.targets(m, o)
@@ -172,7 +172,7 @@ func (s *Session) emitBackend(command string, args []string) int {
 	if err != nil {
 		return s.usageError(err)
 	}
-	if !s.checkLang(m) {
+	if !s.prepareModule(m) {
 		return exitError
 	}
 	paths, err := s.targets(m, o)

@@ -413,6 +413,34 @@ func TestVendorTakesPrecedence(t *testing.T) {
 	}
 }
 
+func TestReplacementResolvesToADirectory(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "app")
+	local := filepath.Join(parent, "dep")
+	write(t, root, map[string]string{
+		"main.zyx": "package main\n\nimport \"example.com/dep/util\"\n\nfunc Main() {\n}\n",
+	})
+	write(t, local, map[string]string{
+		"util/util.zyx": "package util\n\nfunc Use() {\n}\n",
+	})
+	l := &Loader{
+		Root:       root,
+		ModulePath: "example.com/app",
+		Target:     linuxAMD64(),
+		Local:      map[string]string{"example.com/dep": "../dep"},
+	}
+	pkg, err := l.LoadPackage("example.com/dep/util")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Name != "util" {
+		t.Errorf("name = %q, want util", pkg.Name)
+	}
+	if _, err := l.Load("example.com/app"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestImportableInternalRule(t *testing.T) {
 	cases := []struct {
 		from string

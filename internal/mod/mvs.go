@@ -4,7 +4,9 @@ package mod
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // A Graph supplies the requirements of a module version. The module proxy
@@ -61,8 +63,65 @@ func Select(main *File, g Graph) ([]Module, error) {
 	return out, nil
 }
 
+// A CacheGraph answers a module version's requirements from the module cache,
+// so version selection runs over the whole dependency graph without the
+// network: what it reads is what a fetch left there, and what a fetch left
+// there was checked against the checksum file.
+type CacheGraph struct {
+	Cache *ModuleCache
+}
+
+// Requirements returns the requirements a module version declares.
+func (g CacheGraph) Requirements(path, version string) ([]Requirement, error) {
+	if g.Cache == nil {
+		return nil, fmt.Errorf("module %s %s: there is no cache to read it from", path, version)
+	}
+	f, err := g.Cache.Manifest(path, version)
+	if err != nil {
+		return nil, err
+	}
+	return f.Require, nil
+}
+
+// BuildList returns the modules a build reads: the main module's
+// requirements, closed over the requirements of every module they reach,
+// chosen by minimal version selection and with the main module's replacements
+// applied. A module the cache does not hold stops selection, because the
+// build would have no version to fix it by.
+func BuildList(main *File, cache *ModuleCache) ([]Module, error) {
+	return Select(main, CacheGraph{Cache: cache})
+}
+
+// ModuleOf returns the module an import path belongs to: the longest module
+// in a build list whose path is a prefix of it.
+func ModuleOf(list []Module, importPath string) (Module, bool) {
+	var best Module
+	found := false
+	for _, m := range list {
+		if importPath != m.Path && !strings.HasPrefix(importPath, m.Path+"/") {
+			continue
+		}
+		if !found || len(m.Path) > len(best.Path) {
+			best, found = m, true
+		}
+	}
+	return best, found
+}
+
+// LocalPath reports whether a module path names a directory rather than a
+// module a proxy serves, which is what a replacement to a path in the working
+// tree writes.
+func LocalPath(path string) bool {
+	return path == "." || path == ".." ||
+		strings.HasPrefix(path, "./") || strings.HasPrefix(path, "../") ||
+		filepath.IsAbs(path)
+}
+
 // applyReplace applies the replacements of the main module to one selected
-// module. A replacement without a version stands for every version.
+// module. A replacement without a version stands for every version. A
+// replacement that names a path in the working tree keeps the module's own
+// path and carries the directory, so an import path still resolves by the
+// name programs write.
 func applyReplace(main *File, m Module) Module {
 	for _, r := range main.Replace {
 		if r.Path != m.Path {
@@ -70,6 +129,10 @@ func applyReplace(main *File, m Module) Module {
 		}
 		if r.Version != "" && r.Version != m.Version {
 			continue
+		}
+		if LocalPath(r.NewPath) {
+			m.Dir = r.NewPath
+			return m
 		}
 		m.Path = r.NewPath
 		if r.NewVersion != "" {

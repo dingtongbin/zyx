@@ -22,7 +22,7 @@ func (s *Session) check(args []string) int {
 	if err != nil {
 		return s.usageError(err)
 	}
-	if !s.checkLang(m) {
+	if !s.prepareModule(m) {
 		return exitError
 	}
 	paths, err := s.targets(m, o)

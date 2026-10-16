@@ -383,6 +383,74 @@ func TestEscapePath(t *testing.T) {
 	}
 }
 
+// putModule stores a module in a cache the way a fetch would, so tests can
+// build a dependency graph without the network.
+func putModule(t *testing.T, c *ModuleCache, path, version, manifest string) {
+	t.Helper()
+	archive := zipOf(t, map[string]string{path + "@" + version + "/zyx.mod": manifest})
+	content, err := HashContent(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Put(path, version, content, archive); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBuildListClosesOverTheGraph(t *testing.T) {
+	c, err := OpenModuleCache(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	putModule(t, c, "example.com/one", "v1.0.0",
+		"module example.com/one\n\nzyx 0.1\n\nrequire example.com/two v1.2.0\n")
+	putModule(t, c, "example.com/two", "v1.2.0", "module example.com/two\n\nzyx 0.1\n")
+	putModule(t, c, "example.com/two", "v1.4.0", "module example.com/two\n\nzyx 0.1\n")
+
+	main := &File{
+		Module: "example.com/app",
+		Require: []Requirement{
+			{Path: "example.com/one", Version: "v1.0.0"},
+			{Path: "example.com/two", Version: "v1.4.0"},
+		},
+	}
+	list, err := BuildList(main, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Minimal version selection takes the higher of the two versions the graph
+	// reaches, and the module only the dependency asked for.
+	want := map[string]string{"example.com/one": "v1.0.0", "example.com/two": "v1.4.0"}
+	if len(list) != len(want) {
+		t.Fatalf("build list = %+v, want %d modules", list, len(want))
+	}
+	for _, m := range list {
+		if want[m.Path] != m.Version {
+			t.Errorf("%s is %s, want %s", m.Path, m.Version, want[m.Path])
+		}
+	}
+
+	// An import path belongs to the longest module that is a prefix of it.
+	dep, ok := ModuleOf(list, "example.com/two/util")
+	if !ok || dep.Path != "example.com/two" {
+		t.Errorf("ModuleOf = %+v %v, want example.com/two", dep, ok)
+	}
+	if _, ok := ModuleOf(list, "example.com/other"); ok {
+		t.Error("an unrelated path resolved to a module")
+	}
+}
+
+func TestBuildListStopsWhenAModuleIsMissing(t *testing.T) {
+	c, err := OpenModuleCache(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := &File{Module: "example.com/app", Require: []Requirement{{Path: "example.com/gone", Version: "v1.0.0"}}}
+	if _, err := BuildList(main, c); err == nil {
+		t.Error("selection succeeded with a module the cache does not hold")
+	}
+}
+
 func TestCompareVersions(t *testing.T) {
 	cases := []struct {
 		a, b string
@@ -454,6 +522,9 @@ func TestSelectPicksTheHighestRequiredVersion(t *testing.T) {
 }
 
 func TestSelectAppliesReplacements(t *testing.T) {
+	// A replacement that names a path in the working tree keeps the module's
+	// own path, because that is what programs import, and carries the
+	// directory instead.
 	main := &File{
 		Module:  "example.com/app",
 		Require: []Requirement{{Path: "example.com/a", Version: "v1.0.0"}},
@@ -463,8 +534,37 @@ func TestSelectAppliesReplacements(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].Path != "../local/a" {
-		t.Errorf("build list = %+v, want the replacement", list)
+	if len(list) != 1 || list[0].Path != "example.com/a" || list[0].Dir != "../local/a" {
+		t.Errorf("build list = %+v, want example.com/a from ../local/a", list)
+	}
+
+	// A replacement that names another module changes the path, because the
+	// other module is what the build reads.
+	other := &File{
+		Module:  "example.com/app",
+		Require: []Requirement{{Path: "example.com/a", Version: "v1.0.0"}},
+		Replace: []Replacement{{Path: "example.com/a", NewPath: "example.com/b", NewVersion: "v2.0.0"}},
+	}
+	list, err = Select(other, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Path != "example.com/b" || list[0].Version != "v2.0.0" {
+		t.Errorf("build list = %+v, want example.com/b v2.0.0", list)
+	}
+}
+
+func TestLocalPath(t *testing.T) {
+	local := []string{".", "..", "./a", "../a", t.TempDir()}
+	for _, path := range local {
+		if !LocalPath(path) {
+			t.Errorf("%q is a path in the working tree and was not read as one", path)
+		}
+	}
+	for _, path := range []string{"example.com/a", "github.com/foo/bar"} {
+		if LocalPath(path) {
+			t.Errorf("%q is a module path and was read as a directory", path)
+		}
 	}
 }
 
