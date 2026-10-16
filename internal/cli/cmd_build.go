@@ -7,10 +7,29 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 
 	"zyx/internal/build"
+	"zyx/internal/cache"
 	"zyx/internal/toolchain"
 )
+
+// compilerIdentity returns what every cache key of an artifact this compiler
+// produced carries: the version it reports and the hash of the binary, so a
+// development build invalidates what it made without anyone having to bump a
+// version.
+var compilerIdentity = sync.OnceValue(func() string {
+	identity := Version
+	exe, err := os.Executable()
+	if err != nil {
+		return identity
+	}
+	data, err := os.ReadFile(exe)
+	if err != nil {
+		return identity
+	}
+	return identity + "+" + cache.HashBytes(data)
+})
 
 // backendOptions turns the parsed flags into the backend's settings. The
 // cache is content-addressed and belongs to the project, so it lives under
@@ -37,6 +56,7 @@ func (s *Session) backendOptions(o *options, output, root string) build.BackendO
 		Libs:         o.libs,
 		LibDirs:      o.libDirs,
 		CacheDir:     cacheDir,
+		Compiler:     compilerIdentity(),
 	}
 }
 

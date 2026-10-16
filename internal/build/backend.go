@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"zyx/internal/cache"
 	"zyx/internal/llvmgen"
@@ -53,8 +54,11 @@ type BackendOptions struct {
 	// Libs and LibDirs name the C libraries the program links against.
 	Libs    []string
 	LibDirs []string
-	// CacheDir holds the intermediate files.
+	// CacheDir holds the cache the build reuses artifacts from.
 	CacheDir string
+	// Compiler identifies the compiler, which every cache key of an artifact
+	// it produced carries.
+	Compiler string
 	// KeepIR keeps the generated LLVM IR next to the executable.
 	KeepIR bool
 }
@@ -85,29 +89,17 @@ func (s *Session) Link(entry string, results []*Result, opts BackendOptions) (st
 
 	// Every package becomes an object of its own, so a change to one package
 	// is a change to one object: the module defines the package and declares
-	// what the others hold, and the link brings them together.
+	// what the others hold, and the link brings them together. An object the
+	// cache holds is reused rather than compiled again.
 	var objects []string
 	for i, pkg := range prog.Order {
-		if prog.Files[pkg] == nil {
+		file := prog.Files[pkg]
+		if file == nil {
 			continue
 		}
-		ir, err := llvmgen.Generate(prog, pkg, s.Loader.Target)
+		where := filepath.Join(dir, fmt.Sprintf("p%d", i))
+		out, err := s.packageObject(t, c, where, file, prog, pkg, opts, copts)
 		if err != nil {
-			return "", err
-		}
-		if opts.Level != "-O0" {
-			ir, err = t.Optimize(ir, copts)
-			if err != nil {
-				return "", err
-			}
-		}
-		if opts.KeepIR && pkg == entry {
-			if err := os.WriteFile(opts.Output+".ll", ir, 0o644); err != nil {
-				return "", err
-			}
-		}
-		out := filepath.Join(dir, fmt.Sprintf("module%d.o", i))
-		if err := t.CompileIR(ir, out, copts); err != nil {
 			return "", err
 		}
 		objects = append(objects, out)
@@ -145,6 +137,97 @@ func (s *Session) Link(entry string, results []*Result, opts BackendOptions) (st
 		return "", err
 	}
 	return opts.Output, nil
+}
+
+// packageObject returns the object file of one package, compiling it when the
+// cache does not hold it. The object is a function of the package's tree, the
+// options, and the compiler, so a package that did not change is compiled
+// once and reused.
+func (s *Session) packageObject(t *toolchain.Toolchain, c *cache.Cache, where string, file *zyxc.File, prog *llvmgen.Program, pkg string, opts BackendOptions, copts toolchain.CompileOptions) (string, error) {
+	compile := func(into string) (string, error) {
+		ir, err := llvmgen.Generate(prog, pkg, s.Loader.Target)
+		if err != nil {
+			return "", err
+		}
+		if opts.Level != "-O0" {
+			ir, err = t.Optimize(ir, copts)
+			if err != nil {
+				return "", err
+			}
+		}
+		if opts.KeepIR && pkg == prog.Entry {
+			if err := os.WriteFile(opts.Output+".ll", ir, 0o644); err != nil {
+				return "", err
+			}
+		}
+		if err := os.MkdirAll(into, 0o755); err != nil {
+			return "", err
+		}
+		out := filepath.Join(into, "module.o")
+		if err := t.CompileIR(ir, out, copts); err != nil {
+			return "", err
+		}
+		return out, nil
+	}
+
+	if c == nil {
+		return compile(where)
+	}
+	key := s.backendKey(file, opts)
+	if published, ok := c.Lookup(key); ok {
+		return filepath.Join(published, "module.o"), nil
+	}
+	release, err := c.Lock(key)
+	if err != nil {
+		// A cache that cannot be written only costs speed.
+		return compile(where)
+	}
+	defer release()
+	if published, ok := c.Lookup(key); ok {
+		return filepath.Join(published, "module.o"), nil
+	}
+	entry, err := c.New(key)
+	if err != nil {
+		return compile(where)
+	}
+	object, err := compile(entry.Out())
+	if err != nil {
+		entry.Discard()
+		return "", err
+	}
+	if err := entry.Add("module.o"); err != nil {
+		entry.Discard()
+		return compile(where)
+	}
+	published, won, err := entry.Publish()
+	if err != nil || !won {
+		return compile(where)
+	}
+	return filepath.Join(published, filepath.Base(object)), nil
+}
+
+// backendKey returns the key of one package's object: everything that decides
+// what the object holds. The package's tree after monomorphization carries the
+// signature of every instance it references, so one hash covers the package
+// and what it instantiates.
+func (s *Session) backendKey(file *zyxc.File, opts BackendOptions) string {
+	key := cache.NewKey()
+	key.Add("backend", opts.Compiler, s.Loader.Target.Triple, opts.Level,
+		strconv.FormatBool(opts.Debug), strconv.FormatBool(opts.FastMath),
+		strconv.FormatBool(opts.Freestanding))
+	key.Add("zyxc", cache.HashBytes(zyxc.Format(file)))
+	key.Add("sum", s.sumHash())
+	return key.Sum()
+}
+
+// sumHash returns the hash of the module's checksum file, which fixes every
+// dependency the package reads. A module with no checksum file has none.
+func (s *Session) sumHash() string {
+	data, err := os.ReadFile(filepath.Join(s.Loader.Root, "zyx.sum"))
+	if err != nil {
+		return ""
+	}
+	return cache.HashBytes(data)
 }
 
 // monoProgram returns the trees of a program after monomorphization, which is

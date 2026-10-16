@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"zyx/internal/cache"
 	"zyx/internal/diag"
 	"zyx/internal/llvmgen"
 	"zyx/internal/mod"
@@ -514,6 +515,69 @@ func TestEachPackageBecomesItsOwnModule(t *testing.T) {
 	}
 	if code := exit.ExitCode(); code != 8 {
 		t.Errorf("the program exited %d, want 8", code)
+	}
+}
+
+func TestAnUnchangedPackageIsCompiledOnce(t *testing.T) {
+	tc, err := toolchain.Locate()
+	if err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	root := t.TempDir()
+	write(t, root, map[string]string{
+		"zyx.mod":  "module example.com/app\n\nzyx 0.1\n",
+		"main.zyx": "package main\n\nimport \"example.com/app/greet\"\n\nfunc main() -> i32 {\n    return i32(greet.Total())\n}\n",
+		"greet/greet.zyx": "package greet\n\nvar Count: i64 = 7\n\n" +
+			"func Total() -> i64 {\n    return Count\n}\n",
+	})
+	s := &Session{Loader: &Loader{Root: root, ModulePath: "example.com/app", Target: toolchain.HostTarget()}}
+	results, err := s.FrontEnd("example.com/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, err := s.monoProgram("example.com/app", results)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := cache.Open(filepath.Join(root, ".zyx-cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := BackendOptions{Level: "-O0", Compiler: "test"}
+	copts := toolchain.CompileOptions{Target: s.Loader.Target, Level: "-O0"}
+	dir := t.TempDir()
+
+	first, err := s.packageObject(tc, c, filepath.Join(dir, "first"), prog.Files["example.com/app"], prog, "example.com/app", opts, copts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.packageObject(tc, c, filepath.Join(dir, "second"), prog.Files["example.com/app"], prog, "example.com/app", opts, copts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The second build reads the object out of the cache rather than
+	// compiling it again, which the path says: a compile lands in the
+	// directory it was given, and a hit lands in the cache.
+	if first != second {
+		t.Errorf("the second build compiled again: %q then %q", first, second)
+	}
+	if !strings.Contains(first, ".zyx-cache") {
+		t.Errorf("the object is not in the cache: %q", first)
+	}
+	if _, err := os.Stat(first); err != nil {
+		t.Errorf("the object is not there: %v", err)
+	}
+
+	// A different level is a different object, so the key covers the options.
+	other := opts
+	other.Level = "-O1"
+	third, err := s.packageObject(tc, c, filepath.Join(dir, "third"), prog.Files["example.com/app"], prog, "example.com/app", other,
+		toolchain.CompileOptions{Target: s.Loader.Target, Level: "-O1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third == first {
+		t.Error("another optimization level reused the same object")
 	}
 }
 
