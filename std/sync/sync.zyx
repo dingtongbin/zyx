@@ -93,10 +93,10 @@ extern struct Semaphore {    handle: raw
     }
 }
 
-// Order is the memory order an atomic operation uses. The numbers the runtime
-// sees are the order of these variants.
+// MemoryOrder is the memory order an atomic operation uses. The numbers the
+// runtime sees are the order of these variants.
 
-enum Order {
+enum MemoryOrder {
     SeqCst
     Relaxed
     Acquire
@@ -107,7 +107,7 @@ enum Order {
 // Fence is a standalone memory barrier, for lock-free structures and for
 // ordering that no single operation carries.
 
-func Fence(order: Order) {
+func Fence(order: MemoryOrder) {
     c.zyxrt_atomic_fence(i64(order))
 }
 
@@ -127,32 +127,32 @@ struct Atomic<T> {
     }
 
     // Load answers the value.
-    func Load(order: Order = Order.SeqCst) -> T {
+    func Load(order: MemoryOrder = MemoryOrder.SeqCst) -> T {
         return T(c.zyxrt_atomic_load(self.handle, i64(order)))
     }
 
     // Store replaces the value.
-    func Store(v: T, order: Order = Order.SeqCst) {
+    func Store(v: T, order: MemoryOrder = MemoryOrder.SeqCst) {
         c.zyxrt_atomic_store(self.handle, u64(v), i64(order))
     }
 
     // Add adds v and answers the value before the addition.
-    func Add(v: T, order: Order = Order.SeqCst) -> T {
+    func Add(v: T, order: MemoryOrder = MemoryOrder.SeqCst) -> T {
         return T(c.zyxrt_atomic_add(self.handle, u64(v), i64(order)))
     }
 
     // Sub subtracts v and answers the value before the subtraction.
-    func Sub(v: T, order: Order = Order.SeqCst) -> T {
+    func Sub(v: T, order: MemoryOrder = MemoryOrder.SeqCst) -> T {
         return T(c.zyxrt_atomic_sub(self.handle, u64(v), i64(order)))
     }
 
     // Swap replaces the value and answers the value before it.
-    func Swap(v: T, order: Order = Order.SeqCst) -> T {
+    func Swap(v: T, order: MemoryOrder = MemoryOrder.SeqCst) -> T {
         return T(c.zyxrt_atomic_swap(self.handle, u64(v), i64(order)))
     }
 
     // Cas replaces the value if it is expect, and answers whether it did.
-    func Cas(expect: T, v: T, order: Order = Order.SeqCst) -> bool {
+    func Cas(expect: T, v: T, order: MemoryOrder = MemoryOrder.SeqCst) -> bool {
         return c.zyxrt_atomic_cas(self.handle, u64(expect), u64(v), i64(order)) != 0
     }
 }

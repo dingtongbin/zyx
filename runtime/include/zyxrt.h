@@ -105,6 +105,9 @@ void zyxrt_region_release(void *region, void *object, size_t size);
 /* Strings. A str is a borrowed pointer and its length, so equality compares
    the bytes rather than the two pointers. */
 int8_t zyxrt_str_eq(const char *a, size_t an, const char *b, size_t bn);
+/* zyxrt_str_compare orders two strings by their bytes, answering a negative
+   number, zero, or a positive number. */
+int32_t zyxrt_str_compare(const char *a, size_t an, const char *b, size_t bn);
 
 /* The text of one value, in the single form the language writes it. Each
    function renders into a buffer the caller owns and reports the byte count.

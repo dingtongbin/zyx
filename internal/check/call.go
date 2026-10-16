@@ -746,6 +746,12 @@ func builtinMethod(recv *types.Type, name string) *types.Type {
 	if name == "Hash" && hashable(recv) {
 		return types.FuncOf(types.Uint64)
 	}
+	if name == "Compare" && ordered(recv) {
+		// The language gives a value its order from the comparison the
+		// backend lowers, so the method is callable wherever a constrained
+		// parameter would call it.
+		return types.FuncOf(types.Int32, recv)
+	}
 	return nil
 }
 
@@ -925,7 +931,8 @@ func (c *checker) implements(t, iface *types.Type) bool {
 // builtinImplements reports whether the language itself gives a type an
 // interface: the types it compares implement Eq, the types it hashes
 // implement Hash, the types whose text the backend writes from its fixed
-// table implement Show, and the concurrency handles are SyncSafe.
+// table implement Show, the types it orders implement Order, and the
+// concurrency handles are SyncSafe.
 func builtinImplements(t, iface *types.Type) bool {
 	switch iface.Name {
 	case "Eq":
@@ -934,6 +941,8 @@ func builtinImplements(t, iface *types.Type) bool {
 		return hashable(t)
 	case "Show":
 		return showable(t)
+	case "Order":
+		return ordered(t)
 	case "SyncSafe":
 		switch t.Kind {
 		case types.KindChan, types.KindStr:
@@ -982,6 +991,19 @@ func equatable(t *types.Type) bool {
 	}
 	return t.IsNumeric() || t.Kind == types.KindBool || t.Kind == types.KindChar ||
 		t.Kind == types.KindRaw || t.Kind == types.KindStr || t.Kind == types.KindDuration
+}
+
+// ordered reports whether the language gives the type a total order, which is
+// the set a sorted container accepts as a key. A floating-point value is left
+// out: a NaN makes its comparisons no order at all, so the reasoning that
+// keeps it out of Hash keeps it out of Order.
+func ordered(t *types.Type) bool {
+	if t == nil {
+		return false
+	}
+	return (t.IsNumeric() && !t.IsFloat()) || t.Kind == types.KindBool ||
+		t.Kind == types.KindChar || t.Kind == types.KindRaw ||
+		t.Kind == types.KindStr || t.Kind == types.KindDuration
 }
 
 // hashable reports whether the language gives the type a hash, which is
