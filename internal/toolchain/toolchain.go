@@ -466,13 +466,14 @@ func (t *Toolchain) IncludeFlags() []string {
 // ZYX_SANITIZE names one, such as "address", and a build with it must use a
 // cache of its own: the flag is not part of what a cache key covers, so the
 // artifacts of an instrumented build and a plain one must not share a
-// directory.
+// directory. An instrumented build carries debug information, because what it
+// is for is finding out where something went wrong.
 func sanitizeFlags() []string {
 	name := os.Getenv("ZYX_SANITIZE")
 	if name == "" {
 		return nil
 	}
-	return []string{"-fsanitize=" + name, "-fno-omit-frame-pointer"}
+	return []string{"-fsanitize=" + name, "-fno-omit-frame-pointer", "-g"}
 }
 
 // CompileIR turns LLVM IR text into an object file.

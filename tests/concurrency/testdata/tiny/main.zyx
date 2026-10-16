@@ -1,0 +1,22 @@
+package main
+
+import "std/fmt"
+
+// The smallest program that hands a coroutine back and forth: one coroutine
+// writes twice, each write being a blocking call that leaves the scheduler and
+// comes back to the thread that owns it, and the program is over as soon as
+// both have finished. The output must be the same whatever the scheduler does,
+// and the program must finish.
+
+func writer() {
+    fmt.Print("w")
+    fmt.PrintNl()
+}
+
+func main() {
+    region {
+        spawn writer()
+    }
+    fmt.Print("done")
+    fmt.PrintNl()
+}

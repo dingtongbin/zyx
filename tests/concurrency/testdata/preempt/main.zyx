@@ -1,0 +1,34 @@
+package main
+
+import "std/fmt"
+
+// A coroutine that computes without blocking holds the scheduler thread. The
+// back-edge check lets another coroutine run once the monitor has marked it,
+// so a timer still fires while the spinner is running.
+
+const Short: Duration = dur.ms(20)
+
+func spin(stop: chan<bool>) {
+    for {
+        var _, ok = stop.TryRecv()
+        if ok {
+            return
+        }
+    }
+}
+
+func main() {
+    var stop = new chan<bool>(1)
+    var idle = new chan<bool>(1)
+    region {
+        spawn spin(stop)
+        select {
+            recv(idle) -> v, ok { fmt.Print("idle") }
+            timeout(Short): fmt.Print("timer")
+        }
+        fmt.PrintNl()
+        stop.Send(true)
+    }
+    fmt.Print("done")
+    fmt.PrintNl()
+}

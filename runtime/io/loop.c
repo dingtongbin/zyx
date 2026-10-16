@@ -3,6 +3,7 @@
    scheduler. Only the scheduler thread ever readies a coroutine, so the poller
    records what became ready and the scheduler turns that into ready
    coroutines. */
+void zyxrt_loop_stop(void);
 
 #include "zyxrt_internal.h"
 
@@ -41,6 +42,12 @@ static zyxrt_ready *ready_free;
 /* polled marks a loop a poller thread drives; a target without threads drives
    the loop from the scheduler instead. */
 static int polled;
+
+/* quitting tells the poller thread to leave, and live counts the ones that
+   have not, because the program's own thread ends the process and must not do
+   that while the poller is inside the kernel. */
+static _Atomic int quitting;
+static _Atomic size_t live;
 
 /* entry_of answers the entry of a descriptor, growing the table when the
    descriptor is past its end. The caller holds the loop lock. */
@@ -99,14 +106,28 @@ static void poller(void *arg) {
   (void)arg;
   int fds[ZYXRT_LOOP_BATCH];
   int events[ZYXRT_LOOP_BATCH];
+  atomic_fetch_add_explicit(&live, 1, memory_order_acq_rel);
   for (;;) {
     int n = zyxrt_loop_backend_wait(fds, events, ZYXRT_LOOP_BATCH, -1);
+    if (atomic_load_explicit(&quitting, memory_order_acquire)) break;
     if (n <= 0) continue;
     for (int i = 0; i < n; i++) {
       if (fds[i] < 0) continue; /* the backend's own wakeup */
       record(fds[i], events[i]);
     }
     zyxrt_wakeup_signal();
+  }
+  atomic_fetch_sub_explicit(&live, 1, memory_order_acq_rel);
+}
+
+/* zyxrt_loop_stop tells the poller thread to leave and waits until it has. */
+void zyxrt_loop_stop(void) {
+  if (!loop_started || !polled) return;
+  atomic_store_explicit(&quitting, 1, memory_order_release);
+  /* The wake makes the wait return so the thread sees the flag. */
+  zyxrt_loop_backend_wake();
+  while (atomic_load_explicit(&live, memory_order_acquire) > 0) {
+    zyxrt_sleep(1000000u);
   }
 }
 

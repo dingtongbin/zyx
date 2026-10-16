@@ -56,6 +56,10 @@ static _Atomic int stopping;
    work is still on its way. */
 static _Atomic int externals;
 
+/* threads_live counts the scheduler threads other than the one that started
+   them, so that thread can wait for them to leave before the process ends. */
+static _Atomic size_t threads_live;
+
 void zyxrt_sched_external(int delta) {
   atomic_fetch_add_explicit(&externals, delta, memory_order_acq_rel);
 }
@@ -100,14 +104,24 @@ static zyxrt_coro *queue_pop(zyxrt_coro **head, zyxrt_coro **tail, zyxrt_lock *l
   return c;
 }
 
-/* sched_push puts a coroutine on a ready queue: the calling thread's own when
-   it is a scheduler thread, and the handoff queue otherwise, which is what a
-   thread outside the scheduler uses and what every thread uses once the
-   program is over. */
+/* sched_push puts a coroutine on the queue of the thread that owns it, which
+   is woken when it is sleeping; a coroutine no thread has run yet goes to the
+   calling thread's queue, or to the handoff queue when the caller is not a
+   scheduler thread, where the first thread to take it becomes its owner. */
 static void sched_push(zyxrt_coro *c) {
   zyxrt_thread *self = self_thread;
-  if (self != NULL && !atomic_load_explicit(&stopping, memory_order_acquire)) {
-    queue_push(&self->head, &self->tail, &self->lock, c);
+  zyxrt_thread *target = NULL;
+  if (!atomic_load_explicit(&stopping, memory_order_acquire)) {
+    size_t owner = atomic_load_explicit(&c->owner, memory_order_acquire);
+    target = owner == ZYXXRT_CORO_NO_OWNER ? self : &threads[owner];
+  }
+  if (target != NULL) {
+    queue_push(&target->head, &target->tail, &target->lock, c);
+    /* A coroutine goes to the thread that owns it, and that thread looks only
+       at its own queue, so the wake has to reach it: one signal would do if it
+       woke a thread that would look, but a signal wakes whichever thread is
+       waiting, and that one may have nothing to do and go back to sleep. */
+    if (target != self) zyxrt_wakeup_signal_all(thread_count);
     return;
   }
   c->wait_next = NULL;
@@ -182,10 +196,10 @@ static zyxrt_coro *incoming_pop(void) {
 }
 
 /* take_ready returns the next coroutine this thread should run: work that
-   arrived from another thread first, because a thread with a queue of its own
-   would otherwise never look at it, then its own next, then a share of what
-   another thread has left. Stealing is what keeps one busy thread from
-   leaving the others idle. */
+   arrived from outside the scheduler, which no thread owns yet, and then the
+   thread's own next. A coroutine is resumed only on the thread that owns it,
+   so there is nothing to take from another thread: a wake hands it to its
+   owner instead. */
 static zyxrt_coro *take_ready(zyxrt_thread *t) {
   if (incoming_ready()) {
     zyxrt_coro *c = incoming_pop();
@@ -193,14 +207,7 @@ static zyxrt_coro *take_ready(zyxrt_thread *t) {
   }
   zyxrt_coro *c = queue_pop(&t->head, &t->tail, &t->lock);
   if (c != NULL) return c;
-  c = incoming_pop();
-  if (c != NULL) return c;
-  for (size_t i = 1; i < thread_count; i++) {
-    zyxrt_thread *other = &threads[(t->index + i) % thread_count];
-    c = queue_pop(&other->head, &other->tail, &other->lock);
-    if (c != NULL) return c;
-  }
-  return NULL;
+  return incoming_pop();
 }
 
 zyxrt_coro *zyxrt_sched_current(void) {
@@ -233,6 +240,9 @@ static void sched_finish(zyxrt_coro *c) {
 static int run_once(zyxrt_thread *t) {
   zyxrt_coro *c = take_ready(t);
   if (c == NULL) return 0;
+  /* The thread that runs a coroutine owns it, and every wake goes back to this
+     thread from then on. */
+  atomic_store_explicit(&c->owner, t->index, memory_order_release);
   t->current = c;
   /* The monitor watches the coroutine the scheduler is running, so it is
      recorded before the switch and cleared after it. */
@@ -325,6 +335,20 @@ void zyxrt_sched_sleep(uint64_t ns) {
 void zyxrt_sched_advance(void) {
   zyxrt_loop_drain();
   zyxrt_wheel_advance(zyxrt_now());
+}
+
+/* queues_empty reports whether any thread's queue holds a coroutine. A wake
+   from another thread lands on its owner's queue, so a thread that finds
+   nothing of its own still has to see whether work waits for another one
+   before the program can be over. */
+static int queues_empty(void) {
+  for (size_t i = 0; i < thread_count; i++) {
+    zyxrt_lock_hold(&threads[i].lock);
+    int empty = threads[i].head == NULL;
+    zyxrt_lock_drop(&threads[i].lock);
+    if (!empty) return 0;
+  }
+  return 1;
 }
 
 /* sched_idle_wait answers how long a thread with nothing to run may sleep:
@@ -421,6 +445,9 @@ void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, voi
   /* The region the spawner is running in waits for this coroutine before it
      releases its memory, so the coroutine never reads freed storage. */
   zyxrt_region_adopt(zyxrt_region_current(), c);
+  /* The spawning thread runs it first, so it belongs to that thread; a spawn
+     from outside the scheduler belongs to no thread yet. */
+  c->owner = self_thread == NULL ? ZYXXRT_CORO_NO_OWNER : self_thread->index;
   /* No thread has this one on its stack yet, so a waker may queue it at once
      rather than leave the offer for a thread to pick up. */
   atomic_store_explicit(&c->sched, ZYXXRT_CORO_PARKED, memory_order_relaxed);
@@ -530,7 +557,9 @@ static void thread_main(void *arg) {
   self_thread = t;
   t->ctx = zyxrt_ctx_thread();
   zyxrt_preempt_thread();
+  atomic_fetch_add_explicit(&threads_live, 1, memory_order_acq_rel);
   zyxrt_sched_run();
+  atomic_fetch_sub_explicit(&threads_live, 1, memory_order_acq_rel);
 }
 
 /* zyxrt_sched_run is the scheduler loop of the calling thread: take in what
@@ -552,7 +581,8 @@ void zyxrt_sched_run(void) {
     zyxrt_lock_hold(&state_lock);
     idle_threads++;
     int64_t wait = sched_idle_wait();
-    int over = idle_threads == thread_count && wait == -1 && !incoming_ready();
+    int over = idle_threads == thread_count && wait == -1 &&
+               !incoming_ready() && queues_empty();
     if (over) {
       atomic_store_explicit(&stopping, 1, memory_order_release);
     }
@@ -578,6 +608,7 @@ void zyxrt_sched_init(void) {
   idle_threads = 0;
   atomic_store_explicit(&stopping, 0, memory_order_relaxed);
   atomic_store_explicit(&externals, 0, memory_order_relaxed);
+  atomic_store_explicit(&threads_live, 0, memory_order_relaxed);
   incoming_head = NULL;
   incoming_tail = NULL;
   /* A target without threads runs one, whatever ZYX_THREADS says. */
@@ -601,9 +632,14 @@ void zyxrt_sched_init(void) {
 }
 
 /* zyxrt_sched_shutdown wakes every thread that is waiting so the process can
-   end. A thread that is between coroutines is idle by then, so waking it is a
+   end, and waits until they have left: the program's own thread ends the
+   process, and it must not do that while a scheduler thread is still running.
+   A thread that is between coroutines is idle by then, so waking it is a
    courtesy rather than a requirement. */
 void zyxrt_sched_shutdown(void) {
   atomic_store_explicit(&stopping, 1, memory_order_release);
   zyxrt_wakeup_signal_all(thread_count - 1);
+  while (atomic_load_explicit(&threads_live, memory_order_acquire) > 0) {
+    zyxrt_sleep(1000000u);
+  }
 }

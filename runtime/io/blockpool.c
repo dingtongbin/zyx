@@ -37,6 +37,13 @@ static size_t cap;
 
 static int started;
 
+/* quitting tells the pool threads to leave, and live counts the ones that have
+   not. The program's own thread ends the process, and it must not do that
+   while a pool thread is still inside the allocator or inside the call it was
+   given. */
+static _Atomic int quitting;
+static _Atomic size_t live;
+
 /* block_pool_size returns the number of pool threads, which ZYX_BLOCKPOOL
    sets and which defaults to 64. */
 static size_t block_pool_size(void) {
@@ -51,10 +58,15 @@ static size_t block_pool_size(void) {
 /* worker takes jobs for as long as the process runs. */
 static void worker(void *arg) {
   (void)arg;
+  atomic_fetch_add_explicit(&live, 1, memory_order_acq_rel);
   for (;;) {
     zyxrt_lock_hold(&queue_lock);
-    while (queue_head == NULL) {
+    while (queue_head == NULL && !atomic_load_explicit(&quitting, memory_order_acquire)) {
       zyxrt_cond_wait(&queue_cond, &queue_lock);
+    }
+    if (queue_head == NULL) {
+      zyxrt_lock_drop(&queue_lock);
+      break;
     }
     zyxrt_job *job = queue_head;
     queue_head = job->next;
@@ -77,6 +89,23 @@ static void worker(void *arg) {
     /* The scheduler readies the coroutine, so the thread only hands it over
        and wakes the scheduler. */
     zyxrt_sched_ready(coro);
+  }
+  atomic_fetch_sub_explicit(&live, 1, memory_order_acq_rel);
+}
+
+/* zyxrt_block_stop tells every pool thread to leave and waits until they have,
+   because the program's own thread ends the process and must not do that while
+   one of them is still running. */
+void zyxrt_block_stop(void) {
+  if (!started) return;
+  atomic_store_explicit(&quitting, 1, memory_order_release);
+  zyxrt_lock_hold(&queue_lock);
+  for (size_t i = 0; i < cap; i++) {
+    zyxrt_cond_signal(&queue_cond);
+  }
+  zyxrt_lock_drop(&queue_lock);
+  while (atomic_load_explicit(&live, memory_order_acquire) > 0) {
+    zyxrt_sleep(1000000u);
   }
 }
 

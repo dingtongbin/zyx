@@ -5,6 +5,7 @@
    scheduler thread has run its coroutine and marks it once it has had long
    enough. The check itself is one atomic load, so a loop that never exceeds
    the quantum pays nothing for the mechanism beyond the load. */
+void zyxrt_preempt_stop(void);
 
 #include "zyxrt_internal.h"
 
@@ -35,11 +36,18 @@ static _Thread_local size_t self_slot = ZYXXRT_PREEMPT_NONE;
    thread for a whole one is marked on the next pass. */
 #define ZYXXRT_MONITOR_NS (ZYXXRT_QUANTUM_NS / 2u)
 
+/* monitor_quitting tells the monitor to leave, and monitor_live counts the one
+   that has not, because the program's own thread ends the process and must not
+   do that while the monitor is still reading the slots. */
+static _Atomic int monitor_quitting;
+static _Atomic size_t monitor_live;
+
 /* monitor marks every coroutine that has held its scheduler thread for a whole
    quantum. It runs only where the target has threads. */
 static void monitor(void *arg) {
   (void)arg;
-  for (;;) {
+  atomic_fetch_add_explicit(&monitor_live, 1, memory_order_acq_rel);
+  while (!atomic_load_explicit(&monitor_quitting, memory_order_acquire)) {
     zyxrt_sleep(ZYXXRT_MONITOR_NS);
     size_t slots = atomic_load_explicit(&slot_count, memory_order_acquire);
     for (size_t i = 0; i < slots; i++) {
@@ -53,6 +61,15 @@ static void monitor(void *arg) {
       }
       atomic_store_explicit(&c->preempt, 1, memory_order_release);
     }
+  }
+  atomic_fetch_sub_explicit(&monitor_live, 1, memory_order_acq_rel);
+}
+
+void zyxrt_preempt_stop(void) {
+  if (!zyxrt_threads()) return;
+  atomic_store_explicit(&monitor_quitting, 1, memory_order_release);
+  while (atomic_load_explicit(&monitor_live, memory_order_acquire) > 0) {
+    zyxrt_sleep(1000000u);
   }
 }
 

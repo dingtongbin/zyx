@@ -20,6 +20,10 @@
 #define ZYXXRT_CORO_PARKED 4u
 #define ZYXXRT_CORO_DONE 8u
 
+/* A coroutine no scheduler thread has run yet, and which therefore belongs to
+   no thread's queue. */
+#define ZYXXRT_CORO_NO_OWNER ((size_t)-1)
+
 /* A slab is a run of equal-sized objects. Its size class is implied by the
    list it is on, so no object carries a header. */
 typedef struct zyxrt_slab {
@@ -144,6 +148,12 @@ typedef struct zyxrt_coro {
      region, which the coroutine leaves when it is released. */
   struct zyxrt_coro *region_next;
   void *owner_region;
+  /* owner is the scheduler thread the coroutine runs on, or
+     ZYXXRT_CORO_NO_OWNER until one takes it. A coroutine is resumed only on
+     the thread that owns it: one stack belongs to one thread, and a wake from
+     another thread hands the coroutine to its owner rather than leaving it
+     where any thread may take it. */
+  _Atomic size_t owner;
 } zyxrt_coro;
 
 /* The platform context layer. A context runs entry on a stack of the given
@@ -180,8 +190,8 @@ void zyxrt_platform_init(void);
 /* The scheduler. Coroutines run cooperatively, each on its own stack; a
    coroutine that cannot proceed suspends itself and a scheduler thread
    resumes the next ready one. The scheduler runs on as many threads as
-   ZYX_THREADS names, each with a queue of its own, and a thread with nothing
-   to run takes work from another. */
+   ZYX_THREADS names, each with a queue of its own, and a coroutine is resumed
+   only on the thread that owns it. */
 void zyxrt_sched_ready(zyxrt_coro *c);
 void zyxrt_sched_suspend(zyxrt_coro *c);
 /* zyxrt_sched_run is the scheduler loop of the calling thread. zyxrt_sched_init
@@ -217,6 +227,13 @@ void zyxrt_wakeup_signal_all(size_t count);
 /* zyxrt_wakeup_wait waits for the handle, up to ns nanoseconds, or forever
    when ns is negative. */
 void zyxrt_wakeup_wait(int64_t ns);
+
+/* Stopping the threads the runtime started. The program's own thread ends the
+   process, so each of these tells the threads of one part of the runtime to
+   leave and waits until they have. */
+void zyxrt_block_stop(void);
+void zyxrt_loop_stop(void);
+void zyxrt_preempt_stop(void);
 
 /* The event loop. A coroutine that waits on a pollable descriptor parks, and
    a poller thread watches the descriptors and hands the ready ones to the

@@ -1,0 +1,34 @@
+package main
+
+import "std/fmt"
+
+// Every coroutine makes a blocking call of its own -- writing runs on the pool
+// of threads that carries calls off the scheduler -- and returns as soon as
+// that call comes back, which is the handoff that has to wake the thread that
+// owns it at the same moment the coroutine finishes. The dots are the same
+// character wherever they land, so the output does not depend on the order the
+// coroutines run in.
+
+func writer(out: chan<i64>, id: i64) {
+    out.Send(id)
+    fmt.Print(".")
+}
+
+func main() {
+    var out = new chan<i64>(256)
+    region {
+        for i in 0..100 {
+            spawn writer(out, i)
+        }
+    }
+    var sum: i64 = 0
+    for i in 0..100 {
+        var v, ok = out.Recv()
+        if ok {
+            sum = sum + v
+        }
+    }
+    fmt.PrintNl()
+    fmt.PrintI64(sum)
+    fmt.PrintNl()
+}

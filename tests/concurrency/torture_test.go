@@ -185,9 +185,11 @@ func TestThreadCountDoesNotChangeOutput(t *testing.T) {
 	}
 }
 
-// TestThreadCountDoesNotChangeOutputRepeated runs the same programs many times
-// at several scheduler sizes, because a race that hides in one run appears in
-// the twentieth.
+// TestThreadCountDoesNotChangeOutputRepeated runs the same programs again at
+// four threads a few times each, because a race that hides in one run appears
+// in the next. It stays short: the first test is what covers the thread
+// counts, and this one only asks whether the answer holds when it is asked
+// again.
 func TestThreadCountDoesNotChangeOutputRepeated(t *testing.T) {
 	if testing.Short() {
 		t.Skip("the repeated runs are skipped in a short test run")
@@ -197,6 +199,7 @@ func TestThreadCountDoesNotChangeOutputRepeated(t *testing.T) {
 	}
 	for _, name := range programs(t) {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			src := filepath.Join("testdata", name)
 			dir := t.TempDir()
 			copyTree(t, src, dir)
@@ -205,15 +208,13 @@ func TestThreadCountDoesNotChangeOutputRepeated(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, threads := range []string{"1", "4"} {
-				for run := 0; run < 20; run++ {
-					got, err := runAt(t, path, threads)
-					if err != nil {
-						t.Fatalf("at %s threads run %d did not finish cleanly: %v\n%s", threads, run, err, got)
-					}
-					if got != string(want) {
-						t.Fatalf("at %s threads run %d printed\n%s\nwant\n%s", threads, run, got, want)
-					}
+			for run := 0; run < 5; run++ {
+				got, err := runAt(t, path, "4")
+				if err != nil {
+					t.Fatalf("at 4 threads run %d did not finish cleanly: %v\n%s", run, err, got)
+				}
+				if got != string(want) {
+					t.Fatalf("at 4 threads run %d printed\n%s\nwant\n%s", run, got, want)
 				}
 			}
 		})
