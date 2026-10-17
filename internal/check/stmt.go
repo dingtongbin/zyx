@@ -141,6 +141,7 @@ func (c *checker) checkStmt(s ast.Stmt) {
 	case *ast.DeferStmt:
 		c.checkExpr(v.Call, nil)
 	case *ast.RegionStmt:
+		c.freestandingRegion(v)
 		c.inRegion++
 		c.checkBlock(v.Body)
 		c.inRegion--
@@ -153,6 +154,7 @@ func (c *checker) checkStmt(s ast.Stmt) {
 	case *ast.MatchStmt:
 		c.checkMatch(v)
 	case *ast.SelectStmt:
+		c.freestandingSelect(v)
 		c.checkSelect(v)
 	case *ast.VarDecl:
 		c.checkLocalVar(v)

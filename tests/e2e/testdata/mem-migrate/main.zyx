@@ -1,0 +1,35 @@
+package main
+
+import "std/fmt"
+
+// A value made inside a region and stored through a function into an object
+// that outlives the region belongs to the object's region: the store of the
+// argument records where the object lives, so the value is made there and the
+// enclosing code still reads it after the region leaves.
+
+struct Holder {
+    xs: Array<i64>
+}
+
+func fill(dst: Holder, v: Array<i64>) {
+    dst.xs = v
+}
+
+func main() {
+    var holder = Holder { xs: new Array<i64>(0) }
+    region {
+        var inner = new Array<i64>(3)
+        inner.Push(10)
+        inner.Push(20)
+        inner.Push(30)
+        fill(holder, inner)
+    }
+    var noise = new Array<i64>(3)
+    noise.Push(999)
+    fmt.PrintI64(i64(holder.xs.Len()))
+    fmt.PrintNl()
+    fmt.PrintI64(holder.xs[0] + holder.xs[2])
+    fmt.PrintNl()
+    fmt.PrintI64(noise[0])
+    fmt.PrintNl()
+}

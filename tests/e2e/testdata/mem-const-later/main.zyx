@@ -1,0 +1,26 @@
+package main
+
+import "std/fmt"
+
+// A function reads a package-level constant declared after it. A body is checked
+// where it is written, so the constant has no type yet when the body runs: the
+// declared type of the constant is read from its declaration, which is what
+// makes a use above the declaration work. std/url's first draft wrote its hex
+// table at the end of the file and could not index it from the function above.
+
+func highNibble(b: u8) -> u8 {
+    return hex[usize(b >> 4)]
+}
+
+func lowNibble(b: u8) -> u8 {
+    return hex[usize(b & 15)]
+}
+
+const hex: str = "0123456789abcdef"
+
+func main() {
+    fmt.PrintU64(u64(highNibble(0xAB)))
+    fmt.PrintNl()
+    fmt.PrintU64(u64(lowNibble(0xAB)))
+    fmt.PrintNl()
+}

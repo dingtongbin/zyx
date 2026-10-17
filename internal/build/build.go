@@ -449,6 +449,10 @@ type Session struct {
 	// Cache reuses the front-end product of a package. A nil cache runs the
 	// front end every time.
 	Cache *FrontEndCache
+	// Freestanding marks a build that leaves the runtime out, which the
+	// checker rejects constructs against. It is carried here rather than read
+	// off the cache, because a run without one still has to reach the checker.
+	Freestanding bool
 }
 
 // FrontEnd runs the front end over the entry package and everything it
@@ -603,7 +607,7 @@ func (s *Session) frontEndPackage(pkg *Package, resolveIfaces map[string]*resolv
 		return res
 	}
 
-	checked, cdiags := check.Check(rpkg, rinfo, checkDeps(checkIfaces), s.Loader.Target, cdecls)
+	checked, cdiags := check.Check(rpkg, rinfo, checkDeps(checkIfaces), s.Loader.Target, cdecls, check.Options{Freestanding: s.Freestanding})
 	res.Checked = checked
 	res.Diags = append(res.Diags, cdiags...)
 	if len(cdiags) != 0 {

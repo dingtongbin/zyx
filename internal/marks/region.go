@@ -76,7 +76,7 @@ func newRegionBuilder(fn *ast.FuncDecl) *regionBuilder {
 // root returns the function body region.
 func (b *regionBuilder) root() *Region {
 	r := &Region{Name: "r0", Func: b.fn}
-	if b.fn.Body != nil {
+	if b.fn != nil && b.fn.Body != nil {
 		b.byNode[b.fn.Body] = r
 	}
 	return r

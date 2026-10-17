@@ -271,11 +271,26 @@ func (p *Package) Imported(path string) *Interface {
 }
 
 // Check type-checks one package's declarations for a target. The target
-// decides the layout queries a compile-time expression may run.
-func Check(pkg *resolve.Package, info *resolve.Info, imports Imports, target toolchain.Target, cdecls map[string]*cheader.Table) (*Package, []diag.Diagnostic) {
+// decides the layout queries a compile-time expression may run. A build whose
+// switches change what the target has, such as one that leaves the runtime
+// out, asks for them with Options.
+func Check(pkg *resolve.Package, info *resolve.Info, imports Imports, target toolchain.Target, cdecls map[string]*cheader.Table, options ...Options) (*Package, []diag.Diagnostic) {
+	opts := Options{}
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	c := newChecker(pkg, info, imports, target, cdecls)
+	c.freestanding = opts.Freestanding
 	c.run()
 	return c.out, c.diags
+}
+
+// Options carries the build switches the checker has to know about.
+type Options struct {
+	// Freestanding marks a build that leaves the runtime out, so the
+	// constructs the specification says such a target does not have are
+	// rejected.
+	Freestanding bool
 }
 
 // checker carries the state of one package's check.
@@ -314,6 +329,9 @@ type checker struct {
 	result *types.Type
 	// inComptime marks a comptime context.
 	inComptime bool
+	// freestanding marks a build that leaves the runtime out, which has no
+	// coroutines, channels, regions, or runtime allocator.
+	freestanding bool
 	// inRegion counts the enclosing region blocks, which spawn requires.
 	inRegion int
 	// addrOK marks a C call argument list, where &x is allowed.
@@ -625,6 +643,7 @@ func (c *checker) buildType(t ast.TypeExpr) *types.Type {
 		c.out.Nodes[v] = out
 		return out
 	case *ast.ChanType:
+		c.freestandingChan(v)
 		out := types.ChanOf(c.buildType(v.Elem))
 		c.out.Nodes[v] = out
 		return out

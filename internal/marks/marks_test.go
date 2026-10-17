@@ -89,6 +89,19 @@ func hasCode(diags []diag.Diagnostic, code diag.Code) bool {
 	return false
 }
 
+// countMark returns how many nodes carry a mark with that name.
+func countMark(info *Info, name string) int {
+	n := 0
+	for _, marks := range info.Marks {
+		for _, m := range marks {
+			if m.Name == name {
+				n++
+			}
+		}
+	}
+	return n
+}
+
 func TestRegionMarks(t *testing.T) {
 	src := `package server
 
@@ -455,6 +468,222 @@ func Work(xs: Array<u8>) {
 `
 	_, diags := marksOf(t, src)
 	wantClean(t, diags)
+}
+
+// TestCrossFunctionStoreOutOfRegionIsRejected checks the whole-program
+// domination rule: a function that stores a value it makes into an object it
+// was given puts the value in the region of the call, so a caller that passes an
+// object of an enclosing region leaves that object pointing at released memory.
+func TestCrossFunctionStoreOutOfRegionIsRejected(t *testing.T) {
+	src := `package server
+
+struct Holder {
+	xs: Array<i64>
+}
+
+func Fill(h: Holder) {
+	h.xs = new Array<i64>(4)
+}
+
+func Work() {
+	var holder = Holder { xs: new Array<i64>(1) }
+	region {
+		Fill(holder)
+	}
+}
+`
+	_, diags := marksOf(t, src)
+	if !hasCode(diags, diag.CodeRegionDomination) {
+		t.Errorf("want a region domination diagnostic, got %v", diags)
+	}
+}
+
+// TestCrossFunctionCycleOutOfRegionIsRejected checks that a reference cycle a
+// function builds between an object it makes and an object it was given spans
+// two regions, which no single region can release as a whole.
+func TestCrossFunctionCycleOutOfRegionIsRejected(t *testing.T) {
+	src := `package server
+
+struct Node {
+	kids: Array<Node>
+}
+
+func Link(a: Node) {
+	var t = Node { kids: new Array<Node>(0) }
+	t.kids.Push(a)
+	a.kids.Push(t)
+}
+
+func Work() {
+	var a = Node { kids: new Array<Node>(0) }
+	region {
+		Link(a)
+	}
+}
+`
+	_, diags := marksOf(t, src)
+	if !hasCode(diags, diag.CodeRegionCycle) {
+		t.Errorf("want a region cycle diagnostic, got %v", diags)
+	}
+}
+
+// TestCrossFunctionStoreInTheSameRegionIsAccepted checks that a function may
+// store a value it makes into an object of the region that runs the call: both
+// are released by that one region.
+func TestCrossFunctionStoreInTheSameRegionIsAccepted(t *testing.T) {
+	src := `package server
+
+struct Holder {
+	xs: Array<i64>
+}
+
+func Fill(h: Holder) {
+	h.xs = new Array<i64>(4)
+}
+
+func Work() -> i64 {
+	var holder = Holder { xs: new Array<i64>(0) }
+	Fill(holder)
+	return holder.xs[0]
+}
+`
+	info, diags := marksOf(t, src)
+	wantClean(t, diags)
+	wantMark(t, info, "home:r0")
+}
+
+// TestCrossFunctionStoreMigratesTheValue checks that a value a function stores
+// into an argument that lives in a wider region is created in that region: the
+// store adds a use in the destination's region, so the value is released with
+// the object that holds it rather than with the block that made it.
+func TestCrossFunctionStoreMigratesTheValue(t *testing.T) {
+	src := `package server
+
+struct Holder {
+	xs: Array<i64>
+}
+
+func Fill(dst: Holder, v: Array<i64>) {
+	dst.xs = v
+}
+
+func Work() -> i64 {
+	var holder = Holder { xs: new Array<i64>(0) }
+	region {
+		var inner = new Array<i64>(3)
+		Fill(holder, inner)
+	}
+	return holder.xs[0]
+}
+`
+	info, diags := marksOf(t, src)
+	wantClean(t, diags)
+	wantMark(t, info, "home:r0")
+	wantMark(t, info, "move:r0")
+	if hasMark(info, "home:r1") {
+		t.Errorf("a value stored into an outer object is still created in the inner region: %v", allMarks(info))
+	}
+}
+
+// TestCrossFunctionCycleInOneRegionIsAccepted checks that a cycle two objects
+// of one region build with each other is what the language allows.
+func TestCrossFunctionCycleInOneRegionIsAccepted(t *testing.T) {
+	src := `package server
+
+struct Node {
+	kids: Array<Node>
+	v: i64
+}
+
+func Link(a: Node, b: Node) {
+	a.kids.Push(b)
+	b.kids.Push(a)
+}
+
+func Work() -> i64 {
+	var a = Node { kids: new Array<Node>(0), v: 1 }
+	var b = Node { kids: new Array<Node>(0), v: 2 }
+	Link(a, b)
+	return a.kids[0].v + b.kids[0].v
+}
+`
+	_, diags := marksOf(t, src)
+	wantClean(t, diags)
+}
+
+// TestDeferredCallKeepsTheObjectAlive checks that an object a deferred call
+// names is not released where the defer is written. The call runs when the
+// region leaves, which is after every use the walk reached, so the release
+// point the statement suggests would give the memory back before the call
+// reads it. The control shows the marks are not simply missing: an object that
+// is only read is still released at its last use.
+func TestDeferredCallKeepsTheObjectAlive(t *testing.T) {
+	deferred := `package server
+
+struct Holder {
+	tag: i64
+}
+
+func Close(h: Holder) {
+}
+
+func Work() {
+	var holder = Holder { tag: 41 }
+	defer Close(holder)
+}
+`
+	info, diags := marksOf(t, deferred)
+	wantClean(t, diags)
+	wantMark(t, info, "defer-site")
+	wantMark(t, info, "home:r0")
+	if n := countMark(info, "static-release"); n != 0 {
+		t.Errorf("an object a deferred call names is released early: %d release mark(s) in %v", n, allMarks(info))
+	}
+
+	control := `package server
+
+struct Holder {
+	tag: i64
+}
+
+func Read(h: Holder) -> i64 {
+	return h.tag
+}
+
+func Work() -> i64 {
+	var holder = Holder { tag: 41 }
+	return Read(holder)
+}
+`
+	info, diags = marksOf(t, control)
+	wantClean(t, diags)
+	if n := countMark(info, "static-release"); n == 0 {
+		t.Errorf("an object that is only read is not released: %v", allMarks(info))
+	}
+}
+
+// TestTopLevelInitializerIsWalked checks that a top-level binding whose
+// initializer is an array literal is analysed rather than crashing the pass. A
+// top-level initializer used to be walked with none of the state a function
+// body gets, so the first allocating expression was recorded into a nil map.
+// The object such a binding makes lives in static storage, so it gets neither a
+// region of its own nor a release point.
+func TestTopLevelInitializerIsWalked(t *testing.T) {
+	src := `package server
+
+const table: [u32; 4] = [1, 2, 3, 4]
+
+var mirror: [u32; 4] = [5, 6, 7, 8]
+
+func Work() -> u32 {
+	return table[0] + mirror[1]
+}
+`
+	info, diags := marksOf(t, src)
+	wantClean(t, diags)
+	if hasMark(info, "static-release") {
+		t.Errorf("a top-level binding reports a release point: %v", allMarks(info))
+	}
 }
 
 func TestMarkString(t *testing.T) {

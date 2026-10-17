@@ -925,7 +925,80 @@ func (c *checker) bindParams(sig *types.Type, args []ast.Expr, argTypes []*types
 			"cannot infer the type arguments of %s", sig)
 		break
 	}
+	c.checkTypeArguments(sig, bindings, argsSpan(args))
 	return types.Substitute(sig, bindings)
+}
+
+// checkTypeArguments reports a type argument that does not implement what its
+// type parameter requires. A generic body reaches the methods its constraints
+// name, because the constraints are what the author was promised; a caller that
+// binds the parameter to a type implementing nothing would otherwise be told
+// only when the backend cannot find the method. A binding that is itself a type
+// parameter of the calling declaration stands for whatever the caller of that
+// declaration chose, so the constraint has to be one its own constraints
+// already require.
+func (c *checker) checkTypeArguments(sig *types.Type, bindings map[string]*types.Type, at source.Span) {
+	for _, tp := range typeParams(sig) {
+		bound, ok := bindings[tp.ID]
+		if !ok || bound == nil || bound.Kind == types.Invalid {
+			continue
+		}
+		for _, iface := range tp.Constraints {
+			if iface == nil || iface.Kind != types.KindInterface {
+				continue
+			}
+			if bound.Kind == types.KindTypeParam {
+				if hasConstraint(bound, iface) {
+					continue
+				}
+			} else if c.implements(bound, iface) {
+				continue
+			}
+			c.errorHelp(diag.CodeTypeArgument, at,
+				"implement the interface for the type, or pass a type that does",
+				"%s does not implement %s", bound, iface)
+		}
+	}
+}
+
+// typeParams returns every type parameter a type mentions, in first appearance
+// order and once each, which carries the constraints the parameter requires.
+func typeParams(t *types.Type) []*types.Type {
+	var out []*types.Type
+	seen := map[string]bool{}
+	var walk func(*types.Type)
+	walk = func(t *types.Type) {
+		if t == nil {
+			return
+		}
+		switch t.Kind {
+		case types.KindTypeParam:
+			if !seen[t.ID] {
+				seen[t.ID] = true
+				out = append(out, t)
+			}
+			return
+		case types.KindSlice, types.KindArray, types.KindChan:
+			walk(t.Elem)
+			return
+		case types.KindTuple:
+			for _, e := range t.Elems {
+				walk(e)
+			}
+			return
+		case types.KindFunc:
+			for _, e := range t.Elems {
+				walk(e)
+			}
+			walk(t.Result)
+			return
+		}
+		for _, a := range t.Args {
+			walk(a)
+		}
+	}
+	walk(t)
+	return out
 }
 
 // argsSpan returns the span of the first argument, or a zero span.

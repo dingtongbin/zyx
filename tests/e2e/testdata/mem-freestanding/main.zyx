@@ -1,0 +1,23 @@
+package main
+
+// The subset a target without the runtime keeps: value types, control flow,
+// raw, and a call into C. This program writes nothing, so its answer is the
+// exit code: it returns non-zero unless the values it computed are right. The
+// checker accepts it for such a target, which the checker's own test asserts;
+// this program is what runs the same shape on the host.
+
+func fib(n: i64) -> i64 {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+func main() -> i32 {
+    var xs: [i64; 3] = [1, 2, 3]
+    var total = fib(10) + xs[0] + xs[2]
+    if total == 59 {
+        return 0
+    }
+    return 1
+}

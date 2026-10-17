@@ -82,12 +82,13 @@ func (i *Info) Sort() {
 // Build attaches the memory marks of one package.
 func Build(pkg *resolve.Package, rinfo *resolve.Info, cpkg *check.Package, cinfo *coro.Info) (*Info, []diag.Diagnostic) {
 	b := &builder{
-		pkg:    pkg,
-		rinfo:  rinfo,
-		cpkg:   cpkg,
-		coro:   cinfo,
-		info:   &Info{Marks: map[ast.Node][]Mark{}},
-		hosted: map[ast.Node][]*coro.Coroutine{},
+		pkg:       pkg,
+		rinfo:     rinfo,
+		cpkg:      cpkg,
+		coro:      cinfo,
+		info:      &Info{Marks: map[ast.Node][]Mark{}},
+		hosted:    map[ast.Node][]*coro.Coroutine{},
+		summaries: funcSummaries(pkg, rinfo, cpkg),
 	}
 	for _, c := range cinfo.Coroutines {
 		if c.Host != nil {
@@ -112,6 +113,10 @@ type builder struct {
 	// hosted maps a region block to the coroutines it hosts.
 	hosted map[ast.Node][]*coro.Coroutine
 
+	// summaries holds what each function of the package does with the values
+	// its parameters name, which is what a call to it has to respect.
+	summaries map[*ast.FuncDecl]*funcSummary
+
 	// Current function state.
 	fn      *ast.FuncDecl
 	regions *regionBuilder
@@ -134,6 +139,10 @@ type builder struct {
 	// point the walk has reached, so a structural modification of the
 	// container can be reported while one is.
 	borrows []viewBorrow
+	// deferred holds the objects a deferred call names. Such a call runs when
+	// its region leaves, so an object it names is given back by the region
+	// rather than at a use the walk happened to reach last.
+	deferred map[*allocation]bool
 	// scopes holds one entry per block the walk is inside, which is how many
 	// borrows were live when the block opened.
 	scopes []int
@@ -158,9 +167,9 @@ func (b *builder) decl(decl ast.Decl) {
 	case *ast.EnumDecl:
 		b.members(d.Members)
 	case *ast.VarDecl:
-		b.expr(d.Value)
+		b.topLevelValue(d.Value)
 	case *ast.ConstDecl:
-		b.expr(d.Value)
+		b.topLevelValue(d.Value)
 	}
 }
 
@@ -175,7 +184,7 @@ func (b *builder) members(members []ast.Decl) {
 				b.funcDecl(f)
 			}
 		case *ast.ConstDecl:
-			b.expr(m.Value)
+			b.topLevelValue(m.Value)
 		}
 	}
 }
@@ -186,24 +195,47 @@ func (b *builder) funcDecl(f *ast.FuncDecl) {
 		return
 	}
 	prevFn, prevRegions, prevRegion := b.fn, b.regions, b.region
-	b.fn = f
-	b.regions = newRegionBuilder(f)
-	b.region = b.regions.root()
-	b.root = b.region
+	b.startAnalysis(f)
 	b.info.Regions = append(b.info.Regions, b.region)
-	b.uses = map[*allocation][]*Region{}
-	b.lastUse = map[*allocation]ast.Node{}
-	b.allocsByNode = map[ast.Expr]*allocation{}
-	b.allocsBySym = map[string]*allocation{}
-	b.escapes = map[*allocation]escapeKind{}
-	b.borrows = nil
-	b.scopes = nil
 
 	b.stmt(f.Body)
 	b.expr(f.BodyExpr)
 	b.finishFunction()
 
 	b.fn, b.regions, b.region = prevFn, prevRegions, prevRegion
+}
+
+// topLevelValue walks the initializer of a top-level binding, which is
+// evaluated once before the program runs and holds what it made for the rest of
+// the process. The walk is the one a function body gets, so every check and
+// every borrow sees the expression; what it does not get is a home region or a
+// release point, because the object belongs to static storage rather than to a
+// region the program enters and leaves.
+func (b *builder) topLevelValue(value ast.Expr) {
+	if value == nil {
+		return
+	}
+	prevFn, prevRegions, prevRegion := b.fn, b.regions, b.region
+	b.startAnalysis(nil)
+	b.expr(value)
+	b.fn, b.regions, b.region = prevFn, prevRegions, prevRegion
+}
+
+// startAnalysis prepares the state of one unit of analysis: a function body, or
+// a top-level initializer whose declaration is nil.
+func (b *builder) startAnalysis(fn *ast.FuncDecl) {
+	b.fn = fn
+	b.regions = newRegionBuilder(fn)
+	b.region = b.regions.root()
+	b.root = b.region
+	b.uses = map[*allocation][]*Region{}
+	b.lastUse = map[*allocation]ast.Node{}
+	b.allocsByNode = map[ast.Expr]*allocation{}
+	b.allocsBySym = map[string]*allocation{}
+	b.escapes = map[*allocation]escapeKind{}
+	b.deferred = map[*allocation]bool{}
+	b.borrows = nil
+	b.scopes = nil
 }
 
 // stmt walks one statement. A statement the parser left empty appears as
@@ -262,6 +294,10 @@ func (b *builder) stmt(s ast.Stmt) {
 	case *ast.DeferStmt:
 		b.info.Add(v, "defer-site", "")
 		b.expr(v.Call)
+		// The call runs when the region that owns the defer leaves, which is
+		// after every lexical use of every statement that wrote it, so the
+		// objects it names must still be there then.
+		b.markDeferred(v.Call)
 	case *ast.RegionStmt:
 		b.regionBlock(v)
 	case *ast.ComptimeBlockStmt:
@@ -502,6 +538,9 @@ func (b *builder) call(v *ast.CallExpr) {
 			b.info.Add(v, "why-not-fast", "")
 		}
 	}
+	// A call to a function of this package may store values into the objects
+	// its arguments name, which the regions of those objects have to hold.
+	b.checkCall(v)
 	// A default the call leaves out is evaluated here, so it is walked here.
 	for _, a := range ast.WithDefaults(v.Args, b.calleeParams(v)) {
 		b.expr(a)
@@ -712,29 +751,8 @@ func (b *builder) escapesTo(value ast.Expr, kind escapeKind) {
 // calleeParams returns the parameters of the declaration a call names, or nil
 // when the callee is a value rather than a function or a method.
 func (b *builder) calleeParams(v *ast.CallExpr) []*ast.Param {
-	switch fn := v.Fn.(type) {
-	case *ast.Ident:
-		if sym := b.rinfo.Defs[fn]; sym != nil {
-			if decl, ok := sym.Decl.(*ast.FuncDecl); ok {
-				return decl.Params
-			}
-		}
-	case *ast.SelectorExpr:
-		recv := b.cpkg.Nodes[fn.X]
-		if recv == nil {
-			return nil
-		}
-		d := b.cpkg.Decl(recv)
-		if d == nil {
-			return nil
-		}
-		sym := d.MethodSyms[fn.Name.Name]
-		if sym == nil {
-			return nil
-		}
-		if decl, ok := sym.Decl.(*ast.FuncDecl); ok {
-			return decl.Params
-		}
+	if decl := calleeDecl(b.rinfo, b.cpkg, v); decl != nil {
+		return decl.Params
 	}
 	return nil
 }

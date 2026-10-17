@@ -68,7 +68,7 @@ func (s *Session) cacheDir(o *options, root string) string {
 // cache, because check and build share the entry of a package: the product is
 // the .zyxc text and its diagnostics, which the backend then reads back.
 func (s *Session) session(m *module, o *options) *build.Session {
-	front := &build.Session{Loader: s.loader(m, o)}
+	front := &build.Session{Loader: s.loader(m, o), Freestanding: o.freestanding}
 	front.Cache = build.OpenFrontEnd(m.Root, build.FrontEndOptions{
 		CacheDir:     s.cacheDir(o, m.Root),
 		Compiler:     compilerIdentity(),

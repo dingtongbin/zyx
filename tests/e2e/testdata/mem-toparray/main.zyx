@@ -1,0 +1,28 @@
+package main
+
+import "std/fmt"
+
+// A top-level binding is evaluated once before the program runs and holds what
+// it made for the rest of the process. Its initializer is an array literal,
+// which is the shape that used to crash the marking pass: a top-level
+// initializer was walked without any of the state a function body gets.
+//
+// Every element is read by a literal index. A fixed array read through a
+// computed index and a loop over one are separate lowering paths, so keeping
+// this program on the literal path leaves the wrong-value bug in that path to
+// whoever owns it rather than hiding it here.
+
+const table: [u32; 4] = [1, 2, 3, 4]
+
+var mirror: [u32; 4] = [5, 6, 7, 8]
+
+func main() {
+    fmt.PrintU64(u64(table[0]))
+    fmt.PrintNl()
+    fmt.PrintU64(u64(table[3]))
+    fmt.PrintNl()
+    fmt.PrintU64(u64(mirror[1]))
+    fmt.PrintNl()
+    fmt.PrintU64(u64(mirror[0]) + u64(mirror[3]))
+    fmt.PrintNl()
+}

@@ -87,13 +87,19 @@ func (b *builder) noteStore(value, dest ast.Expr) {
 }
 
 // destRegion returns the region of the object a destination expression names.
-// A destination the function created itself has a known region. Anything else,
-// such as a parameter or a field of one, may outlive every region the function
-// can name, so the value belongs to the function's own region, which is the
-// outermost one it can name.
+// A destination the function created itself has a known region, whether the
+// expression reaches the object directly or through a field or an element of
+// it. Anything else, such as a parameter or a field of one, may outlive every
+// region the function can name, so the value belongs to the function's own
+// region, which is the outermost one it can name.
 func (b *builder) destRegion(dest ast.Expr) *Region {
 	if a := b.allocFor(dest); a != nil && a.Region != nil {
 		return a.Region
+	}
+	if root := rootIdent(dest); root != nil {
+		if a := b.allocFor(root); a != nil && a.Region != nil {
+			return a.Region
+		}
 	}
 	return b.root
 }
@@ -101,9 +107,7 @@ func (b *builder) destRegion(dest ast.Expr) *Region {
 // storesIntoReceiver reports whether a method keeps its argument in the
 // receiver, which makes the argument outlive the call.
 func (b *builder) storesIntoReceiver(sel *ast.SelectorExpr) bool {
-	switch sel.Name.Name {
-	case "Push", "Insert", "Add", "Set", "Send", "TrySend", "TryPush":
-	default:
+	if !storeMethod(sel.Name.Name) {
 		return false
 	}
 	t := b.cpkg.Nodes[sel.X]

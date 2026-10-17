@@ -419,6 +419,196 @@ interface Speaker {
 	wantCode(t, diags, diag.CodeInterfaceBody)
 }
 
+// TestDurationIsOrdered checks that a duration takes part in the built-in
+// ordering the language promises it: the comparison of two durations is
+// ordered by their nanosecond count.
+func TestDurationIsOrdered(t *testing.T) {
+	src := `package server
+
+const one: Duration = dur.sec(1)
+const two: Duration = dur.sec(2)
+
+func Work() -> bool {
+	return one < two
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+// TestConstDeclaredAfterItsUse checks that a function reads the type of a
+// package-level binding declared after it. A body is checked in the order the
+// declarations are written, so a binding declared later reaches the body with
+// no type unless the declared type of the binding is read from its declaration.
+func TestConstDeclaredAfterItsUse(t *testing.T) {
+	src := `package server
+
+func Digit(b: u8) -> u8 {
+	return hex[usize(b >> 4)]
+}
+
+const hex: str = "0123456789abcdef"
+
+func Other() -> i64 {
+	return 1
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantClean(t, diags)
+}
+
+// TestTypeArgumentMustImplementConstraint checks that a call reports a type
+// argument the declaration's constraint does not hold for, rather than letting
+// the body reach a method the argument has no implementation of. The control
+// shows the check is not simply refusing every call.
+func TestTypeArgumentMustImplementConstraint(t *testing.T) {
+	src := `package server
+
+enum E {
+	A
+}
+
+func Use<T: Show>(v: T) -> i64 {
+	return 1
+}
+
+func Work() -> i64 {
+	return Use(E.A)
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, src)
+	wantCode(t, diags, diag.CodeTypeArgument)
+
+	control := `package server
+
+func Use<T: Show>(v: T) -> i64 {
+	return 1
+}
+
+func Work() -> i64 {
+	return Use(1)
+}
+`
+	_, diags = checkSource(t, "server", nil, nil, control)
+	wantClean(t, diags)
+}
+
+// checkFreestanding checks one package for a target that leaves the runtime
+// out.
+func checkFreestanding(t *testing.T, src string) (*Package, []diag.Diagnostic) {
+	t.Helper()
+	pkg := &resolve.Package{Path: "server", Files: []*ast.File{parse(t, src)}}
+	info, rdiags := resolve.Resolve(pkg, nil)
+	if len(rdiags) != 0 {
+		t.Fatalf("resolve diagnostics: %v", rdiags)
+	}
+	return Check(pkg, info, nil, toolchain.HostTarget(), cTestTable(), Options{Freestanding: true})
+}
+
+// TestFreestandingSubsetIsRejected checks every construct the specification
+// says a target without the runtime does not have, each with its own code. The
+// last case is the subset that stays: value types, control flow, raw, and a
+// call into C.
+func TestFreestandingSubsetIsRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		code diag.Code
+	}{
+		{"spawn", `package server
+
+func Work() {
+	region {
+		spawn Run()
+	}
+}
+
+func Run() {
+}
+`, diag.CodeFreestandingSpawn},
+		{"spawn_watched", `package server
+
+func Run() {
+}
+
+func Watch(e: PanicError) {
+}
+
+func Work() {
+	region {
+		spawn_watched Run(), func Watch
+	}
+}
+`, diag.CodeFreestandingSpawnWatched},
+		{"chan", `package server
+
+func Work(ch: chan<i64>) {
+}
+`, diag.CodeFreestandingChan},
+		{"select", `package server
+
+func Work(ch: chan<i64>) {
+	select {
+		recv (ch) -> v, ok {
+		}
+	}
+}
+`, diag.CodeFreestandingSelect},
+		{"region", `package server
+
+func Work() {
+	region {
+	}
+}
+`, diag.CodeFreestandingRegion},
+		{"new", `package server
+
+func Work() {
+	var xs = new Array<i64>(0)
+}
+`, diag.CodeFreestandingNew},
+		{"literal", `package server
+
+struct Holder {
+	v: i64
+}
+
+func Work() -> i64 {
+	var h = Holder { v: 1 }
+	return h.v
+}
+`, diag.CodeFreestandingLiteral},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, diags := checkFreestanding(t, c.src)
+			wantCode(t, diags, c.code)
+		})
+	}
+
+	t.Run("the subset that stays", func(t *testing.T) {
+		src := `package server
+
+extern func fwrite(p: raw, size: usize, count: usize, stream: raw) -> usize
+
+struct Pair {
+	v: i64
+}
+
+func Work(n: i64) -> i64 {
+	var total: i64 = 0
+	for i in 0 .. n {
+		total = total + i
+	}
+	var xs: [i64; 4] = [1, 2, 3, 4]
+	return total + xs[0] + n
+}
+`
+		_, diags := checkFreestanding(t, src)
+		wantClean(t, diags)
+	})
+}
+
 func TestInterfaceDefaultParam(t *testing.T) {
 	src := `package server
 
