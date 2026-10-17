@@ -24,8 +24,11 @@
 
 /* The stack a new coroutine is committed up front: enough that its first frames
    need no growth, and little enough that a program with many coroutines pays
-   for the stack they use rather than for the stack they might use. */
-#define ZYXXRT_STACK_WARM (8u * 1024u)
+   for the stack they use rather than for the stack they might use. It has to
+   cover the margin the prologue check keeps, which is what the first few frames
+   of a coroutine are measured with, so a coroutine that does what its body says
+   and no more never grows its stack at all. */
+#define ZYXXRT_STACK_WARM (32u * 1024u)
 
 /* What a growth commits on top of the frame that asked for it, so the next few
    descents cost nothing, and the room kept below that frame: the frames of the
@@ -35,8 +38,10 @@
 #define ZYXXRT_STACK_STEP (64u * 1024u)
 #define ZYXXRT_STACK_MARGIN (32u * 1024u)
 
-/* How much one run of slots holds, which is what makes the cost of a coroutine
-   its own work rather than a call of the operating system. */
+/* How many slots one run holds at least, and how much one run holds at most
+   before another is asked for, which is what makes the cost of a coroutine its
+   own work rather than a call of the operating system. */
+#define ZYXXRT_ARENA_SLOTS 64
 #define ZYXXRT_ARENA_BYTES ((size_t)4u * 1024u * 1024u)
 
 #if defined(_WIN32)
@@ -106,12 +111,16 @@ static void slot_guard(void *stack, size_t size) {
 #endif
 }
 
-/* stack_run reserves a run of slots and puts each of them on the free list. */
+/* stack_run reserves a run of slots and puts each of them on the free list. The
+   run holds enough slots that asking for a reservation is worth doing: a slot
+   the size the language promises would fill a small run in three of them. */
 static void stack_run(size_t size) {
   size_t page = zyxrt_system_page();
   size_t slot = size + page;
-  size_t wanted = ZYXXRT_ARENA_BYTES / slot;
-  if (wanted < 1) wanted = 1;
+  size_t wanted = ZYXXRT_ARENA_SLOTS;
+  if (slot * wanted < ZYXXRT_ARENA_BYTES) {
+    wanted = ZYXXRT_ARENA_BYTES / slot + 1;
+  }
   char *base = (char *)arena_reserve(slot * wanted);
   if (base == NULL) {
     /* A reservation of its own is better than none, which is what a program
@@ -194,15 +203,22 @@ void zyxrt_stack_grow(void *low) {
    Touching the pages here would commit them physically for a coroutine that may
    never use them. */
 
-/* zyxrt_stack_size returns the size a coroutine's stack is reserved with. */
+/* zyxrt_stack_size returns the size a coroutine's stack is reserved with.
+   ZYX_STACK names it in bytes, and it is read once: a coroutine asks for its
+   stack on the way to being made, and reading the environment each time is work
+   the coroutine pays for. */
 size_t zyxrt_stack_size(void) {
+  static size_t chosen;
+  if (chosen != 0) return chosen;
   const char *configured = getenv("ZYX_STACK");
   if (configured != NULL && configured[0] != '\0') {
     char *end = NULL;
     unsigned long long value = strtoull(configured, &end, 10);
     if (end != configured && value >= ZYXXRT_STACK_WARM) {
-      return (size_t)value;
+      chosen = (size_t)value;
+      return chosen;
     }
   }
-  return ZYXXRT_STACK_DEFAULT;
+  chosen = ZYXXRT_STACK_DEFAULT;
+  return chosen;
 }

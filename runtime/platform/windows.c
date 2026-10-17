@@ -90,7 +90,7 @@ void zyxrt_platform_init(void) {
   WSADATA data;
   _setmode(_fileno(stdout), _O_BINARY);
   _setmode(_fileno(stderr), _O_BINARY);
-  if (0 && WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+  if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
     zyxrt_panic("cannot start the socket library", 30);
   }
 }
