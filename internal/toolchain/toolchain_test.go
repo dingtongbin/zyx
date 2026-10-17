@@ -110,6 +110,41 @@ func TestSourcesFallBackToAPortablePlatform(t *testing.T) {
 	}
 }
 
+// TestObjectFunctionsNameTheGlobalFunctions checks what a table built for a C
+// object can name: a function another unit can take the address of, and not one
+// that is local to the unit it was compiled in.
+func TestObjectFunctionsNameTheGlobalFunctions(t *testing.T) {
+	tc, err := Locate()
+	if err != nil {
+		t.Skipf("no toolchain on this machine: %v", err)
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "unit.c")
+	body := "int named_from_outside(void) { return 1; }\n" +
+		"static int held_here(void) { return 2; }\n" +
+		"int uses_it(void) { return held_here(); }\n"
+	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	object := filepath.Join(dir, "unit.o")
+	if err := tc.CompileC(src, object, CompileOptions{}); err != nil {
+		t.Fatalf("compiling the unit: %v", err)
+	}
+	names, err := tc.ObjectFunctions(object)
+	if err != nil {
+		t.Fatalf("reading the symbols of the unit: %v", err)
+	}
+	joined := strings.Join(names, " ")
+	for _, want := range []string{"named_from_outside", "uses_it"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the functions are %v, want them to hold %s", names, want)
+		}
+	}
+	if strings.Contains(joined, "held_here") {
+		t.Errorf("the functions are %v, want the one local to the unit left out", names)
+	}
+}
+
 func TestIncludeFlagsNameTheRuntimeHeaders(t *testing.T) {
 	tc, err := Locate()
 	if err != nil {

@@ -29,6 +29,9 @@ type Toolchain struct {
 	Opt string
 	// CC compiles the C runtime and performs the link.
 	CC string
+	// NM reads the symbols of an object file, which is what lets the C a
+	// program brings carry a table a fault report can read.
+	NM string
 	// Archiver puts the runtime objects into the library a program links.
 	Archiver string
 	// Runtime is the runtime tree, which holds include/ and the sources.
@@ -95,10 +98,14 @@ func Locate() (*Toolchain, error) {
 		LLC:      findTool("llc", dirs),
 		Opt:      findTool("opt", dirs),
 		CC:       findTool("clang", dirs),
+		NM:       findTool("llvm-nm", dirs),
 		Archiver: findTool("llvm-ar", dirs),
 		Runtime:  findRuntime(),
 		id:       &compilerIdentity{},
 		ar:       &compilerIdentity{},
+	}
+	if t.NM == "" {
+		t.NM = findTool("nm", dirs)
 	}
 	if t.Archiver == "" {
 		t.Archiver = findTool("ar", dirs)
@@ -580,6 +587,30 @@ func (t *Toolchain) CompileC(src, out string, opts CompileOptions) error {
 	}
 	args = append(args, sanitizeFlags()...)
 	return t.run(t.CC, args)
+}
+
+// ObjectFunctions lists the functions an object file defines, by the name each
+// one carries. Only the names that are not local to their translation unit come
+// back: the table that names them is built in a unit of its own, so it can take
+// the address of a function another unit defines and not of a static one.
+func (t *Toolchain) ObjectFunctions(object string) ([]string, error) {
+	var names []string
+	if t.NM == "" {
+		return nil, fmt.Errorf("no symbol reader found: install llvm-nm")
+	}
+	out, err := exec.Command(t.NM, "--defined-only", "--format=posix", object).Output()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", filepath.Base(t.NM), err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[1] != "T" {
+			continue
+		}
+		names = append(names, fields[0])
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // Link turns object files into an executable. It appends the runtime
