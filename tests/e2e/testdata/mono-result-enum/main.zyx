@@ -1,0 +1,31 @@
+package main
+
+import "std/fmt"
+import "example.com/mono-result-enum/codec"
+
+// errName is what a fault is called.
+func errName(e: codec.Error) -> str {
+    match e {
+        Truncated => return "truncated"
+        Corrupt => return "corrupt"
+        Checksum => return "checksum"
+        Level => return "level"
+    }
+}
+
+// report prints what one operation answered.
+func report(label: str, r: Result<(), codec.Error>) {
+    fmt.Print(label)
+    fmt.Print(" ")
+    match r {
+        Ok(_) => fmt.Print("ok")
+        Err(e) => fmt.Print(errName(e))
+    }
+    fmt.PrintNl()
+}
+
+func main() {
+    report("second", codec.Second())
+    report("third", codec.Third())
+    report("fourth", codec.Fourth())
+}

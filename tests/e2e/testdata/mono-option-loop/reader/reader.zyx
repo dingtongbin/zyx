@@ -1,0 +1,67 @@
+package reader
+
+// A reader whose record travels back inside an Option of a Result, and whose
+// loop consults a second Option-returning method on every round. The reader
+// package therefore instantiates Option twice: Option<Error> for the check, and
+// Option<Result<Array<str>, Error>> for the record. Both packages must lay the
+// same instantiation out alike, or the answer the caller reads is not the one
+// this package wrote.
+
+// Faults a reader can find.
+enum Error {
+    Truncated
+    Corrupt
+    Checksum
+}
+
+// The byte that stands for a record the reader refuses.
+const bad_byte: u8 = 33
+
+// A Reader reads records from a text in memory one at a time.
+struct Reader {
+    src: str
+    at: usize
+
+    // init builds a reader over a text.
+    func init(src: str) -> Self {
+        return Reader { src: src, at: 0 }
+    }
+
+    // check answers the fault at the reader's position, or nothing when the
+    // byte there begins a good record.
+    func check() -> Option<Error> {
+        if self.at < self.src.Len() && self.src[self.at] == bad_byte {
+            self.at += 1
+            return Option.Some(Error.Corrupt)
+        }
+        return Option.None
+    }
+
+    // Read answers the next record, or nothing at the end of the text. A
+    // record is one field per round of the loop.
+    func Read() -> Option<Result<Array<str>, Error>> {
+        var n = self.src.Len()
+        if self.at >= n {
+            return Option.None
+        }
+        var row = new Array<str>(0)
+        var done = false
+        for !done {
+            match self.check() {
+                Some(e) => {
+                    var failed: Result<Array<str>, Error> = Result.Err(e)
+                    return Option.Some(failed)
+                }
+                None => { }
+            }
+            self.at += 1
+            row.Push("x")
+            if self.at >= n {
+                break
+            }
+            done = true
+        }
+        var outcome: Result<Array<str>, Error> = Result.Ok(row)
+        return Option.Some(outcome)
+    }
+}

@@ -124,14 +124,20 @@ func (m *module) stringGlobal(s string) string {
 }
 
 // structName returns the LLVM name of a named aggregate type, creating the
-// definition on first use.
+// definition on first use. The name is keyed by the canonical text of the type
+// rather than by its symbol id, because the id of a generic declaration is its
+// package and name alone: Option<Error> and Option<Result<Array<str>,Error>>
+// share an id, and the second would reuse the first one's body while the
+// layout algorithm — which keys by the same canonical text — sized it for
+// itself. The two disagree about every offset after the first differing field.
 func (g *generator) structName(t *types.Type) string {
-	if name, ok := g.m.names[t.ID]; ok {
+	key := t.Canonical()
+	if name, ok := g.m.names[key]; ok {
 		return name
 	}
 	name := fmt.Sprintf("%%s.%d", g.m.next)
 	g.m.next++
-	g.m.names[t.ID] = name
+	g.m.names[key] = name
 	// The body may name further aggregates, so the slot is reserved before
 	// it is built.
 	slot := len(g.m.structs)
