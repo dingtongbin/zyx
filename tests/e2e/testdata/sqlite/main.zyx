@@ -96,18 +96,18 @@ func write(db: sqlite.Db) -> Result<(), sqlite.Error> {
     fmt.Println(f"create changed {made}")
 
     var first = new Array<Value>(0)
-    first.Push(Value.Num(1.0))
+    first.Push(Value.Float(1.0))
     first.Push(Value.Str("Ada"))
-    first.Push(Value.Num(1.75))
+    first.Push(Value.Float(1.75))
     first.Push(Value.Null)
-    first.Push(Value.Num(3.0))
+    first.Push(Value.Float(3.0))
     var one = try db.Exec("INSERT INTO people (id, name, height, note, visits) VALUES (?, ?, ?, ?, ?)", first)
     fmt.Println(f"insert changed {one}")
 
     var second = new Array<Value>(0)
-    second.Push(Value.Num(2.0))
+    second.Push(Value.Float(2.0))
     second.Push(Value.Str("O'Brien; DROP TABLE people"))
-    second.Push(Value.Num(2.5))
+    second.Push(Value.Float(2.5))
     second.Push(Value.Str("second"))
     second.Push(Value.Bool(true))
     var two = try db.Exec("INSERT INTO people (id, name, height, note, visits) VALUES (?, ?, ?, ?, ?)", second)
@@ -137,7 +137,7 @@ func read(db: sqlite.Db) -> Result<(), sqlite.Error> {
     fmt.Println(f"rows {at}")
     rows.Close()
 
-    var missing = try db.Query("SELECT id, name FROM people WHERE id = ?", params1(Value.Num(999.0)))
+    var missing = try db.Query("SELECT id, name FROM people WHERE id = ?", params1(Value.Float(999.0)))
     fmt.Println(f"missing columns {missing.Columns().Len()}")
     fmt.Println(f"missing row {missing.Next()}")
     fmt.Println(f"missing row again {missing.Next()}")
@@ -145,7 +145,7 @@ func read(db: sqlite.Db) -> Result<(), sqlite.Error> {
 
     // A text column read as a number and a whole number read as a float are
     // the conversions SQLite makes, which the calls expose rather than hide.
-    var mixed = try db.Query("SELECT name, id FROM people WHERE id = ?", params1(Value.Num(1.0)))
+    var mixed = try db.Query("SELECT name, id FROM people WHERE id = ?", params1(Value.Float(1.0)))
     if mixed.Next() {
         fmt.Println(f"text as int {mixed.Int(0)}")
         fmt.Println(f"int as float {mixed.Float(1)}")
@@ -167,7 +167,7 @@ func read(db: sqlite.Db) -> Result<(), sqlite.Error> {
 // delete, each answering the number of rows it changed.
 func change(db: sqlite.Db) -> Result<(), sqlite.Error> {
     var none = new Array<Value>(0)
-    var updated = try db.Exec("UPDATE people SET visits = ? WHERE id = ?", params2(Value.Num(9.0), Value.Num(2.0)))
+    var updated = try db.Exec("UPDATE people SET visits = ? WHERE id = ?", params2(Value.Float(9.0), Value.Float(2.0)))
     fmt.Println(f"update changed {updated}")
 
     try db.Exec("BEGIN", none)
@@ -181,7 +181,7 @@ func change(db: sqlite.Db) -> Result<(), sqlite.Error> {
     after.Close()
     fmt.Println(f"after rollback {left}")
 
-    var visits = try db.Query("SELECT visits FROM people WHERE id = ?", params1(Value.Num(2.0)))
+    var visits = try db.Query("SELECT visits FROM people WHERE id = ?", params1(Value.Float(2.0)))
     var seen: i64 = 0
     if visits.Next() {
         seen = visits.Int(0)
@@ -189,7 +189,7 @@ func change(db: sqlite.Db) -> Result<(), sqlite.Error> {
     visits.Close()
     fmt.Println(f"visits {seen}")
 
-    var removed = try db.Exec("DELETE FROM people WHERE id = ?", params1(Value.Num(2.0)))
+    var removed = try db.Exec("DELETE FROM people WHERE id = ?", params1(Value.Float(2.0)))
     fmt.Println(f"delete changed {removed}")
     return Result.Ok()
 }
@@ -207,7 +207,7 @@ func again(path: str) -> Result<(), sqlite.Error> {
     }
     fmt.Println(f"kept rows {kept}")
     rows.Close()
-    var empty = try db.Query("SELECT name FROM people WHERE id = ?", params1(Value.Num(2.0)))
+    var empty = try db.Query("SELECT name FROM people WHERE id = ?", params1(Value.Float(2.0)))
     fmt.Println(f"kept after delete {empty.Next()}")
     empty.Close()
     db.Close()

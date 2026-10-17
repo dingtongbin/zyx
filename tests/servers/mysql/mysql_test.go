@@ -207,11 +207,11 @@ func setup(conn: db.Conn) -> Result<(), db.Error> {
     try conn.Exec(f"CREATE DATABASE {DB}", none())
     try conn.Exec(f"CREATE TABLE {DB}.items (id INT PRIMARY KEY, name TEXT, amount DOUBLE, note TEXT, big BIGINT)", none())
     fmt.Println("setup ok")
-    var first = five(Value.Num(1.0), Value.Str("Ada"), Value.Num(1.5), Value.Null, Value.Str("10"))
+    var first = five(Value.Float(1.0), Value.Str("Ada"), Value.Float(1.5), Value.Null, Value.Str("10"))
     try conn.Exec(f"INSERT INTO {DB}.items (id, name, amount, note, big) VALUES (?, ?, ?, ?, ?)", first)
-    var second = five(Value.Num(2.0), Value.Str("O'Brien"), Value.Num(0.0), Value.Str("zero"), Value.Str("0"))
+    var second = five(Value.Float(2.0), Value.Str("O'Brien"), Value.Float(0.0), Value.Str("zero"), Value.Str("0"))
     try conn.Exec(f"INSERT INTO {DB}.items (id, name, amount, note, big) VALUES (?, ?, ?, ?, ?)", second)
-    var third = five(Value.Num(3.0), Value.Str("gamma"), Value.Num(2.25), Value.Str("wide"), Value.Str("9223372036854775807"))
+    var third = five(Value.Float(3.0), Value.Str("gamma"), Value.Float(2.25), Value.Str("wide"), Value.Str("9223372036854775807"))
     try conn.Exec(f"INSERT INTO {DB}.items (id, name, amount, note, big) VALUES (?, ?, ?, ?, ?)", third)
     fmt.Println("inserts ok")
     return Result.Ok()
@@ -233,7 +233,7 @@ func read(conn: db.Conn) -> Result<(), db.Error> {
 }
 
 func prepared(conn: db.Conn) -> Result<(), db.Error> {
-    var by_id = try conn.Query(f"SELECT name FROM {DB}.items WHERE id = ?", one(Value.Num(2.0)))
+    var by_id = try conn.Query(f"SELECT name FROM {DB}.items WHERE id = ?", one(Value.Float(2.0)))
     if by_id.Next() {
         fmt.Println(f"by id {by_id.Text(0)}")
     }
@@ -251,25 +251,25 @@ func prepared(conn: db.Conn) -> Result<(), db.Error> {
     }
     by_null.Close()
 
-    var zero = try conn.Query(f"SELECT amount FROM {DB}.items WHERE id = ?", one(Value.Num(2.0)))
+    var zero = try conn.Query(f"SELECT amount FROM {DB}.items WHERE id = ?", one(Value.Float(2.0)))
     if zero.Next() {
         fmt.Println(f"zero {zero.Float(0)}")
     }
     zero.Close()
 
-    var wide = try conn.Query(f"SELECT big FROM {DB}.items WHERE id = ?", one(Value.Num(3.0)))
+    var wide = try conn.Query(f"SELECT big FROM {DB}.items WHERE id = ?", one(Value.Float(3.0)))
     if wide.Next() {
         fmt.Println(f"wide {wide.Int(0)}")
     }
     wide.Close()
 
-    var text = try conn.Query(f"SELECT name FROM {DB}.items WHERE id = ?", one(Value.Num(2.0)))
+    var text = try conn.Query(f"SELECT name FROM {DB}.items WHERE id = ?", one(Value.Float(2.0)))
     if text.Next() {
         fmt.Println(f"text {text.Text(0)}")
     }
     text.Close()
 
-    var wide_text = try conn.Query("SELECT REPEAT('x', ?)", one(Value.Num(5000.0)))
+    var wide_text = try conn.Query("SELECT REPEAT('x', ?)", one(Value.Float(5000.0)))
     if wide_text.Next() {
         fmt.Println(f"wide text {i64(wide_text.Text(0).Len())}")
     }
@@ -278,7 +278,7 @@ func prepared(conn: db.Conn) -> Result<(), db.Error> {
 }
 
 func failures(conn: db.Conn) {
-    match conn.Exec(f"INSERT INTO {DB}.items (id, name) VALUES (?, ?)", pair(Value.Num(1.0), Value.Str("again"))) {
+    match conn.Exec(f"INSERT INTO {DB}.items (id, name) VALUES (?, ?)", pair(Value.Float(1.0), Value.Str("again"))) {
         Ok(changed) => { fmt.Println("duplicate ok") }
         Err(e) => { fmt.Println(f"duplicate {kind_name(e.Kind)}") }
     }
@@ -286,7 +286,7 @@ func failures(conn: db.Conn) {
         Ok(changed) => { fmt.Println("bad ok") }
         Err(e) => { fmt.Println(f"bad {kind_name(e.Kind)}") }
     }
-    match conn.Exec("SELECT ?", pair(Value.Num(1.0), Value.Num(2.0))) {
+    match conn.Exec("SELECT ?", pair(Value.Float(1.0), Value.Float(2.0))) {
         Ok(changed) => { fmt.Println("param ok") }
         Err(e) => { fmt.Println(f"param {kind_name(e.Kind)}") }
     }

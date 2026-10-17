@@ -81,7 +81,10 @@ func printValue(v: Value) {
         Bool(b) => {
             fmt.PrintBool(b)
         }
-        Num(n) => {
+        Int(n) => {
+            fmt.PrintI64(n)
+        }
+        Float(n) => {
             printNumber(n)
         }
         Str(s) => {
@@ -89,7 +92,7 @@ func printValue(v: Value) {
             printText(s)
             fmt.Print("\"")
         }
-        Arr(a) => {
+        Array(a) => {
             fmt.Print("[")
             var i: usize = 0
             for item in a {
@@ -101,7 +104,7 @@ func printValue(v: Value) {
             }
             fmt.Print("]")
         }
-        Obj(o) => {
+        Map(o) => {
             fmt.Print("{")
             var i: usize = 0
             for key in sorted(o) {
@@ -126,8 +129,8 @@ func printValue(v: Value) {
 // row builds the table that stands for one row of a written array of tables.
 func row(n: f64) -> Value {
     var table = new Map<str, Value>()
-    table.Insert("n", Value.Num(n))
-    return Value.Obj(table)
+    table.Insert("n", Value.Float(n))
+    return Value.Map(table)
 }
 
 func main() {
@@ -135,33 +138,33 @@ func main() {
     // from a document this package read, so what it shows is what the writer
     // makes of a value.
     var root = new Map<str, Value>()
-    root.Insert("num", Value.Num(2.0))
-    root.Insert("half", Value.Num(0.5))
+    root.Insert("num", Value.Float(2.0))
+    root.Insert("half", Value.Float(0.5))
     root.Insert("text", Value.Str("a\nb\tc"))
     root.Insert("flag", Value.Bool(true))
     root.Insert("a key", Value.Str("spaced"))
     root.Insert("quoted", Value.Str("say \"hello\""))
     var nums = new Array<Value>(0)
-    nums.Push(Value.Num(1.0))
-    nums.Push(Value.Num(2.0))
-    root.Insert("nums", Value.Arr(nums))
+    nums.Push(Value.Float(1.0))
+    nums.Push(Value.Float(2.0))
+    root.Insert("nums", Value.Array(nums))
     var inner = new Map<str, Value>()
-    inner.Insert("x", Value.Num(1.0))
-    root.Insert("table", Value.Obj(inner))
+    inner.Insert("x", Value.Float(1.0))
+    root.Insert("table", Value.Map(inner))
     var empty = new Map<str, Value>()
-    root.Insert("none", Value.Obj(empty))
+    root.Insert("none", Value.Map(empty))
     var rows = new Array<Value>(0)
     rows.Push(row(1.0))
     rows.Push(row(2.0))
-    root.Insert("rows", Value.Arr(rows))
+    root.Insert("rows", Value.Array(rows))
     var deeper = new Map<str, Value>()
     var deepest = new Map<str, Value>()
     deepest.Insert("y", Value.Bool(false))
-    deeper.Insert("deep", Value.Obj(deepest))
-    root.Insert("outer", Value.Obj(deeper))
+    deeper.Insert("deep", Value.Map(deepest))
+    root.Insert("outer", Value.Map(deeper))
 
     var out = new Buf(0)
-    toml.Encode(out, Value.Obj(root))
+    toml.Encode(out, Value.Map(root))
     fmt.Print("written: ")
     printText(out.Str())
     fmt.PrintNl()
@@ -180,15 +183,15 @@ func main() {
     // The same writer over a table that holds one pair of each scalar kind, so
     // the writing of each kind stands on a line of its own.
     var scalars = new Map<str, Value>()
-    scalars.Insert("whole", Value.Num(7.0))
-    scalars.Insert("fraction", Value.Num(-2.5))
-    scalars.Insert("big", Value.Num(1.0e30))
+    scalars.Insert("whole", Value.Float(7.0))
+    scalars.Insert("fraction", Value.Float(-2.5))
+    scalars.Insert("big", Value.Float(1.0e30))
     scalars.Insert("yes", Value.Bool(true))
     scalars.Insert("no", Value.Bool(false))
     scalars.Insert("empty", Value.Str(""))
     scalars.Insert("plain", Value.Str("text"))
     var alone = new Buf(0)
-    toml.Encode(alone, Value.Obj(scalars))
+    toml.Encode(alone, Value.Map(scalars))
     printText(alone.Str())
     fmt.PrintNl()
 }

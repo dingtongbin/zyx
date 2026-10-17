@@ -50,24 +50,24 @@ func main() {
 
     // A whole number is written without a decimal point; the rest keep their
     // digits.
-    line("whole", Value.Num(3.0))
-    line("negative", Value.Num(- 12.0))
-    line("fraction", Value.Num(1.5))
-    line("zero", Value.Num(0.0))
-    line("decimal", Value.Num(123.456))
+    line("whole", Value.Float(3.0))
+    line("negative", Value.Float(- 12.0))
+    line("fraction", Value.Float(1.5))
+    line("zero", Value.Float(0.0))
+    line("decimal", Value.Float(123.456))
 
     // A value that is not finite has no text in the format, so it is written
     // as null.
     var big = power(21, true)
     var small = power(7, false)
-    line("power-up", Value.Num(big))
-    line("power-down", Value.Num(small))
+    line("power-up", Value.Float(big))
+    line("power-down", Value.Float(small))
     var inf: f64 = 1.0 / 0.0
     var neg_inf: f64 = - 1.0 / 0.0
     var nan: f64 = 0.0 / 0.0
-    line("infinity", Value.Num(inf))
-    line("negative-infinity", Value.Num(neg_inf))
-    line("not-a-number", Value.Num(nan))
+    line("infinity", Value.Float(inf))
+    line("negative-infinity", Value.Float(neg_inf))
+    line("not-a-number", Value.Float(nan))
 
     // Texts: plain, empty, and the bytes the format escapes.
     line("empty-text", Value.Str(""))
@@ -91,56 +91,56 @@ func main() {
 
     // Arrays: empty, one element, many, and nested.
     var none = new Array<Value>(0)
-    line("array-empty", Value.Arr(none))
+    line("array-empty", Value.Array(none))
     var one = new Array<Value>(0)
-    one.Push(Value.Num(1.0))
-    line("array-one", Value.Arr(one))
+    one.Push(Value.Float(1.0))
+    line("array-one", Value.Array(one))
     var many = new Array<Value>(0)
     many.Push(Value.Null)
     many.Push(Value.Bool(true))
     many.Push(Value.Str("x"))
-    line("array-many", Value.Arr(many))
+    line("array-many", Value.Array(many))
     var nested = new Array<Value>(0)
-    nested.Push(Value.Arr(one))
-    nested.Push(Value.Arr(none))
-    line("array-nested", Value.Arr(nested))
+    nested.Push(Value.Array(one))
+    nested.Push(Value.Array(none))
+    line("array-nested", Value.Array(nested))
 
     // Objects: empty, and members written in the order of their names whatever
     // order they were put in.
     var no_members = new Map<str, Value>()
-    line("object-empty", Value.Obj(no_members))
+    line("object-empty", Value.Map(no_members))
     var members = new Map<str, Value>()
-    members.Insert("b", Value.Num(2.0))
-    members.Insert("a", Value.Num(1.0))
+    members.Insert("b", Value.Float(2.0))
+    members.Insert("a", Value.Float(1.0))
     members.Insert("c", Value.Str("z"))
-    line("object-sorted", Value.Obj(members))
+    line("object-sorted", Value.Map(members))
 
     // The two layouts of one value.
     var inner = new Map<str, Value>()
-    inner.Insert("list", Value.Arr(many))
+    inner.Insert("list", Value.Array(many))
     inner.Insert("flag", Value.Bool(false))
     inner.Insert("nil", Value.Null)
-    line("object-nested", Value.Obj(inner))
+    line("object-nested", Value.Map(inner))
 
     var compact = new Buf(0)
-    json.Encode(compact, Value.Obj(inner))
+    json.Encode(compact, Value.Map(inner))
     fmt.Println(compact.Str())
 
     var pretty = new Buf(0)
-    json.EncodePretty(pretty, Value.Obj(inner))
+    json.EncodePretty(pretty, Value.Map(inner))
     fmt.Print(pretty.Str())
     fmt.PrintNl()
 
     var pretty_array = new Buf(0)
-    json.EncodePretty(pretty_array, Value.Arr(many))
+    json.EncodePretty(pretty_array, Value.Array(many))
     fmt.Print(pretty_array.Str())
     fmt.PrintNl()
 
     var pretty_empty = new Buf(0)
-    json.EncodePretty(pretty_empty, Value.Arr(none))
+    json.EncodePretty(pretty_empty, Value.Array(none))
     fmt.Println(pretty_empty.Str())
 
     var pretty_one = new Buf(0)
-    json.EncodePretty(pretty_one, Value.Num(1.0))
+    json.EncodePretty(pretty_one, Value.Float(1.0))
     fmt.Println(pretty_one.Str())
 }

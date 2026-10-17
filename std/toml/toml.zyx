@@ -354,7 +354,7 @@ struct Parser {
         match container.Get(name) {
             Some(existing) => {
                 match existing {
-                    Obj(o) => {
+                    Map(o) => {
                         table = o
                     }
                     _ => {
@@ -364,7 +364,7 @@ struct Parser {
             }
             None => { }
         }
-        container.Insert(name, Value.Obj(table))
+        container.Insert(name, Value.Map(table))
         self.headers.Add(path)
         self.current = table
         self.cur_path = trail
@@ -386,8 +386,8 @@ struct Parser {
         match container.Get(name) {
             Some(existing) => {
                 match existing {
-                    Arr(a) => {
-                        a.Push(Value.Obj(table))
+                    Array(a) => {
+                        a.Push(Value.Map(table))
                     }
                     _ => {
                         return Result.Err(self.error(at, "the name is not an array of tables"))
@@ -396,8 +396,8 @@ struct Parser {
             }
             None => {
                 var a = new Array<Value>(0)
-                a.Push(Value.Obj(table))
-                container.Insert(name, Value.Arr(a))
+                a.Push(Value.Map(table))
+                container.Insert(name, Value.Array(a))
             }
         }
         self.arrays.Add(path)
@@ -443,15 +443,15 @@ struct Parser {
         match container.Get(name) {
             Some(existing) => {
                 match existing {
-                    Obj(o) => {
+                    Map(o) => {
                         return Result.Ok(o)
                     }
-                    Arr(a) => {
+                    Array(a) => {
                         if a.Len() == 0 {
                             return Result.Err(self.error(self.pos, "the array of tables is empty"))
                         }
                         match a[a.Len() - 1] {
-                            Obj(o) => {
+                            Map(o) => {
                                 return Result.Ok(o)
                             }
                             _ => { }
@@ -466,7 +466,7 @@ struct Parser {
             None => { }
         }
         var table = new Map<str, Value>()
-        container.Insert(name, Value.Obj(table))
+        container.Insert(name, Value.Map(table))
         return Result.Ok(table)
     }
 
@@ -481,12 +481,12 @@ struct Parser {
             match container.Get(name) {
                 Some(existing) => {
                     match existing {
-                        Arr(a) => {
+                        Array(a) => {
                             if a.Len() == 0 {
                                 return Result.Err(self.error(self.pos, "the array of tables is empty"))
                             }
                             match a[a.Len() - 1] {
-                                Obj(o) => {
+                                Map(o) => {
                                     return Result.Ok(o)
                                 }
                                 _ => { }
@@ -572,15 +572,15 @@ struct Parser {
         }
         if text == "inf" || text == "+inf" {
             var big = 1.0 / 0.0
-            return Result.Ok(Value.Num(big))
+            return Result.Ok(Value.Float(big))
         }
         if text == "-inf" {
             var small = -1.0 / 0.0
-            return Result.Ok(Value.Num(small))
+            return Result.Ok(Value.Float(small))
         }
         if text == "nan" || text == "+nan" || text == "-nan" {
             var none = 0.0 / 0.0
-            return Result.Ok(Value.Num(none))
+            return Result.Ok(Value.Float(none))
         }
         if looks_like_datetime(text) {
             return self.parse_datetime(at, text)
@@ -591,11 +591,11 @@ struct Parser {
             if v > exact_limit_int || v < -exact_limit_int {
                 return Result.Err(self.error(at, "the integer cannot be held exactly"))
             }
-            return Result.Ok(Value.Num(f64(v)))
+            return Result.Ok(Value.Float(f64(v)))
         }
         if kind == value_float {
             var v = try self.parse_float(at, text)
-            return Result.Ok(Value.Num(v))
+            return Result.Ok(Value.Float(v))
         }
         return Result.Err(self.error(at, "the value is not one a document holds"))
     }
@@ -1150,7 +1150,7 @@ struct Parser {
         self.skip_array_space()
         if self.is_at(code(']')) {
             self.pos += 1
-            return Result.Ok(Value.Arr(items))
+            return Result.Ok(Value.Array(items))
         }
         for !self.at_end() {
             var item = try self.parse_value()
@@ -1161,13 +1161,13 @@ struct Parser {
                 self.skip_array_space()
                 if self.is_at(code(']')) {
                     self.pos += 1
-                    return Result.Ok(Value.Arr(items))
+                    return Result.Ok(Value.Array(items))
                 }
                 continue
             }
             if self.is_at(code(']')) {
                 self.pos += 1
-                return Result.Ok(Value.Arr(items))
+                return Result.Ok(Value.Array(items))
             }
             if self.at_end() {
                 return Result.Err(self.error(at, "the array is never closed"))
@@ -1202,7 +1202,7 @@ struct Parser {
         self.skip_ws()
         if self.is_at(code('}')) {
             self.pos += 1
-            return Result.Ok(Value.Obj(table))
+            return Result.Ok(Value.Map(table))
         }
         for !self.at_end() {
             self.skip_ws()
@@ -1232,7 +1232,7 @@ struct Parser {
             }
             if self.is_at(code('}')) {
                 self.pos += 1
-                return Result.Ok(Value.Obj(table))
+                return Result.Ok(Value.Map(table))
             }
             return Result.Err(self.error(at, "the inline table is never closed"))
         }
@@ -1404,7 +1404,7 @@ func inline_walk(container: Map<str, Value>, name: str, at: usize) -> Result<Map
     match container.Get(name) {
         Some(existing) => {
             match existing {
-                Obj(o) => {
+                Map(o) => {
                     return Result.Ok(o)
                 }
                 _ => {
@@ -1415,7 +1415,7 @@ func inline_walk(container: Map<str, Value>, name: str, at: usize) -> Result<Map
         None => { }
     }
     var table = new Map<str, Value>()
-    container.Insert(name, Value.Obj(table))
+    container.Insert(name, Value.Map(table))
     return Result.Ok(table)
 }
 
@@ -1435,5 +1435,5 @@ func Parse(s: str) -> Result<Value, Error> {
         dotted: new Set<str>()
     }
     try p.parse_document()
-    return Result.Ok(Value.Obj(root))
+    return Result.Ok(Value.Map(root))
 }

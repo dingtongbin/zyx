@@ -107,10 +107,11 @@ var predeclaredVariants = map[string][]Variant{
 	"Value": {
 		{Name: "Null"},
 		{Name: "Bool", Payload: []*Type{Bool}},
-		{Name: "Num", Payload: []*Type{Float64}},
+		{Name: "Int", Payload: []*Type{Int64}},
+		{Name: "Float", Payload: []*Type{Float64}},
 		{Name: "Str", Payload: []*Type{Str}},
-		{Name: "Arr", Payload: []*Type{Array.Instantiate(Value)}},
-		{Name: "Obj", Payload: []*Type{Map.Instantiate(Str, Value)}},
+		{Name: "Array", Payload: []*Type{Array.Instantiate(Value)}},
+		{Name: "Map", Payload: []*Type{Map.Instantiate(Str, Value)}},
 	},
 }
 

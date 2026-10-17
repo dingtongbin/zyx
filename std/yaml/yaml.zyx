@@ -281,7 +281,7 @@ struct Parser {
             var item = try self.item(rest, indent)
             items.Push(item)
         }
-        return Result.Ok(Value.Arr(items))
+        return Result.Ok(Value.Array(items))
     }
 
     // item reads one entry of a block sequence. The entry holds a mapping when
@@ -301,7 +301,7 @@ struct Parser {
             try self.advance()
             try self.entry(table, text, key_indent)
         }
-        return Result.Ok(Value.Obj(table))
+        return Result.Ok(Value.Map(table))
     }
 
     // mapping reads the entries of a block mapping.
@@ -312,7 +312,7 @@ struct Parser {
             try self.advance()
             try self.entry(table, text, indent)
         }
-        return Result.Ok(Value.Obj(table))
+        return Result.Ok(Value.Map(table))
     }
 
     // entry puts one mapping entry in a table. The parser stands on the line
@@ -703,7 +703,7 @@ struct Flow {
         self.skip_space()
         if !self.at_end() && self.peek() == code(']') {
             self.pos += 1
-            return Result.Ok(Value.Arr(items))
+            return Result.Ok(Value.Array(items))
         }
         for !self.at_end() {
             var item = try self.value()
@@ -717,13 +717,13 @@ struct Flow {
                 self.skip_space()
                 if !self.at_end() && self.peek() == code(']') {
                     self.pos += 1
-                    return Result.Ok(Value.Arr(items))
+                    return Result.Ok(Value.Array(items))
                 }
                 continue
             }
             if self.peek() == code(']') {
                 self.pos += 1
-                return Result.Ok(Value.Arr(items))
+                return Result.Ok(Value.Array(items))
             }
             return Result.Err(self.error(self.at + self.pos, "the entries of the sequence are not separated by commas"))
         }
@@ -738,7 +738,7 @@ struct Flow {
         self.skip_space()
         if !self.at_end() && self.peek() == code('}') {
             self.pos += 1
-            return Result.Ok(Value.Obj(table))
+            return Result.Ok(Value.Map(table))
         }
         for !self.at_end() {
             self.skip_space()
@@ -762,13 +762,13 @@ struct Flow {
                 self.skip_space()
                 if !self.at_end() && self.peek() == code('}') {
                     self.pos += 1
-                    return Result.Ok(Value.Obj(table))
+                    return Result.Ok(Value.Map(table))
                 }
                 continue
             }
             if self.peek() == code('}') {
                 self.pos += 1
-                return Result.Ok(Value.Obj(table))
+                return Result.Ok(Value.Map(table))
             }
             return Result.Err(self.error(self.at + self.pos, "the entries of the mapping are not separated by commas"))
         }
@@ -845,7 +845,7 @@ func resolve(text: str) -> Value {
                 if v > exact_limit_int || v < -exact_limit_int {
                     return Value.Str(text)
                 }
-                return Value.Num(f64(v))
+                return Value.Float(f64(v))
             }
             None => { }
         }
@@ -854,7 +854,7 @@ func resolve(text: str) -> Value {
     if kind == number_float {
         match float_of(text) {
             Some(v) => {
-                return Value.Num(v)
+                return Value.Float(v)
             }
             None => { }
         }
@@ -1165,7 +1165,7 @@ func Encode(dst: Buf, v: Value) {
 // line of the indentation; a collection stands under it, one part per line.
 func write_node(dst: Buf, v: Value, indent: usize) {
     match v {
-        Obj(o) => {
+        Map(o) => {
             if o.Len() == 0 {
                 write_indent(dst, indent)
                 dst.WriteStr("{}\n")
@@ -1173,7 +1173,7 @@ func write_node(dst: Buf, v: Value, indent: usize) {
             }
             write_mapping(dst, o, indent)
         }
-        Arr(a) => {
+        Array(a) => {
             if a.Len() == 0 {
                 write_indent(dst, indent)
                 dst.WriteStr("[]\n")
@@ -1233,10 +1233,10 @@ func write_sequence(dst: Buf, items: Array<Value>, indent: usize) {
 // names it: a scalar, or a collection that holds nothing.
 func is_plain_node(v: Value) -> bool {
     match v {
-        Obj(o) => {
+        Map(o) => {
             return o.Len() == 0
         }
-        Arr(a) => {
+        Array(a) => {
             return a.Len() == 0
         }
         _ => {
@@ -1271,6 +1271,9 @@ func write_scalar(dst: Buf, v: Value) {
         Null => {
             dst.WriteStr("null")
         }
+        Int(n) => {
+            dst.WriteStr(f"{n}")
+        }
         Bool(b) => {
             if b {
                 dst.WriteStr("true")
@@ -1278,7 +1281,7 @@ func write_scalar(dst: Buf, v: Value) {
                 dst.WriteStr("false")
             }
         }
-        Num(n) => {
+        Float(n) => {
             write_number(dst, n)
         }
         Str(text) => {
@@ -1290,10 +1293,10 @@ func write_scalar(dst: Buf, v: Value) {
                 dst.WriteByte(code('"'))
             }
         }
-        Obj(o) => {
+        Map(o) => {
             dst.WriteStr("{}")
         }
-        Arr(a) => {
+        Array(a) => {
             dst.WriteStr("[]")
         }
     }

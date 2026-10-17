@@ -230,6 +230,17 @@ int32_t zyxpg_params_float(void *handle, double value) {
   return zyxpg_params_put((struct zyxpg_params *)handle, text, (int)strlen(text));
 }
 
+int32_t zyxpg_params_int(void *handle, int64_t value) {
+  char buffer[32];
+  snprintf(buffer, sizeof(buffer), "%lld", (long long)value);
+  char *text = zyxpg_owned(buffer, strlen(buffer));
+  if (text == NULL) {
+    zyxpg_fail(ZYXPG_OTHER, 0, "out of memory");
+    return -1;
+  }
+  return zyxpg_params_put((struct zyxpg_params *)handle, text, (int)strlen(text));
+}
+
 int32_t zyxpg_params_text(void *handle, const char *text, size_t len) {
   char *copy = zyxpg_owned(text, len);
   if (copy == NULL) {

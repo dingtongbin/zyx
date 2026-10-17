@@ -348,10 +348,11 @@ func bind_one(prepared: raw, at: i32, v: Value) -> Result<(), db.Error> {
             }
             return bind_result(c.zyxmysql_bind_int(prepared, at, 0))
         }
-        Num(x) => { return bind_result(c.zyxmysql_bind_float(prepared, at, x)) }
+        Int(v) => { return bind_result(c.zyxmysql_bind_int(prepared, at, v)) }
+        Float(x) => { return bind_result(c.zyxmysql_bind_float(prepared, at, x)) }
         Str(s) => { return bind_result(c.zyxmysql_bind_text(prepared, at, s)) }
-        Arr(_) => { return Result.Err(unbindable(at)) }
-        Obj(_) => { return Result.Err(unbindable(at)) }
+        Array(_) => { return Result.Err(unbindable(at)) }
+        Map(_) => { return Result.Err(unbindable(at)) }
     }
 }
 

@@ -213,10 +213,11 @@ func bind_one(stmt: raw, at: i32, v: Value) -> Result<(), Error> {
             }
             return bind_result(c.zyxsqlite_bind_int(stmt, at, 0))
         }
-        Num(x) => { return bind_result(c.zyxsqlite_bind_float(stmt, at, x)) }
+        Int(v) => { return bind_result(c.zyxsqlite_bind_int(stmt, at, v)) }
+        Float(x) => { return bind_result(c.zyxsqlite_bind_float(stmt, at, x)) }
         Str(s) => { return bind_result(c.zyxsqlite_bind_text(stmt, at, s)) }
-        Arr(_) => { return Result.Err(unbindable(at)) }
-        Obj(_) => { return Result.Err(unbindable(at)) }
+        Array(_) => { return Result.Err(unbindable(at)) }
+        Map(_) => { return Result.Err(unbindable(at)) }
     }
 }
 

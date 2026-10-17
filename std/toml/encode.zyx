@@ -13,7 +13,7 @@ import "std/fmt"
 // document is a table and nothing else can stand where one is written.
 func Encode(dst: Buf, v: Value) {
     match v {
-        Obj(o) => {
+        Map(o) => {
             write_table(dst, o, new Array<str>(0))
         }
         _ => {
@@ -27,16 +27,16 @@ func Encode(dst: Buf, v: Value) {
 // tables.
 func is_table_value(v: Value) -> bool {
     match v {
-        Obj(o) => {
+        Map(o) => {
             return true
         }
-        Arr(a) => {
+        Array(a) => {
             if a.Len() == 0 {
                 return false
             }
             for item in a {
                 match item {
-                    Obj(o) => { }
+                    Map(o) => { }
                     _ => {
                         return false
                     }
@@ -83,7 +83,7 @@ func write_table(dst: Buf, table: Map<str, Value>, path: Array<str>) {
                 }
                 child.Push(key)
                 match v {
-                    Obj(o) => {
+                    Map(o) => {
                         if !first_table || wrote_any {
                             dst.WriteByte(lf)
                         }
@@ -94,7 +94,7 @@ func write_table(dst: Buf, table: Map<str, Value>, path: Array<str>) {
                         write_table(dst, o, child)
                         first_table = false
                     }
-                    Arr(a) => {
+                    Array(a) => {
                         var i: usize = 0
                         for item in a {
                             if !first_table || wrote_any || i > 0 {
@@ -105,7 +105,7 @@ func write_table(dst: Buf, table: Map<str, Value>, path: Array<str>) {
                             dst.WriteStr("]]")
                             dst.WriteByte(lf)
                             match item {
-                                Obj(o) => {
+                                Map(o) => {
                                     write_table(dst, o, child)
                                 }
                                 _ => { }
@@ -159,6 +159,9 @@ func write_value(dst: Buf, v: Value) {
         Null => {
             panic("toml: a document holds no null")
         }
+        Int(n) => {
+            dst.WriteStr(f"{n}")
+        }
         Bool(b) => {
             if b {
                 dst.WriteStr("true")
@@ -166,7 +169,7 @@ func write_value(dst: Buf, v: Value) {
                 dst.WriteStr("false")
             }
         }
-        Num(n) => {
+        Float(n) => {
             write_number(dst, n)
         }
         Str(text) => {
@@ -174,7 +177,7 @@ func write_value(dst: Buf, v: Value) {
             write_basic_body(dst, text)
             dst.WriteByte(code('"'))
         }
-        Arr(a) => {
+        Array(a) => {
             dst.WriteByte(code('['))
             var i: usize = 0
             for item in a {
@@ -186,7 +189,7 @@ func write_value(dst: Buf, v: Value) {
             }
             dst.WriteByte(code(']'))
         }
-        Obj(o) => {
+        Map(o) => {
             dst.WriteStr("{ ")
             var keys = sorted_keys(o)
             var i: usize = 0

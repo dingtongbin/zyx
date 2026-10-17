@@ -290,10 +290,11 @@ func add_param(handle: raw, at: i32, v: Value) -> Result<(), db.Error> {
             }
             return param_result(c.zyxpg_params_bool(handle, 0))
         }
-        Num(x) => { return param_result(c.zyxpg_params_float(handle, x)) }
+        Int(v) => { return param_result(c.zyxpg_params_int(handle, v)) }
+        Float(x) => { return param_result(c.zyxpg_params_float(handle, x)) }
         Str(s) => { return param_result(c.zyxpg_params_text(handle, s)) }
-        Arr(_) => { return Result.Err(unbindable(at)) }
-        Obj(_) => { return Result.Err(unbindable(at)) }
+        Array(_) => { return Result.Err(unbindable(at)) }
+        Map(_) => { return Result.Err(unbindable(at)) }
     }
 }
 

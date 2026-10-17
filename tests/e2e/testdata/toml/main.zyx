@@ -58,7 +58,10 @@ func printValue(v: Value) {
         Bool(b) => {
             fmt.PrintBool(b)
         }
-        Num(n) => {
+        Int(n) => {
+            fmt.PrintI64(n)
+        }
+        Float(n) => {
             printNumber(n)
         }
         Str(s) => {
@@ -66,7 +69,7 @@ func printValue(v: Value) {
             printText(s)
             fmt.Print("\"")
         }
-        Arr(a) => {
+        Array(a) => {
             fmt.Print("[")
             var i: usize = 0
             for item in a {
@@ -78,7 +81,7 @@ func printValue(v: Value) {
             }
             fmt.Print("]")
         }
-        Obj(o) => {
+        Map(o) => {
             fmt.Print("{")
             var keys = sorted(o)
             var i: usize = 0

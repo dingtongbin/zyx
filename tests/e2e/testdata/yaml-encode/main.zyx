@@ -81,7 +81,10 @@ func printValue(v: Value) {
         Bool(b) => {
             fmt.PrintBool(b)
         }
-        Num(n) => {
+        Int(n) => {
+            fmt.PrintI64(n)
+        }
+        Float(n) => {
             printNumber(n)
         }
         Str(s) => {
@@ -89,7 +92,7 @@ func printValue(v: Value) {
             printText(s)
             fmt.Print("\"")
         }
-        Arr(a) => {
+        Array(a) => {
             fmt.Print("[")
             var i: usize = 0
             for item in a {
@@ -101,7 +104,7 @@ func printValue(v: Value) {
             }
             fmt.Print("]")
         }
-        Obj(o) => {
+        Map(o) => {
             fmt.Print("{")
             var i: usize = 0
             for key in sorted(o) {
@@ -138,25 +141,25 @@ func main() {
     root.Insert("quote", Value.Str("say \"hello\""))
     root.Insert("newline", Value.Str("a\nb"))
     root.Insert("tab", Value.Str("a\tb"))
-    root.Insert("whole", Value.Num(7.0))
-    root.Insert("fraction", Value.Num(-2.5))
+    root.Insert("whole", Value.Float(7.0))
+    root.Insert("fraction", Value.Float(-2.5))
     root.Insert("yes", Value.Bool(true))
     root.Insert("nothing", Value.Null)
-    root.Insert("emptylist", Value.Arr(new Array<Value>(0)))
+    root.Insert("emptylist", Value.Array(new Array<Value>(0)))
     var empty = new Map<str, Value>()
-    root.Insert("emptymap", Value.Obj(empty))
+    root.Insert("emptymap", Value.Map(empty))
     var inner = new Map<str, Value>()
-    inner.Insert("x", Value.Num(1.0))
-    inner.Insert("y", Value.Num(2.0))
-    root.Insert("map", Value.Obj(inner))
+    inner.Insert("x", Value.Float(1.0))
+    inner.Insert("y", Value.Float(2.0))
+    root.Insert("map", Value.Map(inner))
     var items = new Array<Value>(0)
-    items.Push(Value.Num(1.0))
+    items.Push(Value.Float(1.0))
     items.Push(Value.Str("two"))
-    items.Push(Value.Obj(inner))
-    root.Insert("list", Value.Arr(items))
+    items.Push(Value.Map(inner))
+    root.Insert("list", Value.Array(items))
 
     var out = new Buf(0)
-    yaml.Encode(out, Value.Obj(root))
+    yaml.Encode(out, Value.Map(root))
     fmt.Print("written: ")
     printText(out.Str())
     fmt.PrintNl()
@@ -177,7 +180,7 @@ func main() {
     top.Push(Value.Str("one"))
     top.Push(Value.Str("two"))
     var seq = new Buf(0)
-    yaml.Encode(seq, Value.Arr(top))
+    yaml.Encode(seq, Value.Array(top))
     printText(seq.Str())
     var one = new Buf(0)
     yaml.Encode(one, Value.Str("alone"))

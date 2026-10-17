@@ -113,7 +113,7 @@ struct Parser {
         }
         if b == byte_of('-') || is_digit(b) {
             var x = try self.number()
-            return Result.Ok(Value.Num(x))
+            return Result.Ok(Value.Float(x))
         }
         return Result.Err(self.fault("the text holds no value here"))
     }
@@ -131,7 +131,7 @@ struct Parser {
         if !self.finished() && self.src[self.at] == byte_of('}') {
             self.at += 1
             self.depth -= 1
-            return Result.Ok(Value.Obj(members))
+            return Result.Ok(Value.Map(members))
         }
         for {
             self.skip_space()
@@ -167,7 +167,7 @@ struct Parser {
         }
         self.depth -= 1
         self.path = outer
-        return Result.Ok(Value.Obj(members))
+        return Result.Ok(Value.Map(members))
     }
 
     // array reads an array.
@@ -183,7 +183,7 @@ struct Parser {
         if !self.finished() && self.src[self.at] == byte_of(']') {
             self.at += 1
             self.depth -= 1
-            return Result.Ok(Value.Arr(items))
+            return Result.Ok(Value.Array(items))
         }
         var index: usize = 0
         for {
@@ -208,7 +208,7 @@ struct Parser {
         }
         self.depth -= 1
         self.path = outer
-        return Result.Ok(Value.Arr(items))
+        return Result.Ok(Value.Array(items))
     }
 
     // string reads a quoted text, escapes and all.
@@ -474,10 +474,11 @@ func write_value(dst: Buf, v: Value, pretty: bool, level: usize) {
                 dst.WriteStr("false")
             }
         }
-        Num(x) => write_number(dst, x)
+        Int(x) => dst.WriteStr(f"{x}")
+        Float(x) => write_number(dst, x)
         Str(s) => write_text(dst, s)
-        Arr(items) => write_array(dst, items, pretty, level)
-        Obj(members) => write_object(dst, members, pretty, level)
+        Array(items) => write_array(dst, items, pretty, level)
+        Map(members) => write_object(dst, members, pretty, level)
     }
 }
 

@@ -139,8 +139,8 @@ func statements(root: str) -> Result<(), sqlite.Error> {
 
     // A binding of a parameter the statement does not have is out of range.
     var many = new Array<Value>(0)
-    many.Push(Value.Num(1.0))
-    many.Push(Value.Num(2.0))
+    many.Push(Value.Float(1.0))
+    many.Push(Value.Float(2.0))
     match db.Exec("CREATE TABLE d (x INTEGER)", many) {
         Ok(_) => { fmt.Println("extra parameter: no failure") }
         Err(e) => { report("extra parameter", e) }
@@ -148,13 +148,13 @@ func statements(root: str) -> Result<(), sqlite.Error> {
 
     // A value that is a collection has no column to stand for it.
     var nested = new Array<Value>(0)
-    nested.Push(Value.Arr(new Array<Value>(0)))
+    nested.Push(Value.Array(new Array<Value>(0)))
     match db.Exec("CREATE TABLE e (x INTEGER)", nested) {
         Ok(_) => { fmt.Println("array parameter: no failure") }
         Err(e) => { report("array parameter", e) }
     }
     var mapped = new Array<Value>(0)
-    mapped.Push(Value.Obj(new Map<str, Value>()))
+    mapped.Push(Value.Map(new Map<str, Value>()))
     match db.Exec("CREATE TABLE f (x INTEGER)", mapped) {
         Ok(_) => { fmt.Println("map parameter: no failure") }
         Err(e) => { report("map parameter", e) }
@@ -170,7 +170,7 @@ func constraints(root: str) -> Result<(), sqlite.Error> {
     try db.Exec("CREATE TABLE names (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)", none)
 
     var first = new Array<Value>(0)
-    first.Push(Value.Num(1.0))
+    first.Push(Value.Float(1.0))
     first.Push(Value.Str("Ada"))
     var made = try db.Exec("INSERT INTO names (id, name) VALUES (?, ?)", first)
     fmt.Println(f"first changed {made}")
@@ -183,7 +183,7 @@ func constraints(root: str) -> Result<(), sqlite.Error> {
 
     // The same value on a column that must hold each value once.
     var other = new Array<Value>(0)
-    other.Push(Value.Num(2.0))
+    other.Push(Value.Float(2.0))
     other.Push(Value.Str("Ada"))
     match db.Exec("INSERT INTO names (id, name) VALUES (?, ?)", other) {
         Ok(_) => { fmt.Println("duplicate name: no failure") }
@@ -192,7 +192,7 @@ func constraints(root: str) -> Result<(), sqlite.Error> {
 
     // No value at all on a column that must hold one.
     var blank = new Array<Value>(0)
-    blank.Push(Value.Num(3.0))
+    blank.Push(Value.Float(3.0))
     blank.Push(Value.Null)
     match db.Exec("INSERT INTO names (id, name) VALUES (?, ?)", blank) {
         Ok(_) => { fmt.Println("missing value: no failure") }

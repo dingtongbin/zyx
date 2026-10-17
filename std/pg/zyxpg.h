@@ -45,6 +45,11 @@ void zyxpg_params_free(void *params);
 int32_t zyxpg_params_null(void *params);
 int32_t zyxpg_params_bool(void *params, int32_t value);
 int32_t zyxpg_params_float(void *params, double value);
+
+/* zyxpg_params_int adds an integer parameter, written the way the server reads
+   one: an exact decimal text, which is what a wide integer needs because a float
+   cannot hold every one of them. */
+int32_t zyxpg_params_int(void *params, int64_t value);
 int32_t zyxpg_params_text(void *params, const char *text, size_t len);
 
 /* zyxpg_query runs a text and answers the rows it reads. An answer of no
