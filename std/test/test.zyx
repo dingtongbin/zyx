@@ -1,1 +1,274 @@
 package test
+
+// The assertions a test case is written with, and the report they make.
+//
+// The runner the toolchain generates owns the parts of a test run that need
+// the compiler: discovering the cases, running each in a coroutine of its own,
+// timing them, and printing the summary. This package owns what a case says
+// and what a failure looks like, so a case is written against it and nothing
+// else.
+//
+// A case holds a T. The report goes to the sink a T was built with, so a
+// runner may capture one package's output, send it somewhere else, or keep two
+// cases apart. A failure names where the case stands and what was expected and
+// seen, and the case goes on: an assertion that fails does not stop the ones
+// after it. Fatal and Skip are the two that stop a case, and they do it the
+// only way a library can: by raising the failure to the runner. Their messages
+// begin with the fixed words below, so the runner tells them apart from a
+// panic the case did not ask for.
+
+import "std/time"
+
+// The words a Fatal and a Skip begin their report to the runner with. A runner
+// reads them from the message of the failure it receives.
+//
+//   fatal_prefix  a case stopped on purpose, and failed
+//   skip_prefix   a case stopped on purpose, and was skipped
+
+const fatal_prefix: str = "test: fatal: "
+const skip_prefix: str = "test: skip: "
+
+// A Sink is where the lines of a report go.
+interface Sink {
+    func WriteLine(s: str)
+}
+
+// A T is the handle of one test case. It records whether the case has failed
+// or been skipped and writes the lines a failure or a log makes. It is safe to
+// share between coroutines, because a runner may run a case away from the
+// thread that started it.
+struct T {
+    out: Sink
+    where: str
+    verbose: bool
+    failed: bool
+    skipped: bool
+
+    impl SyncSafe { }
+
+    // init builds the handle of a case. where is where the case stands, in the
+    // form file:line:column, which the runner knows and this package cannot
+    // ask for; verbose says whether a log is written even before a failure.
+    func init(out: Sink, where: str, verbose: bool) -> Self {
+        return T { out: out, where: where, verbose: verbose, failed: false, skipped: false }
+    }
+
+    // Failed reports whether the case has failed.
+    func Failed() -> bool {
+        return self.failed
+    }
+
+    // Skipped reports whether the case was skipped.
+    func Skipped() -> bool {
+        return self.skipped
+    }
+}
+
+// True checks that a condition holds.
+func True(t: T, cond: bool) {
+    if !cond {
+        fail(t, "condition is false")
+    }
+}
+
+// False checks that a condition does not hold.
+func False(t: T, cond: bool) {
+    if cond {
+        fail(t, "condition is true")
+    }
+}
+
+// Equal checks that two values are the same. The failure names both, so a
+// reader sees what was seen and what was wanted.
+//
+// The specification names this assertion Eq. A package may not declare that
+// name, because Eq is one of the interfaces the language predeclares and a
+// top-level declaration may not take a predeclared name; the resolver refuses
+// it with E3004. The assertion is therefore spelled Equal here, and it becomes
+// Eq when the language lets a package use that name.
+func Equal<X: Eq + Show>(t: T, got: X, want: X) {
+    if got == want {
+        return
+    }
+    var text = new Buf(0)
+    text.WriteStr("got ")
+    got.Show(text)
+    text.WriteStr(", want ")
+    want.Show(text)
+    fail(t, text.Str())
+}
+
+// NotEq checks that two values are different.
+func NotEq<X: Eq + Show>(t: T, got: X, want: X) {
+    if got != want {
+        return
+    }
+    var text = new Buf(0)
+    text.WriteStr("got ")
+    got.Show(text)
+    text.WriteStr(", want a different value")
+    fail(t, text.Str())
+}
+
+// Near checks that two numbers are within eps of each other.
+func Near(t: T, got: f64, want: f64, eps: f64) {
+    var difference = got - want
+    if difference < 0.0 {
+        difference = -difference
+    }
+    if difference <= eps {
+        return
+    }
+    fail(t, f"got {got}, want {want} within {eps}")
+}
+
+// Contains checks that a text holds another.
+func Contains(t: T, haystack: str, needle: str) {
+    if holds(haystack, needle) {
+        return
+    }
+    fail(t, f"{haystack} does not hold {needle}")
+}
+
+// Ok checks that a result is the successful one and answers its value. A
+// result that failed stops the case, because there is no value to answer.
+func Ok<X, E: Show>(t: T, r: Result<X, E>) -> X {
+    match r {
+        Ok(v) => { return v }
+        Err(e) => {
+            var text = new Buf(0)
+            text.WriteStr("got an error, want a value: ")
+            e.Show(text)
+            var message = text.Str()
+            fail(t, message)
+            var raised = f"{fatal_prefix}{message}"
+            panic(raised)
+        }
+    }
+}
+
+// Err checks that a result is the failed one and answers its failure. A result
+// that succeeded stops the case, because there is no failure to answer.
+func Err<X, E: Show>(t: T, r: Result<X, E>) -> E {
+    match r {
+        Ok(v) => {
+            fail(t, "got a value, want an error")
+            var raised = f"{fatal_prefix}got a value, want an error"
+            panic(raised)
+        }
+        Err(e) => { return e }
+    }
+}
+
+// Fatal records a failure and ends the case at once.
+func Fatal(t: T, msg: str) {
+    fail(t, msg)
+    var raised = f"{fatal_prefix}{msg}"
+    panic(raised)
+}
+
+// Skip records that the case was skipped and ends it at once.
+func Skip(t: T, reason: str) {
+    t.skipped = true
+    t.out.WriteLine(f"{t.where}: skip: {reason}")
+    var raised = f"{skip_prefix}{reason}"
+    panic(raised)
+}
+
+// Log writes a message when the case has already failed, or when the run was
+// asked to be verbose about every case.
+func Log(t: T, msg: str) {
+    if t.failed || t.verbose {
+        t.out.WriteLine(f"{t.where}: log: {msg}")
+    }
+}
+
+// Run runs a sub-test of a case under a name. A failure of the sub-test makes
+// the case fail too, so a case that runs its parts as sub-tests reports the
+// worst of them.
+//
+// A sub-test runs where the caller stands. A runner ordinarily starts one in a
+// coroutine of its own, but a coroutine is started by a call to a named
+// function and a sub-test arrives as a value, so this build cannot start one;
+// what a sub-test owes its case, the failure that travels back, is what it
+// does.
+func Run(t: T, name: str, fn: func(T)) {
+    t.out.WriteLine(f"{t.where}: run: {name}")
+    var sub = new T(t.out, t.where, t.verbose)
+    fn(sub)
+    if sub.Failed() {
+        t.failed = true
+    }
+}
+
+// RunParallel runs a sub-test of a case that a runner would run alongside the
+// other sub-tests of the case. What a sub-test owes its case travels back the
+// same way, but this build runs it where the caller stands, for the reason Run
+// gives.
+func RunParallel(t: T, name: str, fn: func(T)) {
+    Run(t, name, fn)
+}
+
+// B is the handle of one benchmark. The runner settles how many times the body
+// runs, and reads the time it took from the clock this handle keeps.
+struct B {
+    N: usize
+    started: time.Instant
+
+    // init builds a benchmark whose body is to run n times.
+    func init(n: usize) -> Self {
+        return B { N: n, started: time.Monotonic() }
+    }
+
+    // ResetTimer starts the measured part of the benchmark here, so what the
+    // runner did to settle n is not counted.
+    func ResetTimer() {
+        self.started = time.Monotonic()
+    }
+
+    // Elapsed answers the time since the timer was last started, which is what
+    // the runner divides by N to report one run's cost.
+    func Elapsed() -> Duration {
+        return time.Monotonic().Since(self.started)
+    }
+}
+
+// Summary writes the line that ends a run: how many cases passed, failed, and
+// were skipped, and how long the whole of it took.
+func Summary(out: Sink, passed: usize, failed: usize, skipped: usize, took: Duration) {
+    out.WriteLine(f"{passed} passed, {failed} failed, {skipped} skipped, {took}")
+}
+
+// fail records a failure and writes its line, which names where the case
+// stands and what went wrong. The case goes on.
+func fail(t: T, msg: str) {
+    t.failed = true
+    t.out.WriteLine(f"{t.where}: fail: {msg}")
+}
+
+// holds reports whether a text holds another.
+func holds(s: str, sub: str) -> bool {
+    if sub.Len() == 0 {
+        return true
+    }
+    if sub.Len() > s.Len() {
+        return false
+    }
+    var i: usize = 0
+    for i + sub.Len() <= s.Len() {
+        var j: usize = 0
+        var same = true
+        for j < sub.Len() {
+            if s[i + j] != sub[j] {
+                same = false
+                break
+            }
+            j += 1
+        }
+        if same {
+            return true
+        }
+        i += 1
+    }
+    return false
+}

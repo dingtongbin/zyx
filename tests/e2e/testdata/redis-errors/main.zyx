@@ -1,0 +1,47 @@
+package main
+
+// The failures a client reports with no server to talk to: an address that is not
+// host:port, a port that is not a number, a server that is not there. What a
+// machine's own error text says is its business, so only the kind of a failure is
+// printed, as the number the language gives that kind.
+
+import "std/fmt"
+import "std/redis"
+
+// say prints a label and the number of a kind of failure.
+func say(label: str, e: redis.Error) {
+    fmt.Print(label)
+    fmt.Print(" ")
+    fmt.PrintI64(i64(i32(e.Kind)))
+    fmt.PrintNl()
+}
+
+func main() {
+    match new redis.Client("127.0.0.1:not-a-port") {
+        Ok(client) => {
+            client.Close()
+            fmt.Print("a port that is not a number was taken")
+            fmt.PrintNl()
+        }
+        Err(e) => { say("a port that is not a number", e) }
+    }
+
+    match new redis.Client("") {
+        Ok(client) => {
+            client.Close()
+            fmt.Print("an address that names no host was taken")
+            fmt.PrintNl()
+        }
+        Err(e) => { say("an address that names no host", e) }
+    }
+
+    // A port nothing listens on. The program chooses it and never prints it.
+    var refused = false
+    match new redis.Client("127.0.0.1:1") {
+        Ok(client) => { client.Close() }
+        Err(e) => { refused = i32(e.Kind) == i32(redis.ErrorKind.Refused) }
+    }
+    fmt.Print("a server that is not there is refused ")
+    fmt.PrintBool(refused)
+    fmt.PrintNl()
+}

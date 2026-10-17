@@ -48,8 +48,8 @@ func TestTypeTextRoundTrips(t *testing.T) {
 	tab := newTypeTable(testProgram())
 	cases := []string{
 		"i8", "u32", "i64", "usize", "f32", "f64", "bool", "char", "str", "raw",
-		"[i64; 4]", "[u8]", "(i64, str)", "func(i64) -> bool", "func()",
-		"chan<i32>", "Array<u8>", "Map<str, i64>", "Point",
+		"[i64;4]", "[u8]", "(i64,str)", "func(i64)->bool", "func()",
+		"chan<i32>", "Array<u8>", "Map<str,i64>", "Point",
 	}
 	for _, text := range cases {
 		ty, err := tab.parse("example.com/app", text)
@@ -57,8 +57,8 @@ func TestTypeTextRoundTrips(t *testing.T) {
 			t.Errorf("parse(%q): %v", text, err)
 			continue
 		}
-		if got := ty.String(); got != text {
-			t.Errorf("parse(%q).String() = %q", text, got)
+		if got := ty.Canonical(); got != text {
+			t.Errorf("parse(%q).Canonical() = %q", text, got)
 		}
 	}
 }

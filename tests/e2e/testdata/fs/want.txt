@@ -1,0 +1,46 @@
+a/b/c.txt
+a/b/c
+only
+c.txt
+/a/b
+.txt
+
+.hidden
+true
+false
+/a/b/d
+../b
+.
+false
+clean
+made
+true
+false
+write: ok
+append: ok
+explicit write: ok
+rename after close: ok
+read: hello, file
+second line
+24 false
+5 hello
+seek: ok
+ file
+at end: ok
+mapped and unmapped
+true
+closed refuses a read
+sync: ok
+chmod: ok
+a.txt b.txt moved.txt note.txt one 
+one: 0
+not found is a directory exists
+rename: ok
+true
+remove: ok
+false
+remove all: ok
+false
+temp write: ok
+temp seek: ok
+temp: temp

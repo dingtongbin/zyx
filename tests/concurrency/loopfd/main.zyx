@@ -1,0 +1,116 @@
+package main
+
+import "std/fmt"
+import "std/rt"
+
+import c "loopfd.h"
+
+// A descriptor number the runtime has released must be watchable again. The
+// system hands a number back to the next descriptor it opens, so a wait on a
+// number has to watch what the number names now rather than answer the release
+// that belonged to the descriptor that held it before. The C helper makes the
+// descriptors: a connected pair of sockets, and a pair whose first end has a
+// number the program asks for.
+
+// What a descriptor is given to let a coroutine register it before the release
+// that wakes it: a deadline only hands the scheduler a moment.
+const Soon: Duration = dur.ms(50)
+
+func wait_readable(fd: i32) -> bool {
+    match rt.WaitReadable(fd) {
+        Ok(_) => { return true }
+        Err(_) => { return false }
+    }
+}
+
+func wait_writable(fd: i32) -> bool {
+    match rt.WaitWritable(fd) {
+        Ok(_) => { return true }
+        Err(_) => { return false }
+    }
+}
+
+// wait_for_release reports what a wait on a descriptor the program is about to
+// release answered.
+func wait_for_release(fd: i32) {
+    if wait_readable(fd) {
+        fmt.Println("released descriptor answered a byte")
+    } else {
+        fmt.Println("released descriptor woke")
+    }
+}
+
+func main() {
+    // Releasing a descriptor takes it out of the watch. A wait on it afterwards
+    // registers it again, so the byte the far end writes after the release is
+    // what the wait answers.
+    var a: i32 = 0
+    var b: i32 = 0
+    if c.loopfd_pair(& a, & b) != 0 {
+        fmt.Println("no pair")
+        return
+    }
+    c.loopfd_write(b, 1)
+    if !wait_readable(a) {
+        fmt.Println("pair not readable")
+        return
+    }
+    rt.Release(a)
+    c.loopfd_write(b, 2)
+    if wait_readable(a) {
+        fmt.Println("released descriptor waitable again")
+    } else {
+        fmt.Println("released descriptor refused")
+    }
+    c.loopfd_close(a)
+    c.loopfd_close(b)
+
+    // The number a released descriptor had comes back to a descriptor the
+    // system opens afterwards, and a wait on the number watches that one.
+    var first: i32 = 0
+    var peer: i32 = 0
+    if c.loopfd_pair(& first, & peer) != 0 {
+        fmt.Println("no pair")
+        return
+    }
+    if !wait_writable(first) {
+        fmt.Println("pair not writable")
+        return
+    }
+    rt.Release(first)
+    c.loopfd_close(first)
+    c.loopfd_close(peer)
+    var again: i32 = 0
+    var other: i32 = 0
+    if c.loopfd_pair_number(first, & again, & other) != 0 {
+        fmt.Println("the number did not come back")
+        return
+    }
+    if wait_writable(again) {
+        fmt.Println("new descriptor waitable")
+    } else {
+        fmt.Println("new descriptor refused")
+    }
+    c.loopfd_close(again)
+    c.loopfd_close(other)
+
+    // Releasing a descriptor wakes a coroutine parked on it: the wait answers
+    // that the descriptor is gone rather than that a byte arrived.
+    var held: i32 = 0
+    var far: i32 = 0
+    if c.loopfd_pair(& held, & far) != 0 {
+        fmt.Println("no pair")
+        return
+    }
+    region {
+        var h = spawn wait_for_release(held)
+        // The deadline is what gives the coroutine spawned above the moment to
+        // register the descriptor before the release wakes it.
+        select {
+            timeout(Soon): rt.Release(held)
+        }
+        h.Join()
+    }
+    c.loopfd_close(held)
+    c.loopfd_close(far)
+}

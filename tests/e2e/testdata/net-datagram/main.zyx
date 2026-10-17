@@ -1,0 +1,121 @@
+package main
+
+// The datagram side of the net package, over the loopback address only. One
+// socket sends a message and the other reads it back whole, and the edges a
+// datagram socket defines are covered: a call on a socket that was closed, and
+// an address that names no address. The port is chosen by the program and
+// never printed, so every line below is the same wherever the program runs.
+
+import "std/fmt"
+import "std/net"
+import "std/time"
+
+// colon is the byte that separates a host from its port.
+func colon() -> u8 {
+    return 58
+}
+
+// host_of answers the host an address text names, which is what is left of it
+// before the port.
+func host_of(text: str) -> str {
+    var out = new Buf(0)
+    var i: usize = 0
+    for i < text.Len() {
+        if text[i] == colon() {
+            break
+        }
+        out.WriteByte(text[i])
+        i += 1
+    }
+    return out.Str()
+}
+
+// bytes_of turns a text into the bytes a datagram carries.
+func bytes_of(s: str) -> [u8] {
+    var out = new Array<u8>(s.Len())
+    var i: usize = 0
+    for i < s.Len() {
+        out.Push(s[i])
+        i += 1
+    }
+    return out[0 .. out.Len()]
+}
+
+// say prints a label and the answer it introduces.
+func say(label: str, answer: bool) {
+    fmt.Print(label)
+    fmt.PrintBool(answer)
+    fmt.PrintNl()
+}
+
+// bound is a datagram socket with the address it took.
+struct bound {
+    socket: net.UdpConn
+    addr: str
+}
+
+// bind_first binds a loopback port that is free. A port that is already taken
+// is passed over, because which port the program gets is not part of what it
+// prints.
+func bind_first() -> Result<bound, net.Error> {
+    var port = 20000 + i32(time.UnixMilli() % 20000)
+    var tries: i32 = 0
+    for tries < 64 {
+        var addr = f"127.0.0.1:{i64(port)}"
+        match net.BindUdp(addr) {
+            Ok(socket) => { return Result.Ok(bound { socket: socket, addr: addr }) }
+            Err(_) => { port += 1 }
+        }
+        tries += 1
+    }
+    var addr = f"127.0.0.1:{i64(port)}"
+    var socket = try net.BindUdp(addr)
+    return Result.Ok(bound { socket: socket, addr: addr })
+}
+
+func main() {
+    match run() {
+        Ok(_) => { }
+        Err(e) => {
+            var message = f"net datagram test: {e.Msg}"
+            panic(message)
+        }
+    }
+}
+
+func run() -> Result<(), net.Error> {
+    var receiver = try bind_first()
+    var sender = try net.BindUdp("127.0.0.1:0")
+    fmt.Println("bound: ok")
+
+    var sent = try sender.WriteTo(bytes_of("datagram"), receiver.addr)
+    fmt.Print("sent: ")
+    fmt.PrintI64(i64(sent))
+    fmt.PrintNl()
+
+    var message = new Buf(0)
+    var pair = try receiver.socket.ReadFrom(message, 64)
+    fmt.Print("read: ")
+    fmt.Print(message.Str())
+    fmt.PrintNl()
+    fmt.Print("read bytes: ")
+    fmt.PrintI64(i64(pair.0))
+    fmt.PrintNl()
+    say("the source is loopback: ", host_of(pair.1) == "127.0.0.1")
+
+    // A socket that was closed refuses every call.
+    receiver.socket.Close()
+    var after = new Buf(0)
+    match receiver.socket.ReadFrom(after, 64) {
+        Ok(_) => { fmt.Println("read after close: no") }
+        Err(e) => { say("read after close: ", i32(e.Kind) == i32(net.ErrorKind.Closed)) }
+    }
+
+    // A destination whose port is not a number names no address at all.
+    match sender.WriteTo(bytes_of("x"), "127.0.0.1:notaport") {
+        Ok(_) => { fmt.Println("invalid address: no") }
+        Err(e) => { say("invalid address: ", i32(e.Kind) == i32(net.ErrorKind.Invalid)) }
+    }
+    sender.Close()
+    return Result.Ok()
+}

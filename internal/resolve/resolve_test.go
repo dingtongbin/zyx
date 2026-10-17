@@ -290,6 +290,122 @@ const str = 1
 	wantCode(t, diags, diag.CodePredeclaredName)
 }
 
+func TestPatternVariantNameIsNotShadowing(t *testing.T) {
+	src := `package server
+
+enum Colour {
+	Red
+	Green
+}
+
+func Red() -> i32 => 0
+
+func Name(colour: Colour) -> i32 {
+	match colour {
+		Red => return 1
+		Green => return 2
+	}
+	return 0
+}
+`
+	info, diags := resolve(t, "server", nil, src)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", codes(diags))
+	}
+	if !hasSymbol(info, "server.Red") {
+		t.Errorf("the function Red is missing: %v", symbolIDs(info))
+	}
+}
+
+func TestPredeclaredVariantNameIsNotShadowing(t *testing.T) {
+	src := `package server
+
+func None() -> i32 => 0
+
+func Name(o: Option<i32>) -> i32 {
+	match o {
+		None => return 0
+		Some(v) => return v
+	}
+	return 0
+}
+`
+	_, diags := resolve(t, "server", nil, src)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", codes(diags))
+	}
+}
+
+func TestImportedVariantNameIsNotShadowing(t *testing.T) {
+	fixture := `package dep
+
+enum Colour {
+	Red
+	Green
+}
+`
+	itf, fdiags := Resolve(&Package{Path: "std/dep", Files: []*ast.File{parse(t, fixture)}}, nil)
+	if len(fdiags) != 0 {
+		t.Fatalf("fixture diagnostics: %v", codes(fdiags))
+	}
+	src := `package server
+
+import "std/dep"
+
+func Red() -> i32 => 0
+
+func Name(colour: dep.Colour) -> i32 {
+	match colour {
+		Red => return 1
+		Green => return 2
+	}
+	return 0
+}
+`
+	_, diags := resolve(t, "server", stubImports{"std/dep": itf.Interface}, src)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", codes(diags))
+	}
+}
+
+func TestOrPatternOfVariantsBindsNothing(t *testing.T) {
+	src := `package server
+
+enum Colour {
+	Red
+	Green
+}
+
+func Name(colour: Colour) -> i32 {
+	match colour {
+		Red | Green => return 1
+	}
+	return 0
+}
+`
+	_, diags := resolve(t, "server", nil, src)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", codes(diags))
+	}
+}
+
+func TestPatternBindingStillShadows(t *testing.T) {
+	src := `package server
+
+const MaxConn = 1
+
+func Name(n: i32) -> i32 {
+	match n {
+		MaxConn => return 1
+		_ => return 0
+	}
+	return 0
+}
+`
+	_, diags := resolve(t, "server", nil, src)
+	wantCode(t, diags, diag.CodeShadowing)
+}
+
 // TestPredeclaredUniverse guards the single source of truth for the
 // predeclared names: the type names come from the types package, and the
 // namespaces and global function are listed by resolution.

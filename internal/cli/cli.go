@@ -115,6 +115,7 @@ options:
   -v, --verbose        report cache hits and misses
   --json               machine-readable output
   --freestanding       do not link zyxruntime
+  --mono               write the intermediate form after monomorphization
   -l <lib> -L <dir>    link a C library and add a search path
   --fast-math          allow floating-point reassociation
 `)
@@ -135,14 +136,16 @@ type options struct {
 	json         bool
 	freestanding bool
 	fastMath     bool
-	libs         []string
-	libDirs      []string
-	runPattern   string
-	bench        bool
-	timeout      string
-	failFast     bool
-	cover        bool
-	paths        []string
+	// mono asks emit-zyxc for the form after monomorphization.
+	mono       bool
+	libs       []string
+	libDirs    []string
+	runPattern string
+	bench      bool
+	timeout    string
+	failFast   bool
+	cover      bool
+	paths      []string
 	// programArgs holds the arguments after `--`, which a run passes to
 	// the program.
 	programArgs []string
@@ -208,6 +211,8 @@ func (s *Session) parseOptions(args []string) (*options, error) {
 			o.freestanding = true
 		case arg == "--fast-math":
 			o.fastMath = true
+		case arg == "--mono":
+			o.mono = true
 		case arg == "-l":
 			value, err := next()
 			if err != nil {

@@ -1,0 +1,137 @@
+package main
+
+import "std/fmt"
+import "std/html"
+
+// The surface of std/html: the tree a text reads as, the three kinds of node,
+// the attributes of an element, and the tolerance the parser owes a text that
+// is not well formed. Each node is printed as its kind, its name, and its text,
+// one level of indentation per depth.
+
+// visible prints a text with the bytes that end a line written out.
+func visible(s: str) {
+    var n = s.Len()
+    var i: usize = 0
+    for i < n {
+        var b = s[i]
+        if b == 13 {
+            fmt.Print("\\r")
+        } else if b == 10 {
+            fmt.Print("\\n")
+        } else if b == 9 {
+            fmt.Print("\\t")
+        } else {
+            fmt.PrintChar(char(u32(b)))
+        }
+        i += 1
+    }
+}
+
+// walk prints a node and everything under it.
+func walk(node: html.Node, depth: i64) {
+    var pad: i64 = 0
+    for pad < depth {
+        fmt.Print(" ")
+        pad += 1
+    }
+    fmt.PrintI64(i64(node.Kind))
+    fmt.Print("|")
+    fmt.Print(node.Tag)
+    if node.Kind != 1 {
+        fmt.Print("|")
+        visible(node.Text)
+    }
+    fmt.PrintNl()
+    var n = node.Children.Len()
+    var i: usize = 0
+    for i < n {
+        walk(node.Children[i], depth + 1)
+        i += 1
+    }
+}
+
+// tree prints the tree a text reads as.
+func tree(label: str, src: str) {
+    fmt.Print(label)
+    fmt.PrintNl()
+    match html.Parse(src) {
+        Ok(root) => walk(root, 0)
+        Err(e) => {
+            fmt.PrintValue(e)
+            fmt.PrintNl()
+        }
+    }
+}
+
+// attr prints what an element answers for a name.
+func attr(label: str, node: html.Node, name: str) {
+    fmt.Print(label)
+    fmt.Print(" ")
+    match node.Attr(name) {
+        Some(v) => fmt.Print(v)
+        None => fmt.Print("none")
+    }
+    fmt.PrintNl()
+}
+
+func main() {
+    // The root, and the three kinds of node.
+    tree("empty", "")
+    tree("text", "hello")
+    tree("one-element", "<p>hi</p>")
+    tree("nested", "<div><span>a</span><span>b</span></div>")
+    tree("two-roots", "<p>a</p><p>b</p>")
+    tree("comment", "<!-- note -->x")
+    tree("text-and-element", "lead <p>body</p> tail")
+    tree("doctype", "<!DOCTYPE html><html><body>x</body></html>")
+
+    // Elements that open nothing, and tags that close themselves.
+    tree("void", "<p>a<br>b</p>")
+    tree("void-list", "<img src=x><input disabled><hr>")
+    tree("self-closing", "<p><span/></p>")
+    tree("empty-tag", "<p/>")
+
+    // Tolerance: a tag that is never closed, an end tag with no start, an
+    // element opened inside another, and a less-than sign that begins nothing.
+    tree("unclosed", "<div><p>unclosed")
+    tree("stray-end", "</div>text")
+    tree("li-siblings", "<ul><li>a</li><li>b</li></ul>")
+    tree("li-unclosed", "<ul><li>a<li>b</ul>")
+    tree("angle", "a < b")
+    tree("text-entities", "<p>&amp;&lt;</p>")
+    tree("tag-newline", "<div\nid=x>t</div>")
+    tree("tag-junk", "<p !!! >t</p>")
+
+    // Attributes: quoted in either mark, bare, and empty.
+    match html.Parse("<div id=x class=\"a b\" data-y='z' bare>t</div>") {
+        Ok(root) => {
+            attr("id", root, "id")
+            attr("class", root, "class")
+            attr("data-y", root, "data-y")
+            attr("bare", root, "bare")
+            attr("missing", root, "nope")
+            attr("case", root, "ID")
+        }
+        Err(e) => fmt.PrintValue(e)
+    }
+    match html.Parse("<DIV ID=X>t</DIV>") {
+        Ok(root) => {
+            fmt.Print("upper-tag ")
+            fmt.Println(root.Tag)
+            attr("upper-id", root, "id")
+        }
+        Err(e) => fmt.PrintValue(e)
+    }
+    match html.Parse("hello") {
+        Ok(root) => {
+            attr("text-attr", root.Children[0], "id")
+            attr("root-attr", root, "id")
+        }
+        Err(e) => fmt.PrintValue(e)
+    }
+
+    // A comment that is never closed swallows what follows, so the parser
+    // names it.
+    tree("comment-unclosed", "<!-- never")
+    tree("comment-then-tag", "<!--a--><p>b</p><!--c-->")
+}

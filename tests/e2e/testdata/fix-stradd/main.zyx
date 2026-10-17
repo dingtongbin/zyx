@@ -1,0 +1,31 @@
+package main
+
+import "std/fmt"
+
+// The language defines `+` on two strings as their concatenation, which
+// allocates the text the answer holds. The operands keep their own bytes, so
+// the answer and the source are separate strings.
+
+func repeat(word: str, times: i64) -> str {
+    var out: str = ""
+    for i in 0 .. times {
+        out = out + word
+    }
+    return out
+}
+
+func main() {
+    var joined: str = "left" + ", " + "right"
+    fmt.Println(joined)
+    fmt.Println("left" + ", " + "right" + "!")
+    var word: str = "ab"
+    var twice: str = word + word
+    fmt.Println(twice)
+    fmt.Println(word)
+    fmt.Println(repeat("xy", 3))
+    fmt.PrintU64(u64(joined.Len()))
+    fmt.PrintNl()
+    fmt.Println("" + "")
+    fmt.PrintU64(u64((("" + "") + "z").Len()))
+    fmt.PrintNl()
+}

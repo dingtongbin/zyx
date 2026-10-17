@@ -1,0 +1,22 @@
+package main
+
+import "std/fmt"
+
+// Two million sends and receives on one channel that always has room or a
+// value, so no coroutine ever parks: the channel, the buffering, and the loop,
+// with no scheduler in between. Subtracting this from the benchmark that hands
+// off between two coroutines is what the park and the wake cost.
+
+func main() {
+    var ch = new chan<i64>(1)
+    var total: i64 = 0
+    for i in 0..2000000 {
+        ch.Send(i)
+        var v, ok = ch.Recv()
+        if ok {
+            total = total + v
+        }
+    }
+    fmt.PrintI64(total)
+    fmt.PrintNl()
+}

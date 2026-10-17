@@ -1,0 +1,35 @@
+package main
+
+import "std/fmt"
+
+// Every coroutine waits on a channel that never answers, with a deadline, so
+// the timer wheel and the waking of sleeping scheduler threads do the work.
+// The count does not depend on the order the deadlines fire in.
+
+const Short: Duration = dur.ms(2)
+
+func waiter(idle: chan<bool>, done: chan<i64>, id: i64) {
+    select {
+        recv(idle) -> v, ok { done.Send(id) }
+        timeout(Short): done.Send(id)
+    }
+}
+
+func main() {
+    var idle = new chan<bool>(1)
+    var done = new chan<i64>(64)
+    region {
+        for i in 0..32 {
+            spawn waiter(idle, done, i)
+        }
+    }
+    var count: i64 = 0
+    for i in 0..32 {
+        var v, ok = done.Recv()
+        if ok {
+            count = count + 1
+        }
+    }
+    fmt.PrintI64(count)
+    fmt.PrintNl()
+}

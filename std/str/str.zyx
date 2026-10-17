@@ -1,1 +1,682 @@
 package str
+
+// Text as bytes, with the operations a program of the language uses most. They
+// are functions over a str rather than methods of one, and the ones that cut a
+// string answer a string of their own.
+//
+// Nothing here rejects bytes that are not UTF-8. A string of the language is a
+// sequence of bytes, and the parts that read it as text say what they do with a
+// sequence that is not.
+
+// Len is the number of bytes in a string.
+func Len(s: str) -> usize {
+    return s.Len()
+}
+
+// ByteAt is the byte at an index. An index outside the string is a fault.
+func ByteAt(s: str, i: usize) -> u8 {
+    if i >= s.Len() {
+        panic("index out of range")
+    }
+    return s[i]
+}
+
+// IndexByte answers where a byte first appears, or nothing.
+func IndexByte(s: str, b: u8) -> Option<usize> {
+    for i in 0 .. s.Len() {
+        if s[i] == b {
+            return Option.Some(usize(i))
+        }
+    }
+    return Option.None
+}
+
+// LastIndexByte answers where a byte last appears, or nothing.
+func LastIndexByte(s: str, b: u8) -> Option<usize> {
+    var i = s.Len()
+    for i > 0 {
+        i -= 1
+        if s[i] == b {
+            return Option.Some(i)
+        }
+    }
+    return Option.None
+}
+
+// equal_at reports whether the bytes of a substring stand at an index.
+func equal_at(s: str, sub: str, at: usize) -> bool {
+    var i: usize = 0
+    for i < sub.Len() {
+        if s[at + i] != sub[i] {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+// Index answers where a substring first appears, or nothing. An empty substring
+// stands at the start of every string.
+func Index(s: str, sub: str) -> Option<usize> {
+    var n = s.Len()
+    var m = sub.Len()
+    if m == 0 {
+        return Option.Some(0)
+    }
+    if m > n {
+        return Option.None
+    }
+    var at: usize = 0
+    for at <= n - m {
+        if equal_at(s, sub, at) {
+            return Option.Some(at)
+        }
+        at += 1
+    }
+    return Option.None
+}
+
+// LastIndex answers where a substring last appears, or nothing. An empty
+// substring stands at the end of every string.
+func LastIndex(s: str, sub: str) -> Option<usize> {
+    var n = s.Len()
+    var m = sub.Len()
+    if m == 0 {
+        return Option.Some(n)
+    }
+    if m > n {
+        return Option.None
+    }
+    var at = n - m
+    for at > 0 {
+        if equal_at(s, sub, at) {
+            return Option.Some(at)
+        }
+        at -= 1
+    }
+    if equal_at(s, sub, 0) {
+        return Option.Some(0)
+    }
+    return Option.None
+}
+
+// Contains reports whether a substring appears.
+func Contains(s: str, sub: str) -> bool {
+    match Index(s, sub) {
+        Some(_) => return true
+        None => { }
+    }
+    return false
+}
+
+// HasPrefix reports whether a string begins with a prefix.
+func HasPrefix(s: str, p: str) -> bool {
+    if p.Len() > s.Len() {
+        return false
+    }
+    return equal_at(s, p, 0)
+}
+
+// HasSuffix reports whether a string ends with a suffix.
+func HasSuffix(s: str, q: str) -> bool {
+    var n = s.Len()
+    var m = q.Len()
+    if m > n {
+        return false
+    }
+    return equal_at(s, q, n - m)
+}
+
+// Compare orders two strings by their bytes, which is the order `<=` and its
+// siblings use on strings.
+func Compare(s: str, t: str) -> i32 {
+    var n = s.Len()
+    var m = t.Len()
+    var limit = n
+    if m < limit {
+        limit = m
+    }
+    var i: usize = 0
+    for i < limit {
+        if s[i] != t[i] {
+            if s[i] < t[i] {
+                return -1
+            }
+            return 1
+        }
+        i += 1
+    }
+    if n < m {
+        return -1
+    }
+    if n > m {
+        return 1
+    }
+    return 0
+}
+
+// is_cont reports whether a byte continues a multi-byte sequence.
+func is_cont(b: u8) -> bool {
+    return b >= 0x80 && b <= 0xBF
+}
+
+// seq_len is how many bytes the UTF-8 sequence at an index occupies, or zero
+// when the bytes there are not one. Overlong forms, surrogates, and code
+// points above the last one are not sequences.
+func seq_len(s: str, i: usize) -> usize {
+    var n = s.Len()
+    var b0 = u32(s[i])
+    if b0 < 0x80 {
+        return 1
+    }
+    if b0 >= 0xC2 && b0 <= 0xDF {
+        if i + 1 < n && is_cont(s[i + 1]) {
+            return 2
+        }
+        return 0
+    }
+    if b0 >= 0xE0 && b0 <= 0xEF {
+        if i + 2 < n && is_cont(s[i + 1]) && is_cont(s[i + 2]) {
+            var cp = ((b0 & 0x0F) << 12) | ((u32(s[i + 1]) & 0x3F) << 6) | (u32(s[i + 2]) & 0x3F)
+            if cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF) {
+                return 0
+            }
+            return 3
+        }
+        return 0
+    }
+    if b0 >= 0xF0 && b0 <= 0xF4 {
+        if i + 3 < n && is_cont(s[i + 1]) && is_cont(s[i + 2]) && is_cont(s[i + 3]) {
+            var cp = ((b0 & 0x07) << 18) | ((u32(s[i + 1]) & 0x3F) << 12) | ((u32(s[i + 2]) & 0x3F) << 6) | (u32(s[i + 3]) & 0x3F)
+            if cp < 0x10000 || cp > 0x10FFFF {
+                return 0
+            }
+            return 4
+        }
+        return 0
+    }
+    return 0
+}
+
+// rune_size is how many bytes the code point at an index occupies. A byte that
+// is not part of a sequence counts as one, so a walk always advances.
+func rune_size(s: str, i: usize) -> usize {
+    var size = seq_len(s, i)
+    if size == 0 {
+        return 1
+    }
+    return size
+}
+
+// decode reads the code point at an index and answers it with the position that
+// follows. A byte sequence that is not UTF-8 reads as U+FFFD and advances one
+// byte.
+func decode(s: str, i: usize) -> (u32, usize) {
+    var size = seq_len(s, i)
+    if size == 1 {
+        return u32(s[i]), 1
+    }
+    if size == 2 {
+        return ((u32(s[i]) & 0x1F) << 6) | (u32(s[i + 1]) & 0x3F), 2
+    }
+    if size == 3 {
+        return ((u32(s[i]) & 0x0F) << 12) | ((u32(s[i + 1]) & 0x3F) << 6) | (u32(s[i + 2]) & 0x3F), 3
+    }
+    if size == 4 {
+        return ((u32(s[i]) & 0x07) << 18) | ((u32(s[i + 1]) & 0x3F) << 12) | ((u32(s[i + 2]) & 0x3F) << 6) | (u32(s[i + 3]) & 0x3F), 4
+    }
+    return 0xFFFD, 1
+}
+
+// RuneCount is the number of code points in a string. A byte that is not part
+// of a sequence counts as one, so the count is what a walk of RuneAt takes.
+func RuneCount(s: str) -> usize {
+    var count: usize = 0
+    var i: usize = 0
+    var n = s.Len()
+    for i < n {
+        i += rune_size(s, i)
+        count += 1
+    }
+    return count
+}
+
+// Valid reports whether every byte of a string is part of a valid UTF-8
+// sequence.
+func Valid(s: str) -> bool {
+    var i: usize = 0
+    var n = s.Len()
+    for i < n {
+        var size = seq_len(s, i)
+        if size == 0 {
+            return false
+        }
+        i += size
+    }
+    return true
+}
+
+// RuneAt reads the code point at an index and the position that follows it. A
+// byte that is not part of a sequence reads as U+FFFD and advances one byte,
+// so a walk over any bytes always ends.
+func RuneAt(s: str, i: usize) -> (char, usize) {
+    var cp, size = decode(s, i)
+    return char(cp), i + size
+}
+
+// slice answers the bytes between two positions as a string. The whole string
+// is answered as it is; anything shorter is gathered byte by byte.
+func slice(s: str, lo: usize, hi: usize) -> str {
+    if lo == 0 && hi == s.Len() {
+        return s
+    }
+    var out = new Builder()
+    var i = lo
+    for i < hi {
+        out.WriteByte(s[i])
+        i += 1
+    }
+    return out.Str()
+}
+
+// SplitByte cuts a string at every byte equal to a given one and answers the
+// pieces in order. It is the split a parser reaches for, because the separator
+// needs no comparison of its own.
+func SplitByte(s: str, b: u8) -> Array<str> {
+    var parts = new Array<str>(0)
+    var n = s.Len()
+    var last: usize = 0
+    var i: usize = 0
+    for i < n {
+        if s[i] == b {
+            parts.Push(slice(s, last, i))
+            last = i + 1
+        }
+        i += 1
+    }
+    parts.Push(slice(s, last, n))
+    return parts
+}
+
+// split_by cuts a string at every occurrence of a non-empty separator. It
+// answers the pieces in order, and with a limit the last piece holds everything
+// left.
+func split_by(s: str, sep: str, n: usize, bounded: bool) -> Array<str> {
+    var parts = new Array<str>(0)
+    var total = s.Len()
+    var m = sep.Len()
+    var last: usize = 0
+    var i: usize = 0
+    for i + m <= total {
+        if bounded && parts.Len() + 1 >= n {
+            break
+        }
+        if equal_at(s, sep, i) {
+            parts.Push(slice(s, last, i))
+            i += m
+            last = i
+        } else {
+            i += 1
+        }
+    }
+    parts.Push(slice(s, last, total))
+    return parts
+}
+
+// explode cuts a string between its code points, which is what an empty
+// separator asks for. With a limit the last piece holds everything left.
+func explode(s: str, n: usize, bounded: bool) -> Array<str> {
+    var parts = new Array<str>(0)
+    var total = s.Len()
+    if total == 0 {
+        return parts
+    }
+    var i: usize = 0
+    for i < total {
+        if bounded && parts.Len() + 1 >= n {
+            break
+        }
+        var next = rune_size(s, i)
+        parts.Push(slice(s, i, i + next))
+        i += next
+    }
+    if i < total {
+        parts.Push(slice(s, i, total))
+    }
+    return parts
+}
+
+// Split cuts a string at every occurrence of a separator and answers the
+// pieces. An empty separator cuts between code points.
+func Split(s: str, sep: str) -> Array<str> {
+    if sep.Len() == 0 {
+        return explode(s, 0, false)
+    }
+    return split_by(s, sep, 0, false)
+}
+
+// SplitN cuts like Split, but answers at most n pieces, the last of which holds
+// everything that is left. A count of zero answers nothing.
+func SplitN(s: str, sep: str, n: usize) -> Array<str> {
+    if n == 0 {
+        return new Array<str>(0)
+    }
+    if n == 1 {
+        var one = new Array<str>(0)
+        one.Push(s)
+        return one
+    }
+    if sep.Len() == 0 {
+        return explode(s, n, true)
+    }
+    return split_by(s, sep, n, true)
+}
+
+// in_cutset reports whether a byte is one of the bytes of a cutset.
+func in_cutset(cutset: str, b: u8) -> bool {
+    var i: usize = 0
+    var n = cutset.Len()
+    for i < n {
+        if cutset[i] == b {
+            return true
+        }
+        i += 1
+    }
+    return false
+}
+
+// TrimLeft removes the leading bytes that appear in a cutset.
+func TrimLeft(s: str, cutset: str) -> str {
+    var i: usize = 0
+    var n = s.Len()
+    for i < n && in_cutset(cutset, s[i]) {
+        i += 1
+    }
+    return slice(s, i, n)
+}
+
+// TrimRight removes the trailing bytes that appear in a cutset.
+func TrimRight(s: str, cutset: str) -> str {
+    var end = s.Len()
+    for end > 0 && in_cutset(cutset, s[end - 1]) {
+        end -= 1
+    }
+    return slice(s, 0, end)
+}
+
+// Trim removes the leading and trailing bytes that appear in a cutset.
+func Trim(s: str, cutset: str) -> str {
+    return TrimRight(TrimLeft(s, cutset), cutset)
+}
+
+// is_space reports whether a code point is white space by the Unicode
+// White_Space property.
+func is_space(ch: char) -> bool {
+    var code = u32(ch)
+    if code == 0x20 || (code >= 0x09 && code <= 0x0D) || code == 0x85 || code == 0xA0 {
+        return true
+    }
+    if code == 0x1680 || (code >= 0x2000 && code <= 0x200A) {
+        return true
+    }
+    if code == 0x2028 || code == 0x2029 || code == 0x202F || code == 0x205F || code == 0x3000 {
+        return true
+    }
+    return false
+}
+
+// TrimSpace removes the leading and trailing white space, by the Unicode
+// White_Space property.
+func TrimSpace(s: str) -> str {
+    var n = s.Len()
+    var start: usize = 0
+    var i: usize = 0
+    for i < n {
+        var ch, next = RuneAt(s, i)
+        if is_space(ch) {
+            i = next
+            start = i
+        } else {
+            break
+        }
+    }
+    var end = start
+    i = start
+    for i < n {
+        var ch, next = RuneAt(s, i)
+        if is_space(ch) {
+            i = next
+        } else {
+            end = next
+            i = next
+        }
+    }
+    return slice(s, start, end)
+}
+
+// append_rune writes one code point as UTF-8.
+func append_rune(out: Builder, cp: u32) {
+    if cp < 0x80 {
+        out.WriteByte(u8(cp))
+        return
+    }
+    if cp < 0x800 {
+        out.WriteByte(u8(0xC0 | (cp >> 6)))
+        out.WriteByte(u8(0x80 | (cp & 0x3F)))
+        return
+    }
+    if cp < 0x10000 {
+        out.WriteByte(u8(0xE0 | (cp >> 12)))
+        out.WriteByte(u8(0x80 | ((cp >> 6) & 0x3F)))
+        out.WriteByte(u8(0x80 | (cp & 0x3F)))
+        return
+    }
+    out.WriteByte(u8(0xF0 | (cp >> 18)))
+    out.WriteByte(u8(0x80 | ((cp >> 12) & 0x3F)))
+    out.WriteByte(u8(0x80 | ((cp >> 6) & 0x3F)))
+    out.WriteByte(u8(0x80 | (cp & 0x3F)))
+}
+
+// map_upper answers the simple uppercase mapping of a code point, or the code
+// point itself when it has none.
+func map_upper(cp: u32) -> u32 {
+    var lo: usize = 0
+    var hi = upper_ranges
+    for lo < hi {
+        var mid = lo + (hi - lo) / 2
+        if cp < upper[mid].lo {
+            hi = mid
+            continue
+        }
+        if cp > upper[mid].hi {
+            lo = mid + 1
+            continue
+        }
+        return u32(i64(cp) + i64(upper[mid].delta))
+    }
+    return cp
+}
+
+// map_lower answers the simple lowercase mapping of a code point, or the code
+// point itself when it has none.
+func map_lower(cp: u32) -> u32 {
+    var lo: usize = 0
+    var hi = lower_ranges
+    for lo < hi {
+        var mid = lo + (hi - lo) / 2
+        if cp < lower[mid].lo {
+            hi = mid
+            continue
+        }
+        if cp > lower[mid].hi {
+            lo = mid + 1
+            continue
+        }
+        return u32(i64(cp) + i64(lower[mid].delta))
+    }
+    return cp
+}
+
+// map_letters answers a string with every code point mapped to one case. A
+// byte sequence that is not UTF-8 passes through unchanged.
+func map_letters(s: str, to_upper: bool) -> str {
+    var out = new Builder()
+    var i: usize = 0
+    var n = s.Len()
+    for i < n {
+        var size = seq_len(s, i)
+        if size == 0 {
+            out.WriteByte(s[i])
+            i += 1
+            continue
+        }
+        var cp, used = decode(s, i)
+        if to_upper {
+            append_rune(out, map_upper(cp))
+        } else {
+            append_rune(out, map_lower(cp))
+        }
+        i += used
+    }
+    return out.Str()
+}
+
+// ToUpper answers the string with each code point in its simple uppercase form.
+// A mapping to several code points is not made, and a byte that is not part of
+// a UTF-8 sequence passes through unchanged.
+func ToUpper(s: str) -> str {
+    return map_letters(s, true)
+}
+
+// ToLower answers the string with each code point in its simple lowercase form.
+// A mapping to several code points is not made, and a byte that is not part of
+// a UTF-8 sequence passes through unchanged.
+func ToLower(s: str) -> str {
+    return map_letters(s, false)
+}
+
+// EqualsIgnoreCase reports whether two strings are equal after each code point
+// is mapped to its simple uppercase form.
+func EqualsIgnoreCase(s: str, t: str) -> bool {
+    return Compare(ToUpper(s), ToUpper(t)) == 0
+}
+
+// Repeat answers a string of n copies of a string. A count of zero answers an
+// empty string.
+func Repeat(s: str, n: usize) -> str {
+    var out = new Builder()
+    var i: usize = 0
+    for i < n {
+        out.WriteStr(s)
+        i += 1
+    }
+    return out.Str()
+}
+
+// Join answers the parts with a separator between each pair.
+func Join(parts: Array<str>, sep: str) -> str {
+    var out = new Builder()
+    var n = parts.Len()
+    var i: usize = 0
+    for i < n {
+        if i > 0 {
+            out.WriteStr(sep)
+        }
+        out.WriteStr(parts[i])
+        i += 1
+    }
+    return out.Str()
+}
+
+// Concat answers the parts with nothing between them.
+func Concat(parts: Array<str>) -> str {
+    return Join(parts, "")
+}
+
+// replace answers a string with the first n occurrences of old replaced by
+// repl, or every occurrence when all is set. An empty old matches nothing.
+func replace(s: str, old: str, repl: str, n: usize, all: bool) -> str {
+    var limit = n
+    if all {
+        limit = ~usize(0)
+    }
+    var m = old.Len()
+    if m == 0 || limit == 0 {
+        return s
+    }
+    var total = s.Len()
+    if m > total {
+        return s
+    }
+    var out = new Builder()
+    var i: usize = 0
+    var copied: usize = 0
+    var done: usize = 0
+    for i + m <= total {
+        if done >= limit {
+            break
+        }
+        if equal_at(s, old, i) {
+            out.WriteStr(slice(s, copied, i))
+            out.WriteStr(repl)
+            i += m
+            copied = i
+            done += 1
+        } else {
+            i += 1
+        }
+    }
+    if done == 0 {
+        return s
+    }
+    out.WriteStr(slice(s, copied, total))
+    return out.Str()
+}
+
+// Replace answers a string with the first n occurrences of old replaced by a
+// replacement.
+func Replace(s: str, old: str, repl: str, n: usize) -> str {
+    return replace(s, old, repl, n, false)
+}
+
+// ReplaceAll answers a string with every occurrence of old replaced by a
+// replacement.
+func ReplaceAll(s: str, old: str, repl: str) -> str {
+    return replace(s, old, repl, 0, true)
+}
+
+// Builder accumulates text and answers it as one string. A program that glues
+// many pieces together pays for one buffer rather than one string per piece.
+struct Builder {
+    buf: Buf
+
+    // init builds an empty builder.
+    func init() -> Self {
+        return Builder { buf: new Buf() }
+    }
+
+    // WriteStr appends a string's bytes.
+    func WriteStr(s: str) {
+        self.buf.WriteStr(s)
+    }
+
+    // WriteByte appends one byte.
+    func WriteByte(b: u8) {
+        self.buf.WriteByte(b)
+    }
+
+    // Len is how many bytes have been written.
+    func Len() -> usize {
+        return self.buf.Len()
+    }
+
+    // Str answers the written bytes as a string of its own.
+    func Str() -> str {
+        return self.buf.Str()
+    }
+
+    // Reset discards the written bytes and keeps the buffer's capacity.
+    func Reset() {
+        self.buf.Reset()
+    }
+}

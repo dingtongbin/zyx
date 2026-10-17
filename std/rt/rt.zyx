@@ -6,7 +6,7 @@ package rt
 // and pollable; everything else goes through the blocking pool.
 
 import c "zyxrt.h" {
-    fast zyxrt_loop_wait, zyxrt_loop_release
+    fast zyxrt_loop_wait, zyxrt_loop_release, zyxrt_loop_wait_until, zyxrt_deadline_after
 }
 
 // ErrorKind is what went wrong. Every system package reports failures in
@@ -58,6 +58,26 @@ func WaitWritable(fd: i32) -> Result<(), Error> {
     return wait(fd, 2)
 }
 
+// WaitReadableUntil parks the calling coroutine until the descriptor can be read
+// from or until the deadline passes, whichever comes first. The deadline is
+// absolute, and DeadlineAfter turns a duration into one; a wait that ended
+// because the deadline passed answers Timeout.
+func WaitReadableUntil(fd: i32, deadline: u64) -> Result<(), Error> {
+    return wait_until(fd, 1, deadline)
+}
+
+// WaitWritableUntil is WaitReadableUntil for writing.
+func WaitWritableUntil(fd: i32, deadline: u64) -> Result<(), Error> {
+    return wait_until(fd, 2, deadline)
+}
+
+// DeadlineAfter answers the absolute deadline a wait of ns nanoseconds from now
+// ends at, read from the clock the runtime's waits read, so a program states a
+// timeout as a duration rather than as a reading of a clock it does not own.
+func DeadlineAfter(ns: u64) -> u64 {
+    return c.zyxrt_deadline_after(ns)
+}
+
 // wait parks the calling coroutine until the descriptor is ready for the
 // events asked for, and turns the answer of the runtime into the result the
 // caller reads.
@@ -68,6 +88,22 @@ func wait(fd: i32, events: i32) -> Result<(), Error> {
     }
     if code == 1 {
         return Result.Err(Error { Kind: ErrorKind.Closed, Errno: 0, Msg: "the descriptor was released" })
+    }
+    return Result.Err(Error { Kind: ErrorKind.Other, Errno: 0, Msg: "the target has no event loop for this descriptor" })
+}
+
+// wait_until is wait with a deadline, and adds the answer the runtime gives when
+// the deadline is what ended the wait.
+func wait_until(fd: i32, events: i32, deadline: u64) -> Result<(), Error> {
+    var code = c.zyxrt_loop_wait_until(fd, events, deadline)
+    if code == 0 {
+        return Result.Ok()
+    }
+    if code == 1 {
+        return Result.Err(Error { Kind: ErrorKind.Closed, Errno: 0, Msg: "the descriptor was released" })
+    }
+    if code == 3 {
+        return Result.Err(Error { Kind: ErrorKind.Timeout, Errno: 0, Msg: "the wait reached its deadline" })
     }
     return Result.Err(Error { Kind: ErrorKind.Other, Errno: 0, Msg: "the target has no event loop for this descriptor" })
 }

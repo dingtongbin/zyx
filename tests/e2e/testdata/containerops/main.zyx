@@ -1,0 +1,136 @@
+package main
+
+import "std/fmt"
+
+// The members the container APIs add beside the ones the complexity table
+// lists: clearing, peeking, and the set operations.
+
+func less(a: i64, b: i64) -> bool => a < b
+
+func showInts(label: str, xs: Array<i64>) {
+    fmt.Print(label)
+    fmt.Print(":")
+    for x in xs {
+        fmt.Print(" ")
+        fmt.PrintI64(x)
+    }
+    fmt.PrintNl()
+}
+
+func main() {
+    var m = new Map<i64, i64>()
+    for i in 0 .. 4 {
+        m.Insert(i, i * 10)
+    }
+    fmt.PrintI64(i64(m.Len()))
+    fmt.Print(" ")
+    m.Clear()
+    fmt.PrintI64(i64(m.Len()))
+    fmt.Print(" ")
+    fmt.PrintI64(m.Get(0).UnwrapOr(-1))
+    fmt.PrintNl()
+
+    var a = new Set<i64>()
+    var b = new Set<i64>()
+    for i in 0 .. 4 {
+        a.Add(i)
+    }
+    b.Add(2)
+    b.Add(3)
+    b.Add(9)
+    fmt.PrintBool(a.IsSubset(b))
+    fmt.Print(" ")
+    fmt.PrintBool(b.IsSubset(a))
+    fmt.PrintNl()
+
+    var values = a.ValueList()
+    var total: i64 = 0
+    for v in values {
+        total += v
+    }
+    fmt.PrintI64(total)
+    fmt.Print(" ")
+    fmt.PrintI64(i64(values.Len()))
+    fmt.PrintNl()
+
+    a.Intersect(b)
+    var kept = a.ValueList()
+    showInts("intersect", kept)
+
+    var only = new Set<i64>()
+    for i in 0 .. 4 {
+        only.Add(i)
+    }
+    only.Difference(b)
+    showInts("difference", only.ValueList())
+
+    var extra = new Set<i64>()
+    extra.Add(7)
+    only.Union(extra)
+    only.Union(b)
+    var joined = only.ValueList()
+    var sum: i64 = 0
+    for v in joined {
+        sum += v
+    }
+    fmt.PrintI64(sum)
+    fmt.Print(" ")
+    fmt.PrintI64(i64(joined.Len()))
+    fmt.PrintNl()
+
+    only.Clear()
+    fmt.PrintI64(i64(only.Len()))
+    fmt.PrintNl()
+
+    var q = new PriorityQueue<i64>(func less)
+    q.Push(5)
+    q.Push(1)
+    q.Push(9)
+    fmt.PrintI64(q.Peek().UnwrapOr(-1))
+    fmt.Print(" ")
+    q.Clear()
+    fmt.PrintI64(i64(q.Len()))
+    fmt.Print(" ")
+    fmt.PrintI64(q.Peek().UnwrapOr(-1))
+    fmt.PrintNl()
+
+    var m2 = new Map<str, i64>()
+    m2.Insert("ab", 1)
+    m2.Insert("cde", 2)
+    var names = m2.Keys()
+    var letters: i64 = 0
+    var count: i64 = 0
+    for name in names {
+        letters += i64(name.Len())
+        count += 1
+    }
+    fmt.PrintI64(count)
+    fmt.Print(" ")
+    fmt.PrintI64(letters)
+    fmt.PrintNl()
+
+    var r = new Ring<i64>(3)
+    r.Push(1)
+    r.Push(2)
+    fmt.PrintI64(r.Peek().UnwrapOr(-1))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(r.Cap()))
+    fmt.Print(" ")
+    r.Clear()
+    fmt.PrintI64(i64(r.Len()))
+    fmt.Print(" ")
+    fmt.PrintI64(r.Peek().UnwrapOr(-1))
+    fmt.PrintNl()
+
+    var bq = new BlockingQueue<i64>(4, func less)
+    bq.TryPush(3)
+    bq.TryPush(1)
+    fmt.PrintI64(i64(bq.Cap()))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(bq.Len()))
+    fmt.Print(" ")
+    fmt.PrintI64(bq.TryPop().UnwrapOr(-1))
+    fmt.Print(" ")
+    fmt.PrintI64(bq.TryPop().UnwrapOr(-1))
+    fmt.PrintNl()
+}

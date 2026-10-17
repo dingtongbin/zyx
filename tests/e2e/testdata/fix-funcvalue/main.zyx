@@ -1,0 +1,40 @@
+package main
+
+// A function named where a value is expected answers a function value, and a call
+// through that value reaches the function: the value carries the code and a
+// receiver, and a plain function is paired with a thunk that drops the receiver,
+// so a call through the value has one shape whichever function it reaches.
+
+import "std/fmt"
+
+// llabs crosses the C boundary, so its value is a thunk that passes what it is
+// given the way the C ABI does and calls the symbol under the name C defines.
+extern func llabs(n: i64) -> i64
+
+func twice(n: i64) -> i64 {
+    return n * 2
+}
+
+func take(f: func(i64) -> i64) -> i64 {
+    return f(20)
+}
+
+func main() {
+    var held = twice
+    fmt.PrintI64(held(21))
+    fmt.PrintNl()
+    fmt.PrintI64(take(twice))
+    fmt.PrintNl()
+
+    var table: Array<func(i64) -> i64> = [twice]
+    for f in table {
+        fmt.PrintI64(f(4))
+        fmt.PrintNl()
+    }
+
+    var absolute = llabs
+    fmt.PrintI64(absolute(-7))
+    fmt.PrintNl()
+    fmt.PrintI64(take(llabs))
+    fmt.PrintNl()
+}

@@ -150,6 +150,71 @@ func (e *Entry) Add(name string) error {
 	return nil
 }
 
+// Diagnostic records one diagnostic of the entry, as the command line writes
+// it. A front end that reported one produced no artifacts, and the report is
+// replayed byte for byte when the entry is read back, which is what makes a
+// warm run print what the cold one printed.
+func (e *Entry) Diagnostic(text string) {
+	e.record.diagnostics = append(e.record.diagnostics, escapeRecord(text))
+}
+
+// Diagnostics returns the diagnostics an entry holds, in the order they were
+// recorded. An entry that holds none answers nothing.
+func (c *Cache) Diagnostics(key string) []string {
+	record, err := readRecord(filepath.Join(c.entryDir(key), "meta"))
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(record.diagnostics))
+	for _, line := range record.diagnostics {
+		out = append(out, unescapeRecord(line))
+	}
+	return out
+}
+
+// escapeRecord renders text as one line of a record: the newlines that make a
+// diagnostic several lines are written as escapes, so a line stays a line.
+func escapeRecord(text string) string {
+	var b strings.Builder
+	for i := 0; i < len(text); i++ {
+		switch c := text[i]; c {
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// unescapeRecord returns the text escapeRecord wrote.
+func unescapeRecord(line string) string {
+	var b strings.Builder
+	for i := 0; i < len(line); i++ {
+		if line[i] != '\\' || i+1 >= len(line) {
+			b.WriteByte(line[i])
+			continue
+		}
+		i++
+		switch line[i] {
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case '\\':
+			b.WriteByte('\\')
+		default:
+			b.WriteByte('\\')
+			b.WriteByte(line[i])
+		}
+	}
+	return b.String()
+}
+
 // Publish moves the entry into place and answers the directory its artifacts
 // are in, which is the directory Lookup answers with. It reports false when
 // another builder published the same key first, which is a hit rather than a
@@ -168,7 +233,7 @@ func (e *Entry) Publish() (string, bool, error) {
 		e.Discard()
 		return "", false, err
 	}
-	if err := os.Rename(e.dir, dest); err != nil {
+	if err := ReplaceFile(e.dir, dest); err != nil {
 		// Another builder reached the key first. Its entry is as good as
 		// this one, so this one is dropped.
 		e.Discard()
@@ -178,6 +243,23 @@ func (e *Entry) Publish() (string, bool, error) {
 		return "", false, err
 	}
 	return filepath.Join(dest, "out"), true, nil
+}
+
+// ReplaceFile moves src onto dst, replacing whatever is there. Windows refuses
+// a rename while the target is open, and a running program, a scanner, or an
+// indexer can hold it for a moment, so the attempt is repeated briefly before
+// the error is reported. A retry changes nothing about what is written, so the
+// determinism contract is unaffected.
+func ReplaceFile(src, dst string) error {
+	const attempts = 10
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = os.Rename(src, dst); err == nil {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return err
 }
 
 // Discard removes the scratch directory of an entry that was not published.
@@ -244,12 +326,14 @@ func (k *Key) Sum() string {
 }
 
 // A record is what an entry says about itself: the key it was built for, the
-// inputs that went into it, and the artifacts it holds. It is a text file so
-// a reader can tell what a stale entry was built from.
+// inputs that went into it, the artifacts it holds, and the diagnostics it
+// reported. It is a text file so a reader can tell what a stale entry was
+// built from.
 type record struct {
-	key       string
-	inputs    []string
-	artifacts []string
+	key         string
+	inputs      []string
+	artifacts   []string
+	diagnostics []string
 }
 
 // readRecord reads an entry's record.
@@ -268,6 +352,8 @@ func readRecord(path string) (record, error) {
 			r.inputs = append(r.inputs, rest)
 		case "artifact":
 			r.artifacts = append(r.artifacts, rest)
+		case "diagnostic":
+			r.diagnostics = append(r.diagnostics, rest)
 		}
 	}
 	if r.key == "" {
@@ -285,6 +371,9 @@ func writeRecord(path string, r record) error {
 	}
 	for _, artifact := range r.artifacts {
 		fmt.Fprintf(&b, "artifact %s\n", artifact)
+	}
+	for _, diagnostic := range r.diagnostics {
+		fmt.Fprintf(&b, "diagnostic %s\n", diagnostic)
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }

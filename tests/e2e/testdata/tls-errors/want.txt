@@ -1,0 +1,16 @@
+defaults [] [] [] [] false 0
+named [one.pem] [two.pem] [three.pem] [localhost] true 2
+server with nothing named: Invalid code 0 message yes
+server without a key: Invalid code 0 message yes
+server whose certificate is not there: NotFound code 2 message yes
+server whose key is not there: NotFound code 2 message yes
+server whose key is not a key: Other code 0 message yes
+server that asks for a version that is not one: Invalid code 0 message yes
+server that speaks TLS 1.2 from now on: accepted
+server that speaks TLS 1.2 from now on after its close: Closed code 0 message yes
+server that speaks TLS 1.3 from now on: accepted
+server that speaks TLS 1.3 from now on after its close: Closed code 0 message yes
+client with nothing to trust: Invalid code 0 message yes
+client whose certificates to trust are not there: NotFound code 2 message yes
+a failure kind Invalid number 0 text [a failure of our own]
+tls: a failure of our own

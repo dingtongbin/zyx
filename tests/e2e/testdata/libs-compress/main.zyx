@@ -1,0 +1,29 @@
+package main
+
+// The C libraries a standard package binds ship with the toolchain, so a program
+// names none of them: this corpus has no link flags of its own, and it still
+// links the zstd the compress package reaches.
+
+import "std/compress"
+import "std/fmt"
+
+func main() {
+    var source = new Buf(0)
+    source.WriteStr("the design says a binding ships with the toolchain")
+
+    var packed = new Buf(0)
+    match compress.Compress(packed, source.Bytes(), 3) {
+        Ok(_) => { }
+        Err(_) => { panic("zstd: the frame was not written") }
+    }
+    var back = new Buf(0)
+    match compress.Decompress(back, packed.Bytes()) {
+        Ok(_) => { }
+        Err(_) => { panic("zstd: the frame did not read back") }
+    }
+    if back.Str() != "the design says a binding ships with the toolchain" {
+        panic("zstd: the bytes did not come back")
+    }
+    fmt.Print("a frame round trips with no library flag of its own")
+    fmt.PrintNl()
+}

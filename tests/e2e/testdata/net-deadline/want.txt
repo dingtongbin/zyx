@@ -1,0 +1,4 @@
+a datagram read ended at its deadline
+a stream read ended at its deadline
+the peer wrote
+the read after a timeout answers

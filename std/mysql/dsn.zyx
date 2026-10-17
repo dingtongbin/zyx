@@ -1,0 +1,218 @@
+package mysql
+
+// The data source name of std/mysql is
+//
+//     [user[:password]@][net[(address)]]/database[?parameter...]
+//
+// The user and the password stand before an at sign, the protocol and its
+// address follow it, and the database name follows the last slash. A protocol
+// of tcp reads the address as host:port, and one of unix reads it as the path
+// of a unix socket. Everything after a question mark is left out. A name that
+// does not have this shape is refused where it is read, rather than handed to
+// the library to fail in its own words.
+
+import "std/db"
+
+// source is a data source name that was read: the protocol, the address of the
+// server, the account, and the database. A net of zero is tcp and one is unix.
+struct source {
+    net: i32
+    host: str
+    port: i32
+    user: str
+    password: str
+    dbname: str
+}
+
+// endpoint is the host and the port a tcp address names.
+struct endpoint {
+    host: str
+    port: i32
+}
+
+// parse_dsn reads a data source name. A name that does not have the shape
+// above is refused with the reason.
+func parse_dsn(s: str) -> Result<source, db.Error> {
+    if s.Len() == 0 {
+        return Result.Err(dsn_invalid("the data source name is empty"))
+    }
+    // The parameters follow the database name and are left to the library.
+    var head = s
+    var question = find_byte(s, question_mark())
+    if question.IsSome() {
+        head = slice(s, 0, question.Unwrap())
+    }
+    var slash = last_byte(head, slash_byte())
+    if slash.IsNone() {
+        return Result.Err(dsn_invalid("the data source name has no database part"))
+    }
+    var separator = slash.Unwrap()
+    var prefix = slice(head, 0, separator)
+    var dbname = slice(head, separator + 1, head.Len())
+
+    var net: i32 = 0
+    var host = ""
+    var port: i32 = default_port()
+    var user = ""
+    var password = ""
+
+    if prefix.Len() > 0 {
+        var rest = prefix
+        var at_sign = last_byte(prefix, at_byte())
+        if at_sign.IsSome() {
+            var mark = at_sign.Unwrap()
+            var account = slice(prefix, 0, mark)
+            rest = slice(prefix, mark + 1, prefix.Len())
+            var colon = find_byte(account, colon_byte())
+            if colon.IsSome() {
+                var cut = colon.Unwrap()
+                user = slice(account, 0, cut)
+                password = slice(account, cut + 1, account.Len())
+            } else {
+                user = account
+            }
+        }
+        var net_name = rest
+        var address = ""
+        var open_paren = find_byte(rest, open_paren_byte())
+        if open_paren.IsSome() {
+            var begin = open_paren.Unwrap()
+            net_name = slice(rest, 0, begin)
+            var close_paren = last_byte(rest, close_paren_byte())
+            if close_paren.IsNone() {
+                return Result.Err(dsn_invalid("the data source name has an unclosed address"))
+            }
+            var end = close_paren.Unwrap()
+            if end < begin {
+                return Result.Err(dsn_invalid("the data source name has an unclosed address"))
+            }
+            address = slice(rest, begin + 1, end)
+        }
+        if net_name.Len() == 0 || net_name == "tcp" {
+            net = 0
+        } else if net_name == "unix" {
+            net = 1
+        } else {
+            return Result.Err(dsn_invalid("the protocol is not tcp or unix"))
+        }
+        if net == 1 {
+            host = address
+        } else {
+            var where = parse_host(address)
+            if where.IsErr() {
+                return Result.Err(where.Err().Unwrap())
+            }
+            var place = where.Ok().Unwrap()
+            host = place.host
+            port = place.port
+        }
+    }
+    return Result.Ok(source { net: net, host: host, port: port, user: user, password: password, dbname: dbname })
+}
+
+// parse_host reads the host and the port a tcp address names. An address with
+// no port takes the default port, and an address with no host stands for the
+// loopback address.
+func parse_host(address: str) -> Result<endpoint, db.Error> {
+    if address.Len() == 0 {
+        return Result.Ok(endpoint { host: "127.0.0.1", port: default_port() })
+    }
+    var colon = last_byte(address, colon_byte())
+    if colon.IsNone() {
+        return Result.Ok(endpoint { host: address, port: default_port() })
+    }
+    var cut = colon.Unwrap()
+    var host = slice(address, 0, cut)
+    if host.Len() == 0 {
+        host = "127.0.0.1"
+    }
+    var port = read_port(slice(address, cut + 1, address.Len()))
+    if port.IsErr() {
+        return Result.Err(port.Err().Unwrap())
+    }
+    return Result.Ok(endpoint { host: host, port: port.Ok().Unwrap() })
+}
+
+// read_port reads the decimal port a text holds. A text that holds no digits,
+// or a number beyond the range a port may take, is refused.
+func read_port(text: str) -> Result<i32, db.Error> {
+    if text.Len() == 0 {
+        return Result.Err(dsn_invalid("the port is not a number"))
+    }
+    var value: i32 = 0
+    var i: usize = 0
+    for i < text.Len() {
+        var b = text[i]
+        if b < zero_byte() || b > nine_byte() {
+            return Result.Err(dsn_invalid("the port is not a number"))
+        }
+        value = value * 10 + i32(b - zero_byte())
+        if value > 65535 {
+            return Result.Err(dsn_invalid("the port is out of range"))
+        }
+        i += 1
+    }
+    if value == 0 {
+        return Result.Err(dsn_invalid("the port is not a number"))
+    }
+    return Result.Ok(value)
+}
+
+// dsn_invalid is the failure of a data source name that does not read.
+func dsn_invalid(msg: str) -> db.Error {
+    return db.Error { Kind: db.ErrorKind.Invalid, Errno: 0, Msg: msg }
+}
+
+// find_byte answers where a byte first appears, or nothing.
+func find_byte(s: str, b: u8) -> Option<usize> {
+    var i: usize = 0
+    for i < s.Len() {
+        if s[i] == b {
+            return Option.Some(i)
+        }
+        i += 1
+    }
+    return Option.None
+}
+
+// last_byte answers where a byte last appears, or nothing.
+func last_byte(s: str, b: u8) -> Option<usize> {
+    var i = s.Len()
+    for i > 0 {
+        i -= 1
+        if s[i] == b {
+            return Option.Some(i)
+        }
+    }
+    return Option.None
+}
+
+// slice answers the bytes of a string between two positions as a string of its
+// own, because a view of a string is not something a binding may hold.
+func slice(s: str, lo: usize, hi: usize) -> str {
+    var out = new Buf(hi - lo)
+    var i = lo
+    for i < hi {
+        out.WriteByte(s[i])
+        i += 1
+    }
+    return out.Str()
+}
+
+func default_port() -> i32 { return 3306 }
+
+func question_mark() -> u8 { return 63 }
+
+func at_byte() -> u8 { return 64 }
+
+func slash_byte() -> u8 { return 47 }
+
+func colon_byte() -> u8 { return 58 }
+
+func open_paren_byte() -> u8 { return 40 }
+
+func close_paren_byte() -> u8 { return 41 }
+
+func zero_byte() -> u8 { return 48 }
+
+func nine_byte() -> u8 { return 57 }

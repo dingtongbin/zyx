@@ -1,0 +1,55 @@
+package main
+
+// The sys package answers what the machine is. The numbers it answers with
+// belong to the machine, so what a program prints to be compared byte for
+// byte is the shape of each answer rather than the answer itself. Every line
+// below reads the same on every machine that has been up for a second.
+
+import "std/fmt"
+import "std/sys"
+import "std/time"
+
+// This compiler does not order a Duration, so the two clock answers are read
+// through the count of nanoseconds the clock package's own bridge produces,
+// which is the one place a Duration meets its count.
+
+extern func zyxtime_duration_ns(nanos: Duration) -> i64
+
+// one_second is the count of nanoseconds in a second.
+const one_second: i64 = 1000000000
+
+// say prints a label and the answer it introduces.
+func say(label: str, answer: bool) {
+    fmt.Print(label)
+    fmt.PrintBool(answer)
+    fmt.PrintNl()
+}
+
+func main() {
+    say("cpu count is at least one: ", sys.CpuCount() >= 1)
+
+    var total = sys.MemTotal()
+    var available = sys.MemAvailable()
+    say("physical memory is reported: ", total > 0)
+    say("available memory is within the total: ", available <= total)
+
+    var uptime = zyxtime_duration_ns(sys.Uptime())
+    say("uptime is measured: ", uptime > one_second)
+
+    var since = zyxtime_duration_ns(time.Monotonic().Since(sys.BootTime()))
+    say("boot is before now: ", since > one_second)
+    // The uptime and the interval since the boot moment are two readings of
+    // the same quantity, so their difference is small whichever one is the
+    // later.
+    var drift = since - uptime
+    if drift < 0 {
+        drift = 0 - drift
+    }
+    say("uptime and boot agree: ", drift < one_second)
+
+    say("the system is named: ", sys.OsVersion().Len() > 0)
+    say("the kernel is named: ", sys.KernelVersion().Len() > 0)
+
+    var one, five, fifteen = sys.LoadAvg()
+    say("load is not negative: ", one >= 0.0 && five >= 0.0 && fifteen >= 0.0)
+}

@@ -1,0 +1,31 @@
+package main
+
+import "std/fmt"
+
+// Twenty thousand coroutines, each one handing a value over a channel and
+// ending. This measures the cost of starting a coroutine, of the handoff that
+// reports it finished, and of the wake that follows, all of them together, at a
+// count where the program's own work is far larger than what a process costs
+// before it starts and after it ends.
+
+func worker(out: chan<i64>, id: i64) {
+    out.Send(id)
+}
+
+func main() {
+    var out = new chan<i64>(20000)
+    region {
+        for i in 0..20000 {
+            spawn worker(out, i)
+        }
+    }
+    var total: i64 = 0
+    for i in 0..20000 {
+        var v, ok = out.Recv()
+        if ok {
+            total = total + v
+        }
+    }
+    fmt.PrintI64(total)
+    fmt.PrintNl()
+}

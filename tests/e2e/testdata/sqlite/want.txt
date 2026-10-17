@@ -1,0 +1,26 @@
+create changed 0
+insert changed 1
+insert changed 1
+columns 5
+column id
+column name
+column height
+column note
+column visits
+row 1 id 1 name Ada height 1.75 note none visits 3 null true
+row 2 id 2 name O'Brien; DROP TABLE people height 2.5 note second visits 1 null false
+rows 2
+missing columns 2
+missing row false
+missing row again false
+text as int 0
+int as float 1
+int as text 1
+counted 2
+update changed 1
+after rollback 2
+visits 9
+delete changed 1
+kept Ada
+kept rows 1
+kept after delete false

@@ -1,0 +1,46 @@
+match  in : true
+find  in abc: 0..0 all=0..0,1..1,2..2,3..3
+replace  in abc with -: -a-b-c-
+groups  in abc: 0=0..0
+find a|ab in ab: 0..1 all=0..1
+find ab|a in ab: 0..2 all=0..2
+find b|a in ab: 0..1 all=0..1,1..2
+find cat|dog in hotdog: 3..6 all=3..6
+find a* in : 0..0 all=0..0
+find a+ in : none all=none
+find a{2,3} in aaaaa: 0..3 all=0..3,3..5
+find a{2} in a: none all=none
+find a{2} in aa: 0..2 all=0..2
+find a{0,2}b in aaab: 1..4 all=1..4
+find b*$ in abbb: 1..4 all=1..4
+find [a-c]+ in xxabcxx: 2..5 all=2..5
+find [^0-9]+ in 12abc34: 2..5 all=2..5
+find [-a]+ in --a--: 0..5 all=0..5
+find [a-]+ in a-a: 0..3 all=0..3
+find []]+ in ]]: 0..2 all=0..2
+find [\d]+ in ab123: 2..5 all=2..5
+find [\w.]+ in a.b c: 0..3 all=0..3,4..5
+find ^ab in ab: 0..2 all=0..2
+find ^ab in xab: none all=none
+find ab$ in ab: 0..2 all=0..2
+find ab$ in abx: none all=none
+find ^$ in : 0..0 all=0..0
+find ^$ in x: none all=none
+find \bcat\b in the cat sat: 4..7 all=4..7
+find \bcat\b in concatenate: none all=none
+find \Aab in xab: none all=none
+find ab\z in ab: 0..2 all=0..2
+match xyz in abc: false
+find xyz in abc: none all=none
+groups xyz in abc: none
+groups (a+)(b?) in xxaaab: 0=2..6 1=2..5 2=5..6
+groups (a+)b|(c) in xxaaab: 0=2..6 1=2..5 2=none
+groups (a+)b|(c) in xxc: 0=2..3 1=none 2=2..3
+groups ((a)(b)) in ab: 0=0..2 1=0..2 2=0..1 3=1..2
+groups (?:a)(b) in ab: 0=0..2 1=1..2
+groups (a)?b in b: 0=0..1 1=none
+replace (\w+)@(\w+) in bob@host with $2/$1: host/bob
+replace a in banana with $0$0: baanaanaa
+replace (a)|(b) in ab with <$1$2>: <a><b>
+replace x in abc with $: abc
+replace a in aaa with $$: $$$$$$

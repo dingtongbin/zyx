@@ -1,0 +1,110 @@
+package main
+
+import "std/fmt"
+import "std/sort"
+
+struct Row {
+    key: i64
+    name: str
+}
+
+func lessRow(a: Row, b: Row) -> bool => a.key < b.key
+
+func lessInt(a: i64, b: i64) -> bool => a < b
+
+func lessDesc(a: i64, b: i64) -> bool => a > b
+
+func show(label: str, xs: Array<i64>) {
+    fmt.Print(label)
+    fmt.Print(":")
+    for x in xs {
+        fmt.Print(" ")
+        fmt.PrintI64(x)
+    }
+    fmt.PrintNl()
+}
+
+func main() {
+    var xs = new Array<i64>(0)
+    var seed: i64 = 12345
+    for i in 0 .. 200 {
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        xs.Push(seed % 1000)
+    }
+    sort.Sort(xs, func lessInt)
+    var ordered = true
+    for i in 1 .. xs.Len() {
+        if xs[i] < xs[i - 1] {
+            ordered = false
+        }
+    }
+    fmt.PrintBool(ordered)
+    fmt.Print(" ")
+    fmt.PrintI64(i64(xs.Len()))
+    fmt.Print(" ")
+    fmt.PrintI64(xs[0])
+    fmt.Print(" ")
+    fmt.PrintI64(xs[xs.Len() - 1])
+    fmt.PrintNl()
+
+    sort.Sort(xs, func lessDesc)
+    fmt.PrintI64(xs[0])
+    fmt.Print(" ")
+    fmt.PrintI64(xs[xs.Len() - 1])
+    fmt.PrintNl()
+
+    // A short sequence takes the insertion path, and an empty one takes no
+    // path at all.
+    var few = new Array<i64>(0)
+    few.Push(3)
+    few.Push(1)
+    few.Push(2)
+    sort.Sort(few, func lessInt)
+    show("few", few)
+
+    var empty = new Array<i64>(0)
+    sort.Sort(empty, func lessInt)
+    fmt.PrintI64(i64(empty.Len()))
+    fmt.PrintNl()
+
+    var same = new Array<i64>(0)
+    for _ in 0 .. 40 {
+        same.Push(7)
+    }
+    sort.Sort(same, func lessInt)
+    fmt.PrintI64(same[0])
+    fmt.Print(" ")
+    fmt.PrintI64(same[39])
+    fmt.Print(" ")
+    fmt.PrintI64(i64(same.Len()))
+    fmt.PrintNl()
+
+    // A sequence of a reference type sorts too: an exchange moves the elements
+    // where they lie rather than through a temporary.
+    var rows = new Array<Row>(0)
+    rows.Push(Row { key: 30, name: "c" })
+    rows.Push(Row { key: 10, name: "a" })
+    rows.Push(Row { key: 20, name: "b" })
+    sort.Sort(rows, func lessRow)
+    for i in 0 .. rows.Len() {
+        fmt.Print(rows[i].name)
+    }
+    fmt.PrintNl()
+
+    // A search answers the position of a value the comparison finds equal to
+    // an element, and None when there is none.
+    var target = xs[100]
+    match sort.Search(xs, target, func lessDesc) {
+        Some(at) => fmt.PrintI64(xs[at])
+        None => fmt.PrintI64(- 1)
+    }
+    fmt.PrintNl()
+    fmt.PrintBool(sort.Search(xs, 100000, func lessDesc).IsSome())
+    fmt.Print(" ")
+    fmt.PrintBool(sort.Search(empty, 1, func lessInt).IsSome())
+    fmt.Print(" ")
+    var one = new Array<i64>(0)
+    one.Push(4)
+    fmt.PrintI64(i64(sort.Search(one, 4, func lessInt).UnwrapOr(999)))
+    fmt.PrintNl()
+}

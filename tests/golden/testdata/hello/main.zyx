@@ -1,0 +1,11 @@
+package main
+
+import "std/fmt"
+
+// A program that exercises the smallest surface: an import, a call, and a
+// string literal. Its .zyxc and IR are held as golden files, so a later change
+// that moves any of them shows up as a difference.
+
+func main() {
+    fmt.Println("hello, world")
+}

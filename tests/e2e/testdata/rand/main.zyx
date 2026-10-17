@@ -1,0 +1,96 @@
+package main
+
+import "std/fmt"
+import "std/rand"
+
+// The engine over a fixed seed. Every answer is printed, so the sequence is
+// part of the corpus: a change to the algorithm or to the seeding shows up
+// here, and the same seed runs the same way wherever the program runs.
+
+func main() {
+    var r = new rand.Rng(42)
+    fmt.PrintU64(r.Next())
+    fmt.PrintNl()
+    fmt.PrintU64(r.Next())
+    fmt.PrintNl()
+    fmt.PrintU64(r.Next())
+    fmt.PrintNl()
+    fmt.PrintU64(r.Next())
+    fmt.PrintNl()
+
+    // The same seed gives the same sequence, and a different seed does not.
+    var a = new rand.Rng(7)
+    var b = new rand.Rng(7)
+    var other = new rand.Rng(8)
+    var same = true
+    var differs = false
+    for i in 0 .. 8 {
+        var x = a.Next()
+        if x != b.Next() {
+            same = false
+        }
+        if x != other.Next() {
+            differs = true
+        }
+    }
+    fmt.PrintBool(same)
+    fmt.PrintNl()
+    fmt.PrintBool(differs)
+    fmt.PrintNl()
+
+    var low = new rand.Rng(1)
+    fmt.PrintU64(u64(low.NextU32()))
+    fmt.PrintNl()
+    fmt.PrintU64(u64(low.NextU32()))
+    fmt.PrintNl()
+
+    // A half-open range answers within its bounds, and a power-of-two length
+    // takes the masking path.
+    var masked = new rand.Rng(5)
+    var i = 0
+    for i < 6 {
+        fmt.PrintI64(masked.IntRange(0, 16))
+        fmt.PrintNl()
+        i += 1
+    }
+    var bounded = new rand.Rng(9)
+    i = 0
+    for i < 6 {
+        var v = bounded.IntRange(- 5, 5)
+        fmt.PrintBool(v >= - 5 && v < 5)
+        fmt.PrintNl()
+        i += 1
+    }
+
+    var floats = new rand.Rng(3)
+    i = 0
+    for i < 4 {
+        var f = floats.NextFloat()
+        fmt.PrintBool(f >= 0.0 && f < 1.0)
+        fmt.PrintNl()
+        i += 1
+    }
+
+    var bits = new rand.Rng(11)
+    i = 0
+    for i < 6 {
+        fmt.PrintBool(bits.NextBool())
+        fmt.PrintNl()
+        i += 1
+    }
+
+    // Shuffle draws its positions from the engine it is given.
+    var xs = new Array<i64>(0)
+    var k = 0
+    for k < 8 {
+        xs.Push(i64(k))
+        k += 1
+    }
+    var shuffled = new rand.Rng(123)
+    rand.Shuffle(shuffled, xs)
+    for v in xs {
+        fmt.PrintI64(v)
+        fmt.Print(" ")
+    }
+    fmt.PrintNl()
+}

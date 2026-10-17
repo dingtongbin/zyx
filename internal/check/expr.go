@@ -87,14 +87,24 @@ func (c *checker) identType(id *ast.Ident, want *types.Type) *types.Type {
 	}
 	c.checkStaticUse(sym, id)
 	// A type written where a type value is expected stands for that value.
-	if isTypeSymbol(sym) && want != nil && want.IsTypeValue() {
+	if IsTypeSymbol(sym) && want != nil && want.IsTypeValue() {
 		c.out.Nodes[id] = types.TypeValue
 		return types.TypeValue
 	}
 	if t, ok := c.bySym[sym.ID]; ok {
 		return t
 	}
-	if isTypeSymbol(sym) {
+	// A package-level binding is checked in the order it is written, so a body
+	// that reads a binding declared after it finds no type in bySym yet. The
+	// declared type of an annotated binding is known from its declaration,
+	// which checkDecls read before any body, so the name still denotes a value
+	// of that type.
+	if sym.Kind == resolve.KindConst || sym.Kind == resolve.KindVar {
+		if t, ok := c.out.Decls[sym.Name]; ok {
+			return t
+		}
+	}
+	if IsTypeSymbol(sym) {
 		return c.typeOfSymbol(sym)
 	}
 	return nil
@@ -291,9 +301,11 @@ func (c *checker) binaryType(v *ast.BinaryExpr, want *types.Type) *types.Type {
 		}
 		return types.Bool
 	case token.Lt, token.Le, token.Gt, token.Ge:
-		if !lt.IsOrdered() {
+		// A duration is ordered by its nanosecond count, which the language
+		// fixes with the rest of its built-in orderings.
+		if !lt.IsOrdered() && lt.Kind != types.KindDuration {
 			c.errorHelp(diag.CodeTypeMismatch, v.Sp,
-				"compare numbers or char; text ordering lives in std/str",
+				"compare numbers, char, or a duration; text ordering lives in std/str",
 				"%s is not ordered", lt)
 		}
 		return types.Bool
@@ -368,6 +380,21 @@ func (c *checker) equalityOK(t *types.Type) bool {
 		return false
 	}
 	if t.IsBasic() {
+		return true
+	}
+	if t.Kind == types.KindEnum {
+		// An enum whose variants carry nothing is compared by its tag, which
+		// the language lowers without a declared Eq. One that carries something
+		// compares structurally only through an Eq its declaration provides.
+		d := c.declOf(t)
+		if d == nil {
+			return false
+		}
+		for _, v := range d.Variants {
+			if len(v.Payload) != 0 {
+				return false
+			}
+		}
 		return true
 	}
 	return c.implements(t, types.Eq)
@@ -461,7 +488,7 @@ func (c *checker) selectorType(v *ast.SelectorExpr, want *types.Type) *types.Typ
 		switch sym := c.symOf(id); {
 		case sym != nil && sym.Kind == resolve.KindPackage:
 			return c.qualifiedValue(v, sym)
-		case isTypeSymbol(sym):
+		case IsTypeSymbol(sym):
 			return c.variantValue(v, sym, want)
 		}
 	}
@@ -798,6 +825,7 @@ func (c *checker) tryType(v *ast.TryExpr) *types.Type {
 // spawnType checks `spawn call` and `spawn_watched call, watcher`, which
 // yield a coroutine handle.
 func (c *checker) spawnType(v *ast.SpawnExpr) *types.Type {
+	c.freestandingSpawn(v)
 	if c.inComptime {
 		c.errorHelp(diag.CodeSpawnComptime, v.Sp,
 			"start coroutines at run time",
@@ -933,7 +961,8 @@ func (c *checker) arrayLitType(v *ast.ArrayLitExpr, want *types.Type) *types.Typ
 		}
 		return types.ArrayOf(elem, want.Len)
 	}
-	return types.Array.Instantiate(elem)
+	out := types.Array.Instantiate(elem)
+	return c.cFuncLiteral(v, c.freestandingLiteral(v, out))
 }
 
 // arrayRepeatType checks `[expr] * n`.
@@ -957,12 +986,15 @@ func (c *checker) arrayRepeatType(v *ast.ArrayRepeatExpr, want *types.Type) *typ
 	if elem == nil {
 		elem = types.Int64
 	}
-	return types.Array.Instantiate(elem)
+	out := types.Array.Instantiate(elem)
+	return c.cFuncLiteral(v, c.freestandingLiteral(v, out))
 }
 
 // newType checks `new T(args)`: a struct through its init, or a
 // pre-imported container through its runtime constructor.
 func (c *checker) newType(v *ast.NewExpr) *types.Type {
+	c.freestandingNew(v)
+	c.cFuncNew(v)
 	typ := c.buildType(v.Type)
 	if typ == nil {
 		c.checkExprs(v.Args)
@@ -1015,6 +1047,11 @@ func (c *checker) newStruct(v *ast.NewExpr, typ *types.Type) *types.Type {
 	}
 	sig := c.substituteFor(typ, d, init)
 	c.checkArgs(sig, v.Args, callArgs{sp: v.Sp, want: typ})
+	if success, ok := initSuccess(sig.Result); ok && types.Identical(success, typ) {
+		// The construction can fail, so new answers the Result the init declares
+		// rather than the value, and the call site reads the failure beside it.
+		return sig.Result
+	}
 	return typ
 }
 
@@ -1116,11 +1153,11 @@ func (c *checker) aggregateType(v *ast.AggregateLitExpr, want *types.Type) *type
 			"%s is an enum", typ)
 	case d != nil && (typ.Kind == types.KindStruct || typ.Kind == types.KindExternStruct ||
 		typ.Kind == types.KindUnion):
-		return c.checkStructLiteral(v, typ, d)
+		return c.cFuncLiteral(v, c.freestandingLiteral(v, c.checkStructLiteral(v, typ, d)))
 	case typ.Kind == types.KindContainer && typ.Name == "Map":
-		return c.checkMapLiteral(v, typ)
+		return c.cFuncLiteral(v, c.freestandingLiteral(v, c.checkMapLiteral(v, typ)))
 	case typ.Kind == types.KindContainer && typ.Name == "Set":
-		return c.checkSetLiteral(v, typ)
+		return c.cFuncLiteral(v, c.freestandingLiteral(v, c.checkSetLiteral(v, typ)))
 	default:
 		c.errorHelp(diag.CodeTypeMismatch, v.Type.Span(),
 			"build a struct, a union, a Map, or a Set with a literal",

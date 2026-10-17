@@ -1,0 +1,7 @@
+bound: ok
+sent: 8
+read: datagram
+read bytes: 8
+the source is loopback: true
+read after close: true
+invalid address: true

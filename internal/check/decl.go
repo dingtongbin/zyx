@@ -576,18 +576,39 @@ func (c *checker) checkMethod(d *Decl, f *ast.FuncDecl) {
 	c.checkFuncShape(f, ctx)
 }
 
-// checkInitShape checks that init returns Self, the only way to build a
-// value through new.
+// checkInitShape checks that init returns Self, or a Result whose success is
+// Self, which is how the design writes a construction that can fail. new answers
+// whatever init answers, so such a type is built by reading the failure beside
+// the value.
 func (c *checker) checkInitShape(f *ast.FuncDecl) {
 	if f.Result == nil {
 		c.errorHelp(diag.CodeInitSignature, nameSpan(f),
 			"declare the result as Self", "init must return Self")
 		return
 	}
-	if t := c.buildType(f.Result); t != nil && !types.Identical(t, c.self) {
-		c.errorHelp(diag.CodeInitSignature, f.Result.Span(),
-			"declare the result as Self", "init returns Self, not %s", t)
+	t := c.buildType(f.Result)
+	if t == nil {
+		return
 	}
+	if types.Identical(t, c.self) {
+		return
+	}
+	if success, ok := initSuccess(t); ok && types.Identical(success, c.self) {
+		return
+	}
+	c.errorHelp(diag.CodeInitSignature, f.Result.Span(),
+		"declare the result as Self, or as Result<Self, E> when it can fail",
+		"init returns Self or Result<Self, E>, not %s", t)
+}
+
+// initSuccess answers the value a construction that can fail answers with, which
+// is the success type of the Result an init declares, and whether the type is
+// such a Result at all.
+func initSuccess(t *types.Type) (*types.Type, bool) {
+	if t == nil || t.Kind != types.KindEnum || t.Name != "Result" || len(t.Args) != 2 {
+		return nil, false
+	}
+	return t.Args[0], true
 }
 
 // checkImplBlock checks one impl block: the interface it names, the

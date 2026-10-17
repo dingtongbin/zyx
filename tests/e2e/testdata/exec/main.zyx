@@ -1,0 +1,276 @@
+package main
+
+import "std/exec"
+import "std/fmt"
+import "std/fs"
+import "std/os"
+import "std/time"
+
+// This program starts copies of itself, because a program is the one file that
+// is certainly on the machine it runs on, and never prints a path: what it
+// compares is the child's exit code and the text the child wrote through a
+// pipe. A copy is told what to do by its first argument, which is why the
+// program reads that argument before it does anything else.
+
+// long_pause is far longer than the program that starts the sleeping child
+// will wait, so the child is certainly still running when it is asked about.
+const long_pause: Duration = dur.sec(30)
+
+func main() {
+    var mode = arg_at(os.Args(), 1)
+    if mode == "pipe-child" {
+        child_lines()
+    } else if mode == "echo-child" {
+        child_echo()
+    } else if mode == "quiet-child" {
+        child_quiet()
+    } else if mode == "sleep-child" {
+        child_sleep()
+    } else if mode == "args-child" {
+        child_args()
+    } else {
+        parent()
+    }
+}
+
+// child_args writes each argument it was given after its own name, one per
+// line, which shows what the parent's call put on the child's command line.
+func child_args() {
+    var at: usize = 0
+    for a in os.Args() {
+        if at > 0 {
+            fmt.Println(a)
+        }
+        at += 1
+    }
+    os.Exit(0)
+}
+
+// child_lines writes a couple of lines and exits with a code of its own.
+func child_lines() {
+    fmt.Println("child line one")
+    fmt.Println("child line two")
+    os.Exit(3)
+}
+
+// child_echo copies its input to its output and exits cleanly.
+func child_echo() {
+    var inp = os.Stdin()
+    var out = os.Stdout()
+    var chunk = new Buf(0)
+    for {
+        chunk.Reset()
+        var n = inp.Read(chunk, 4096).Unwrap()
+        if n == 0 {
+            break
+        }
+        out.WriteStr(chunk.Str()).Unwrap()
+    }
+    os.Exit(0)
+}
+
+// child_quiet writes nothing and exits with a code of its own.
+func child_quiet() {
+    os.Exit(7)
+}
+
+// child_sleep waits far longer than the program that starts it will wait.
+func child_sleep() {
+    time.Sleep(long_pause)
+    os.Exit(0)
+}
+
+// parent exercises the package against copies of itself.
+func parent() {
+    var program = ostrich()
+
+    // A pipe child: its output is read back, and its exit is read twice to
+    // show that the answer is kept.
+    match exec.SpawnPipe(program, one_arg("pipe-child")) {
+        Ok(child) => {
+            fmt.PrintBool(child.Pid() > 0)
+            fmt.PrintNl()
+            var text = drain(child.Stdout())
+            child.Stdout().Close()
+            print_text(text)
+            show_code("wait", child.Wait())
+            show_code("again", child.Wait())
+        }
+        Err(e) => fmt.Println("pipe child was refused")
+    }
+
+    // The parent's input reaches the child, whose copy of it comes back
+    // through the other pipe.
+    match exec.SpawnPipe(program, one_arg("echo-child")) {
+        Ok(child) => {
+            child.Stdin().WriteStr("through the pipe\n").Unwrap()
+            child.Stdin().Close()
+            var text = drain(child.Stdout())
+            child.Stdout().Close()
+            print_text(text)
+            show_code("echo", child.Wait())
+        }
+        Err(e) => fmt.Println("echo child was refused")
+    }
+
+    // An argument with a space, a quote, a backslash, and nothing at all
+    // reaches the child exactly as it was given, which is what the quoting of
+    // a command line has to get right.
+    match exec.SpawnPipe(program, tricky_args()) {
+        Ok(child) => {
+            var text = drain(child.Stdout())
+            child.Stdout().Close()
+            print_text(text)
+            show_code("args", child.Wait())
+        }
+        Err(e) => fmt.Println("args child was refused")
+    }
+
+    // A child that inherits the streams has none of its own: the handles the
+    // package answers are closed.
+    match exec.Spawn(program, one_arg("quiet-child")) {
+        Ok(child) => {
+            fmt.PrintBool(child.Stdout().Closed)
+            fmt.Print(" ")
+            fmt.PrintBool(child.Stderr().Closed)
+            fmt.Print(" ")
+            show_code("inherit", child.Wait())
+        }
+        Err(e) => fmt.Println("quiet child was refused")
+    }
+
+    // A child that runs on is still there when it is asked without waiting,
+    // and ends when it is killed.
+    match exec.Spawn(program, one_arg("sleep-child")) {
+        Ok(child) => {
+            match child.TryWait() {
+                None => fmt.Println("try: none")
+                Some(r) => fmt.Println("try: some")
+            }
+            match child.Kill() {
+                Ok(_) => fmt.Print("kill: ok")
+                Err(e) => fmt.Print("kill: failed")
+            }
+            fmt.PrintNl()
+            // Whether the system reports the end as a code or as a signal
+            // differs between targets, so what is compared is that it ended.
+            match child.Wait() {
+                Ok(code) => fmt.Println("reaped: true")
+                Err(e) => fmt.Println("reaped: true")
+            }
+            match child.TryWait() {
+                Some(r) => fmt.Println("after: some")
+                None => fmt.Println("after: none")
+            }
+        }
+        Err(e) => fmt.Println("sleep child was refused")
+    }
+
+    // A program that is not there is refused.
+    match exec.Spawn("zyx-no-such-program-9f3a", no_args()) {
+        Ok(child) => {
+            match child.Wait() {
+                Ok(code) => fmt.Println("missing: ran")
+                Err(e) => fmt.Println("missing: ended")
+            }
+        }
+        Err(e) => match e.Kind {
+            NotFound => fmt.Println("missing: not found")
+            _ => fmt.Println("missing: other")
+        }
+    }
+
+    // The failure a call carries reads its own text, which is what a program
+    // shows a person.
+    match exec.Spawn("zyx-no-such-program-9f3a", no_args()) {
+        Ok(child) => fmt.Println("printed: ran")
+        Err(e) => {
+            var text = new Buf(0)
+            e.Show(text)
+            fmt.PrintBool(e.Msg.Len() > 0)
+            fmt.Print(" ")
+            fmt.PrintBool(text.Len() > 0)
+        }
+    }
+    fmt.PrintNl()
+}
+
+// drain reads a stream to its end and answers the text it held.
+func drain(f: fs.File) -> str {
+    var out = new Buf(0)
+    var chunk = new Buf(0)
+    for {
+        chunk.Reset()
+        match f.Read(chunk, 4096) {
+            Ok(n) => {
+                if n == 0 {
+                    break
+                }
+                out.WriteStr(chunk.Str())
+            }
+            Err(e) => { break }
+        }
+    }
+    return out.Str()
+}
+
+// print_text writes the bytes of a text as the text they are.
+func print_text(s: str) {
+    var i: usize = 0
+    for i < s.Len() {
+        fmt.PrintChar(char(u32(s[i])))
+        i += 1
+    }
+}
+
+// show_code prints what a call that answers an exit code answered.
+func show_code(label: str, r: Result<i32, exec.Error>) {
+    fmt.Print(label)
+    fmt.Print("=")
+    match r {
+        Ok(code) => fmt.PrintI64(i64(code))
+        Err(e) => fmt.Print("err")
+    }
+    fmt.PrintNl()
+}
+
+// ostrich answers the path this program was started with, which is the one
+// file that is certainly a program on this machine. It is never printed.
+func ostrich() -> str {
+    return arg_at(os.Args(), 0)
+}
+
+// arg_at answers the argument at an index, or the empty string when there is
+// none.
+func arg_at(args: [str], index: usize) -> str {
+    var at: usize = 0
+    for a in args {
+        if at == index {
+            return a
+        }
+        at += 1
+    }
+    return ""
+}
+
+// one_arg and no_args build the argument lists the calls take.
+func one_arg(a: str) -> Array<str> {
+    var out = new Array<str>(0)
+    out.Push(a)
+    return out
+}
+
+func no_args() -> Array<str> {
+    return new Array<str>(0)
+}
+
+// tricky_args builds the arguments that stress the quoting of a command line.
+func tricky_args() -> Array<str> {
+    var out = new Array<str>(0)
+    out.Push("args-child")
+    out.Push("a b")
+    out.Push("quote\"in")
+    out.Push("back\\slash")
+    out.Push("")
+    return out
+}

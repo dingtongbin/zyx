@@ -1,1 +1,243 @@
 package math
+
+// Scalar mathematics. The floating-point functions are the C library's own,
+// reached through the header that declares them; the integer helpers and the
+// constants are written here. Only f64 is served, because an f32 caller can
+// widen explicitly and a second set of entry points would only double the
+// surface.
+
+import c "math.h" {
+    fast fabs, sqrt, sin, cos, tan, asin, acos, atan, exp, log, log2, log10,
+        floor, ceil, round, trunc, atan2, pow, hypot, copysign, fmin, fmax
+}
+
+// PI is the ratio of a circle's circumference to its diameter.
+const PI: f64 = 3.141592653589793
+
+// E is the base of the natural logarithm.
+const E: f64 = 2.718281828459045
+
+// Inf is positive infinity. The division by zero that builds it is a
+// compile-time value, not a runtime one.
+const Inf: f64 = 1.0 / 0.0
+
+// NaN is the value that is not a number.
+const NaN: f64 = 0.0 / 0.0
+
+// Sqrt answers the square root of x.
+func Sqrt(x: f64) -> f64 {
+    return c.sqrt(x)
+}
+
+// Abs answers the absolute value of x.
+func Abs(x: f64) -> f64 {
+    return c.fabs(x)
+}
+
+// Sin answers the sine of x radians.
+func Sin(x: f64) -> f64 {
+    return c.sin(x)
+}
+
+// Cos answers the cosine of x radians.
+func Cos(x: f64) -> f64 {
+    return c.cos(x)
+}
+
+// Tan answers the tangent of x radians.
+func Tan(x: f64) -> f64 {
+    return c.tan(x)
+}
+
+// Asin answers the arc sine of x in radians.
+func Asin(x: f64) -> f64 {
+    return c.asin(x)
+}
+
+// Acos answers the arc cosine of x in radians.
+func Acos(x: f64) -> f64 {
+    return c.acos(x)
+}
+
+// Atan answers the arc tangent of x in radians.
+func Atan(x: f64) -> f64 {
+    return c.atan(x)
+}
+
+// Atan2 answers the arc tangent of y/x, using the signs of both to choose the
+// quadrant.
+func Atan2(y: f64, x: f64) -> f64 {
+    return c.atan2(y, x)
+}
+
+// Exp answers e raised to x.
+func Exp(x: f64) -> f64 {
+    return c.exp(x)
+}
+
+// Log answers the natural logarithm of x.
+func Log(x: f64) -> f64 {
+    return c.log(x)
+}
+
+// Log2 answers the base-two logarithm of x.
+func Log2(x: f64) -> f64 {
+    return c.log2(x)
+}
+
+// Log10 answers the base-ten logarithm of x.
+func Log10(x: f64) -> f64 {
+    return c.log10(x)
+}
+
+// Floor answers the largest integer that is not greater than x.
+func Floor(x: f64) -> f64 {
+    return c.floor(x)
+}
+
+// Ceil answers the smallest integer that is not less than x.
+func Ceil(x: f64) -> f64 {
+    return c.ceil(x)
+}
+
+// Round answers the nearest integer to x, with a tie going away from zero.
+func Round(x: f64) -> f64 {
+    return c.round(x)
+}
+
+// Trunc answers the integer part of x, toward zero.
+func Trunc(x: f64) -> f64 {
+    return c.trunc(x)
+}
+
+// Pow answers x raised to y.
+func Pow(x: f64, y: f64) -> f64 {
+    return c.pow(x, y)
+}
+
+// Hypot answers the square root of x*x + y*y without the intermediate
+// overflow the obvious form would have.
+func Hypot(x: f64, y: f64) -> f64 {
+    return c.hypot(x, y)
+}
+
+// Copysign answers a value with the magnitude of x and the sign of y.
+func Copysign(x: f64, y: f64) -> f64 {
+    return c.copysign(x, y)
+}
+
+// Min answers the lesser of a and b, ignoring a value that is not a number
+// when the other is one.
+func Min(a: f64, b: f64) -> f64 {
+    return c.fmin(a, b)
+}
+
+// Max answers the greater of a and b, ignoring a value that is not a number
+// when the other is one.
+func Max(a: f64, b: f64) -> f64 {
+    return c.fmax(a, b)
+}
+
+// Clamp answers x held within lo and hi. A value that is not a number passes
+// through.
+func Clamp(x: f64, lo: f64, hi: f64) -> f64 {
+    if x < lo {
+        return lo
+    }
+    if x > hi {
+        return hi
+    }
+    return x
+}
+
+// IsNaN reports whether x is not a number. A value that is not a number is
+// the only one that is not equal to itself.
+func IsNaN(x: f64) -> bool {
+    if x == x {
+        return false
+    }
+    return true
+}
+
+// IsInf reports whether x is an infinity. A sign above zero asks for positive
+// infinity, a sign below zero for negative infinity, and zero for either.
+func IsInf(x: f64, sign: i32) -> bool {
+    if sign > 0 {
+        return x == Inf
+    }
+    if sign < 0 {
+        return x == - Inf
+    }
+    return x == Inf || x == - Inf
+}
+
+// AbsI answers the absolute value of v. The smallest value has no positive
+// counterpart, so it faults.
+func AbsI(v: i64) -> i64 {
+    if v < 0 {
+        return - v
+    }
+    return v
+}
+
+// MinI answers the lesser of a and b.
+func MinI(a: i64, b: i64) -> i64 {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+// MaxI answers the greater of a and b.
+func MaxI(a: i64, b: i64) -> i64 {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+// ClampI answers x held within lo and hi.
+func ClampI(x: i64, lo: i64, hi: i64) -> i64 {
+    if x < lo {
+        return lo
+    }
+    if x > hi {
+        return hi
+    }
+    return x
+}
+
+// DivEuclid answers the quotient of a division whose remainder is never
+// negative. A divisor of zero faults.
+func DivEuclid(a: i64, b: i64) -> i64 {
+    if b == 0 {
+        panic("division by zero")
+    }
+    var q = a / b
+    var r = a % b
+    if r < 0 {
+        if b > 0 {
+            q -= 1
+        } else {
+            q += 1
+        }
+    }
+    return q
+}
+
+// ModEuclid answers the remainder of a division, which is never negative. A
+// divisor of zero faults.
+func ModEuclid(a: i64, b: i64) -> i64 {
+    if b == 0 {
+        panic("division by zero")
+    }
+    var r = a % b
+    if r < 0 {
+        if b > 0 {
+            r += b
+        } else {
+            r -= b
+        }
+    }
+    return r
+}

@@ -1,0 +1,10 @@
+true INFO hello
+true WARN careful
+true ERROR broken
+true INFO fields one="1" two="2"
+true WARN escaped path="a\\b\"c" empty=""
+true INFO child service="api" zone="eu"
+true ERROR both service="api" zone="eu" extra="x"
+true DEBUG visible
+8
+true true

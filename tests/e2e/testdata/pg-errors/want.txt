@@ -1,0 +1,6 @@
+empty: Invalid the data source name is empty
+not a set: Invalid the data source name is not a set of keyword=value pairs
+empty keyword: Invalid the data source name has an empty keyword
+unclosed quote: Invalid the data source name has an unclosed quote
+driver: Invalid the data source name has an empty keyword
+refused: failed

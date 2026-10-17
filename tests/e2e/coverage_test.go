@@ -72,6 +72,8 @@ var specMarks = []string{
 	"iter-guard", "last-use", "move", "region:enter",
 	"region:exit", "shared-bind", "shared-ref", "shared-store",
 	"static-release", "transfer", "view-borrow", "watched",
+	"why-arg", "why-fast", "why-last-use", "why-new", "why-not-fast",
+	"why-not-syncsafe", "why-return", "why-shared", "why-syncsafe", "why-view",
 }
 
 // coveredMarks lists the marks the corpus emits. It grows as the corpus
@@ -83,6 +85,8 @@ var coveredMarks = []string{
 	"defer-site", "defers", "entry", "home", "init", "iter-guard", "last-use",
 	"move", "region:enter", "region:exit", "shared-bind", "shared-ref",
 	"shared-store", "static-release", "transfer", "view-borrow", "watched",
+	"why-arg", "why-fast", "why-last-use", "why-new", "why-not-fast",
+	"why-not-syncsafe", "why-return", "why-shared", "why-syncsafe", "why-view",
 }
 
 // deferredMarks lists the marks the format defines that no corpus reaches
@@ -134,25 +138,29 @@ func corpusDirs(t *testing.T) []string {
 	return dirs
 }
 
-// kindPattern matches the kind that opens a line of the tree.
-var kindPattern = regexp.MustCompile(`(?m)^\s*([a-z][a-z0-9-]*)`)
-
-// emitKinds returns every node kind the intermediate form of a package uses.
-// The four header lines are not nodes, so the scan starts after them.
+// emitKinds returns every node kind the intermediate form of a package uses,
+// read back through the format's own reader. Reading the text rather than
+// scanning it also checks that what the writer wrote is what the reader reads.
 func emitKinds(t *testing.T, dir string) map[string]bool {
 	t.Helper()
 	stdout, stderr, code := run(dir, "emit-zyxc", ".")
 	if code != 0 {
 		t.Fatalf("emit-zyxc failed with %d:\n%s", code, stderr)
 	}
-	for i := 0; i < 4; i++ {
-		if _, rest, ok := strings.Cut(stdout, "\n"); ok {
-			stdout = rest
-		}
+	file, err := zyxc.Parse([]byte(stdout))
+	if err != nil {
+		t.Fatalf("the emitted form does not parse: %v", err)
 	}
 	kinds := map[string]bool{}
-	for _, match := range kindPattern.FindAllStringSubmatch(stdout, -1) {
-		kinds[match[1]] = true
+	var walk func(*zyxc.Node)
+	walk = func(n *zyxc.Node) {
+		kinds[n.Kind] = true
+		for _, child := range n.Children {
+			walk(child)
+		}
+	}
+	for _, decl := range file.Decls {
+		walk(decl)
 	}
 	return kinds
 }
@@ -339,10 +347,10 @@ func TestGenericCallsCarryTheirInstantiatedSignature(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("emit-zyxc failed with %d:\n%s", code, stderr)
 	}
-	if !strings.Contains(stdout, `type "func(i64, i64, bool) -> i64"`) {
+	if !strings.Contains(stdout, "type func(i64,i64,bool)->i64") {
 		t.Errorf("the call to pick carries no instantiated signature:\n%s", stdout)
 	}
-	if strings.Contains(stdout, "func(T, T, bool) -> T") {
+	if strings.Contains(stdout, "func(T,T,bool)->T") {
 		t.Errorf("the call to pick still carries the generic signature:\n%s", stdout)
 	}
 }

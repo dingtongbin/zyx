@@ -195,6 +195,10 @@ type Package struct {
 	// The syntax cannot tell such a selector from a field read, so the check
 	// settles it for the passes that need to know.
 	MethodValues map[ast.Node]bool
+	// VariantCalls marks the calls that construct an enum variant. What such a
+	// call is given is stored in the value it answers with, so the closure of
+	// that value decides how long the argument lives.
+	VariantCalls map[ast.Node]bool
 	// Consts maps each evaluated constant to its value.
 	Consts map[string]*Value
 	// FuncDefaults maps each public function's name to the default value of
@@ -271,11 +275,26 @@ func (p *Package) Imported(path string) *Interface {
 }
 
 // Check type-checks one package's declarations for a target. The target
-// decides the layout queries a compile-time expression may run.
-func Check(pkg *resolve.Package, info *resolve.Info, imports Imports, target toolchain.Target, cdecls map[string]*cheader.Table) (*Package, []diag.Diagnostic) {
+// decides the layout queries a compile-time expression may run. A build whose
+// switches change what the target has, such as one that leaves the runtime
+// out, asks for them with Options.
+func Check(pkg *resolve.Package, info *resolve.Info, imports Imports, target toolchain.Target, cdecls map[string]*cheader.Table, options ...Options) (*Package, []diag.Diagnostic) {
+	opts := Options{}
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	c := newChecker(pkg, info, imports, target, cdecls)
+	c.freestanding = opts.Freestanding
 	c.run()
 	return c.out, c.diags
+}
+
+// Options carries the build switches the checker has to know about.
+type Options struct {
+	// Freestanding marks a build that leaves the runtime out, so the
+	// constructs the specification says such a target does not have are
+	// rejected.
+	Freestanding bool
 }
 
 // checker carries the state of one package's check.
@@ -314,6 +333,12 @@ type checker struct {
 	result *types.Type
 	// inComptime marks a comptime context.
 	inComptime bool
+	// freestanding marks a build that leaves the runtime out, which has no
+	// coroutines, channels, regions, or runtime allocator.
+	freestanding bool
+	// inCFunc marks a `c func` body, which runs on a blocking-pool thread
+	// with no coroutine and no region of its own.
+	inCFunc bool
 	// inRegion counts the enclosing region blocks, which spawn requires.
 	inRegion int
 	// addrOK marks a C call argument list, where &x is allowed.
@@ -353,6 +378,7 @@ func newChecker(pkg *resolve.Package, info *resolve.Info, imports Imports, targe
 		Nodes:           map[ast.Node]*types.Type{},
 		PatternVariants: map[ast.Node]bool{},
 		MethodValues:    map[ast.Node]bool{},
+		VariantCalls:    map[ast.Node]bool{},
 		Consts:          map[string]*Value{},
 		FastC:           map[string]bool{},
 		imports:         imports,
@@ -625,6 +651,7 @@ func (c *checker) buildType(t ast.TypeExpr) *types.Type {
 		c.out.Nodes[v] = out
 		return out
 	case *ast.ChanType:
+		c.freestandingChan(v)
 		out := types.ChanOf(c.buildType(v.Elem))
 		c.out.Nodes[v] = out
 		return out

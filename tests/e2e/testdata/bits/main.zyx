@@ -1,0 +1,87 @@
+package main
+
+import "std/bits"
+import "std/fmt"
+
+func main() {
+    var b = new bits.Bitset(70)
+    fmt.PrintI64(i64(b.Len()))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(b.Count()))
+    fmt.PrintNl()
+
+    b.Set(0)
+    b.Set(63)
+    b.Set(64)
+    b.Set(69)
+    fmt.PrintBool(b.Test(0))
+    fmt.Print(" ")
+    fmt.PrintBool(b.Test(1))
+    fmt.Print(" ")
+    fmt.PrintBool(b.Test(69))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(b.Count()))
+    fmt.PrintNl()
+
+    b.Clear(63)
+    fmt.PrintBool(b.Test(63))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(b.Count()))
+    fmt.PrintNl()
+
+    fmt.PrintI64(i64(b.NextSet(0)))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(b.NextSet(1)))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(b.NextSet(65)))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(b.NextSet(70)))
+    fmt.PrintNl()
+
+    fmt.PrintI64(i64(b.NextClear(0)))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(b.NextClear(1)))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(b.NextClear(64)))
+    fmt.PrintNl()
+
+    b.SetAll()
+    fmt.PrintI64(i64(b.Count()))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(b.NextClear(0)))
+    fmt.PrintNl()
+
+    b.ClearAll()
+    fmt.PrintI64(i64(b.Count()))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(b.NextSet(0)))
+    fmt.PrintNl()
+
+    // A bitmap whose length is a whole number of words has no spare bits.
+    var exact = new bits.Bitset(64)
+    fmt.PrintI64(i64(exact.Len()))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(exact.NextSet(0)))
+    fmt.Print(" ")
+    exact.SetAll()
+    fmt.PrintI64(i64(exact.Count()))
+    fmt.PrintNl()
+
+    // An empty bitmap holds nothing, so every search answers zero.
+    var empty = new bits.Bitset(0)
+    fmt.PrintI64(i64(empty.Len()))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(empty.Count()))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(empty.NextSet(0)))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(empty.NextClear(0)))
+    fmt.PrintNl()
+
+    var one = new bits.Bitset(1)
+    one.Set(0)
+    fmt.PrintI64(i64(one.Count()))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(one.NextClear(0)))
+    fmt.PrintNl()
+}

@@ -1,0 +1,160 @@
+package main
+
+// The database interface layer without a server: a driver of this program's
+// own answers connections, so what is walked here is the shape of the layer
+// itself. A driver is passed where it is used, a connection is opened once and
+// only once, and a pool hands the same connection back rather than opening
+// another.
+//
+// Nothing here reaches a database, so every line is the same wherever the
+// program runs.
+
+import "std/db"
+import "std/fmt"
+
+// fakeRows answers two rows of one column.
+struct fakeRows {
+    at: i64
+
+    impl db.Rows {
+        func Next() -> bool {
+            if self.at >= 2 {
+                return false
+            }
+            self.at += 1
+            return true
+        }
+
+        func Columns() -> Array<str> {
+            var out = new Array<str>(0)
+            out.Push("n")
+            return out
+        }
+
+        func Int(i: usize) -> i64 {
+            return self.at
+        }
+
+        func Float(i: usize) -> f64 {
+            return f64(self.at)
+        }
+
+        func Text(i: usize) -> str {
+            if self.at == 1 {
+                return "one"
+            }
+            return "two"
+        }
+
+        func Null(i: usize) -> bool {
+            return false
+        }
+
+        func Close() {
+        }
+    }
+}
+
+// fakeConn answers a fixed row set and a fixed number of changed rows.
+struct fakeConn {
+    impl db.Conn {
+        func Query(sql: str, params: Array<Value>) -> Result<db.Rows, db.Error> {
+            var answered: db.Rows = fakeRows { at: 0 }
+            return Result.Ok(answered)
+        }
+
+        func Exec(sql: str, params: Array<Value>) -> Result<i64, db.Error> {
+            return Result.Ok(3)
+        }
+
+        func Close() {
+        }
+    }
+}
+
+// fakeDriver counts the connections it has opened, so a program can see that a
+// pool opened one and reused it.
+struct fakeDriver {
+    opens: i64
+
+    impl db.Driver {
+        func Open(dsn: str) -> Result<db.Conn, db.Error> {
+            self.opens += 1
+            var opened: db.Conn = fakeConn { }
+            return Result.Ok(opened)
+        }
+    }
+}
+
+// kind_name names a failure kind, because an f-string writes a primitive type
+// or a text and the package's kind is an enumeration of its own.
+func kind_name(k: db.ErrorKind) -> str {
+    match k {
+        NotFound => { return "NotFound" }
+        Permission => { return "Permission" }
+        Exists => { return "Exists" }
+        NotDir => { return "NotDir" }
+        IsDir => { return "IsDir" }
+        Invalid => { return "Invalid" }
+        Closed => { return "Closed" }
+        Timeout => { return "Timeout" }
+        Interrupted => { return "Interrupted" }
+        WouldBlock => { return "WouldBlock" }
+        Eof => { return "Eof" }
+        AddrInUse => { return "AddrInUse" }
+        AddrNotAvailable => { return "AddrNotAvailable" }
+        Refused => { return "Refused" }
+        Reset => { return "Reset" }
+        Unreachable => { return "Unreachable" }
+        Other => { return "Other" }
+    }
+}
+
+func main() {
+    var fake = fakeDriver { opens: 0 }
+    var drv: db.Driver = fake
+    var none = new Array<Value>(0)
+
+    match db.Open(drv, "example") {
+        Ok(conn) => {
+            fmt.Println("open ok")
+            match conn.Query("SELECT n", none) {
+                Ok(rows) => {
+                    for rows.Next() {
+                        fmt.Println(f"row {rows.Text(0)}")
+                    }
+                    rows.Close()
+                }
+                Err(e) => { fmt.Println("query failed") }
+            }
+            match conn.Exec("UPDATE", none) {
+                Ok(changed) => { fmt.Println(f"exec {changed}") }
+                Err(e) => { fmt.Println("exec failed") }
+            }
+            conn.Close()
+        }
+        Err(e) => { fmt.Println("open failed") }
+    }
+    fmt.Println(f"direct opens {fake.opens}")
+
+    var pool = new db.Pool(drv, "example", 1)
+    match pool.Conn() {
+        Ok(conn) => {
+            fmt.Println(f"pool opens {fake.opens}")
+            pool.Put(conn)
+        }
+        Err(e) => { fmt.Println("pool failed") }
+    }
+    match pool.Conn() {
+        Ok(conn) => {
+            fmt.Println(f"pool reuses {fake.opens}")
+            pool.Put(conn)
+        }
+        Err(e) => { fmt.Println("pool failed") }
+    }
+    pool.Close()
+    match pool.Conn() {
+        Ok(conn) => { fmt.Println("pool open after close") }
+        Err(e) => { fmt.Println(f"pool closed {kind_name(e.Kind)}") }
+    }
+}

@@ -45,12 +45,12 @@ func ParseTypeWith(module, text string, r Resolver, params map[string]*types.Typ
 	return t, nil
 }
 
-// TypeText renders a type the way the format writes it, giving every named
-// type that module does not declare its package qualifier. The text then
-// names its package wherever it appears, and a reader resolves it without
-// guessing.
+// TypeText renders a type the way the format writes it: the canonical spelling,
+// with every named type that module does not declare carrying its package
+// qualifier. The text then names its package wherever it appears, and a reader
+// resolves it without guessing.
 func TypeText(t *types.Type, module string) string {
-	return qualify(t, module).String()
+	return qualify(t, module).Canonical()
 }
 
 // qualify returns a copy of a type in which every named type outside module
@@ -71,6 +71,17 @@ func qualify(t *types.Type, module string) *types.Type {
 	case types.KindArray, types.KindSlice, types.KindChan:
 		out := *t
 		out.Elem = qualify(t.Elem, module)
+		return &out
+	case types.KindContainer:
+		// A container is a predeclared type rather than a declared one, so it
+		// has no name of its own to qualify, but its arguments may name a
+		// type of any package: an instance of a library's generic function is
+		// written in the library and carries its caller's types.
+		out := *t
+		out.Args = make([]*types.Type, len(t.Args))
+		for i, a := range t.Args {
+			out.Args[i] = qualify(a, module)
+		}
 		return &out
 	}
 	if !t.IsNamed() || t.Pkg == "" || t.Pkg == module || t.Qual != "" {
@@ -198,8 +209,8 @@ func (p *typeParser) parseFunc() (*types.Type, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.hasPrefix(" -> ") {
-		p.i += len(" -> ")
+	if p.hasPrefix("->") {
+		p.i += len("->")
 		result, err := p.parseType()
 		if err != nil {
 			return nil, err

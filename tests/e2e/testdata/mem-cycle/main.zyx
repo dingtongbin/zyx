@@ -1,0 +1,27 @@
+package main
+
+import "std/fmt"
+
+// Two objects that point at each other are one region's problem, not two: both
+// are made in the region that runs the call, so the cycle lies inside a single
+// region and its whole contents are released together when that region leaves.
+
+struct Node {
+    kids: Array<Node>
+    v: i64
+}
+
+func link(a: Node, b: Node) {
+    a.kids.Push(b)
+    b.kids.Push(a)
+}
+
+func main() {
+    var a = Node { kids: new Array<Node>(0), v: 1 }
+    var b = Node { kids: new Array<Node>(0), v: 2 }
+    link(a, b)
+    fmt.PrintI64(a.v + a.kids[0].v)
+    fmt.PrintNl()
+    fmt.PrintI64(b.v + b.kids[0].v)
+    fmt.PrintNl()
+}

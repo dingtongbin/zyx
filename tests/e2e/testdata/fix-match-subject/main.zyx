@@ -1,0 +1,37 @@
+package main
+
+// A match whose subject is built where it is written. Every arm reaches what the
+// subject carries, so the payload is still there to be read: releasing the value
+// where the subject's own expression ends would take it away from the arms.
+
+import "std/fmt"
+
+func answer(ok: bool) -> Result<i64, str> {
+    if ok {
+        return Result.Ok(41)
+    }
+    return Result.Err("no")
+}
+
+func main() {
+    match answer(true) {
+        Ok(v) => {
+            fmt.PrintI64(v + 1)
+            fmt.PrintNl()
+        }
+        Err(e) => {
+            fmt.Print("err ")
+            fmt.Println(e)
+        }
+    }
+    match answer(false) {
+        Ok(v) => {
+            fmt.PrintI64(v)
+            fmt.PrintNl()
+        }
+        Err(e) => {
+            fmt.Print("err ")
+            fmt.Println(e)
+        }
+    }
+}

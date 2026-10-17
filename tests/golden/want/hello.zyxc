@@ -1,0 +1,19 @@
+zyxc 1
+target amd64-pc-windows-msvc
+module example.com/golden-hello
+exports e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+node 9
+summary
+  nodes 9
+  regions 0
+  coroutines 0
+tree
+  n1 import std/fmt pos main.zyx:3:1-3:17
+  n2 func main plain example.com/golden-hello.main pos main.zyx:9:1-11:2 marks {entry}
+    n3 block pos main.zyx:9:1-11:2 from n2
+      n4 expr-stmt pos main.zyx:10:5-10:32
+        n5 qual fmt Println std/fmt.Println pos main.zyx:10:5-10:32
+          n6 arg pos main.zyx:10:5-10:32 from n5
+            n7 lit str "hello, world" pos main.zyx:10:17-10:31
+              n8 type str pos main.zyx:10:17-10:31 from n7
+          n9 callee-type func(str) pos main.zyx:10:5-10:32 from n5

@@ -29,8 +29,10 @@ type module struct {
 	strs map[string]string
 	// declared records the external symbols already declared.
 	declared map[string]bool
-	// defined records the symbols already defined.
-	defined map[string]bool
+	// defined records the functions the module defines, by symbol, and the
+	// source position each was declared at, which is what a report of a
+	// fault names them with.
+	defined map[string]string
 	// globalInits holds the top-level initializers that are not constants.
 	globalInits []globalInit
 	// ifaceTables maps a concrete type and an interface onto the name of the
@@ -52,7 +54,7 @@ func newModule(target string) *module {
 		strs:        map[string]string{},
 		ifaceTables: map[string]string{},
 		declared:    map[string]bool{},
-		defined:     map[string]bool{},
+		defined:     map[string]string{},
 		receivers:   map[string]string{},
 	}
 }
@@ -105,28 +107,37 @@ func escapeBytes(data []byte) string {
 	return b.String()
 }
 
-// stringGlobal interns a string literal and returns its global name.
+// stringGlobal interns a string literal and returns its global name. The
+// literal carries a zero byte after it, because the runtime reads a symbol and a
+// position as a C string: without it a report would run into the literal that
+// follows in memory and print them joined.
 func (m *module) stringGlobal(s string) string {
 	if name, ok := m.strs[s]; ok {
 		return name
 	}
 	name := fmt.Sprintf("@.str.%d", len(m.globals))
 	m.strs[s] = name
-	data := []byte(s)
+	data := append([]byte(s), 0)
 	m.globals = append(m.globals,
 		fmt.Sprintf("%s = private unnamed_addr constant [%d x i8] c\"%s\"\n", name, len(data), escapeBytes(data)))
 	return name
 }
 
 // structName returns the LLVM name of a named aggregate type, creating the
-// definition on first use.
+// definition on first use. The name is keyed by the canonical text of the type
+// rather than by its symbol id, because the id of a generic declaration is its
+// package and name alone: Option<Error> and Option<Result<Array<str>,Error>>
+// share an id, and the second would reuse the first one's body while the
+// layout algorithm, which keys by the same canonical text, sized it for
+// itself. The two disagree about every offset after the first differing field.
 func (g *generator) structName(t *types.Type) string {
-	if name, ok := g.m.names[t.ID]; ok {
+	key := t.Canonical()
+	if name, ok := g.m.names[key]; ok {
 		return name
 	}
 	name := fmt.Sprintf("%%s.%d", g.m.next)
 	g.m.next++
-	g.m.names[t.ID] = name
+	g.m.names[key] = name
 	// The body may name further aggregates, so the slot is reserved before
 	// it is built.
 	slot := len(g.m.structs)

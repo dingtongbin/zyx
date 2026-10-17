@@ -1,1 +1,258 @@
 package exec
+
+// Running another program: starting a child, waiting for it to end, ending it,
+// and reading and writing the streams it was given.
+//
+// A child's exit is read once. Wait waits for it and TryWait asks without
+// waiting; both answer the exit code, or a failure whose kind is Interrupted
+// and whose number is the signal when the child was ended by a signal instead
+// of exiting. The answer is kept, so asking again answers the same thing
+// without reaching the system a second time.
+//
+// Spawn gives the child the standard streams of this process. SpawnPipe gives
+// it pipes, which are handles of the file package: reading the child's output
+// and writing its input is the same as reading and writing a file.
+
+import "std/fs"
+
+import c "zyxexec.h" {
+    fast zyxexec_error_kind, zyxexec_error_number, zyxexec_error_message
+}
+
+// ErrorKind is what went wrong. Every system package reports failures in this
+// shape, so one program reads them the same way wherever they come from.
+
+enum ErrorKind {
+    NotFound
+    Permission
+    Exists
+    NotDir
+    IsDir
+    Invalid
+    Closed
+    Timeout
+    Interrupted
+    WouldBlock
+    Eof
+    AddrInUse
+    AddrNotAvailable
+    Refused
+    Reset
+    Unreachable
+    Other
+}
+
+// Error is one failure of a call. Errno is the number the system reported, or
+// zero when the failure is not one the system names, and Msg is the text the
+// system gave it.
+
+struct Error {
+    Kind: ErrorKind
+    Errno: i32
+    Msg: str
+
+    impl Show {
+        func Show(w: Buf) {
+            w.WriteStr(f"exec: {self.Msg}")
+        }
+    }
+}
+
+// error_of builds the failure a C call just reported.
+func error_of() -> Error {
+    var text = new Buf(0)
+    c.zyxexec_error_message(text)
+    return Error {
+        Kind: error_kind(c.zyxexec_error_kind())
+        Errno: c.zyxexec_error_number()
+        Msg: text.Str()
+    }
+}
+
+// error_kind maps the number a C call reports onto the kind of failure it is.
+// The numbers are the ones the package's own header defines.
+func error_kind(code: i32) -> ErrorKind {
+    match code {
+        1 => { return ErrorKind.NotFound }
+        2 => { return ErrorKind.Permission }
+        3 => { return ErrorKind.Exists }
+        4 => { return ErrorKind.NotDir }
+        5 => { return ErrorKind.IsDir }
+        6 => { return ErrorKind.Invalid }
+        7 => { return ErrorKind.Closed }
+        8 => { return ErrorKind.Timeout }
+        9 => { return ErrorKind.Interrupted }
+        10 => { return ErrorKind.WouldBlock }
+        11 => { return ErrorKind.Eof }
+        _ => { return ErrorKind.Other }
+    }
+}
+
+// child_failure answers the failure of a call that reports an exit code, which
+// names the failure in the Result's error alone.
+func child_failure() -> Result<i32, Error> {
+    return Result.Err(error_of())
+}
+
+// A Child is a child process. Its streams are handles of the file package
+// when they are pipes, and closed handles when the child inherited this
+// process's own.
+struct Child {
+    proc: raw
+    pid: i32
+    inp: fs.File
+    out: fs.File
+    err: fs.File
+    done: bool
+    signaled: bool
+    code: i32
+    sig: i32
+
+    // Pid answers the number the system gave the child.
+    func Pid() -> i32 {
+        return self.pid
+    }
+
+    // Stdin answers the pipe written to reach the child's input, or a closed
+    // handle when the child inherited the streams of this process.
+    func Stdin() -> fs.File {
+        return self.inp
+    }
+
+    // Stdout answers the pipe holding what the child writes, or a closed
+    // handle when the child inherited the streams of this process.
+    func Stdout() -> fs.File {
+        return self.out
+    }
+
+    // Stderr answers the pipe holding what the child writes as errors, or a
+    // closed handle when the child inherited the streams of this process.
+    func Stderr() -> fs.File {
+        return self.err
+    }
+
+    // Wait waits for the child to end and answers its exit code, or the
+    // failure that ended it. A second wait answers the same thing.
+    func Wait() -> Result<i32, Error> {
+        if self.done {
+            return self.outcome()
+        }
+        var code: i32 = 0
+        var sig: i32 = 0
+        if c.zyxexec_wait(self.proc, & code, & sig) != 0 {
+            return Result.Err(error_of())
+        }
+        self.finish(code, sig)
+        return self.outcome()
+    }
+
+    // TryWait answers the child's outcome without waiting: nothing while it
+    // runs, and its exit code or its failure once it has ended.
+    func TryWait() -> Option<Result<i32, Error>> {
+        if self.done {
+            return Option.Some(self.outcome())
+        }
+        var code: i32 = 0
+        var sig: i32 = 0
+        var state = c.zyxexec_poll(self.proc, & code, & sig)
+        if state < 0 {
+            return Option.Some(child_failure())
+        }
+        if state == 0 {
+            return Option.None
+        }
+        self.finish(code, sig)
+        return Option.Some(self.outcome())
+    }
+
+    // Kill ends the child at once, with the strongest means the system has.
+    func Kill() -> Result<(), Error> {
+        if self.done {
+            return Result.Ok()
+        }
+        if c.zyxexec_kill(self.proc) != 0 {
+            return Result.Err(error_of())
+        }
+        return Result.Ok()
+    }
+
+    // finish records the outcome a wait reported and gives the child record
+    // back. The pipes stay: the handles the caller holds own them. The record
+    // is not reached again, because every call checks that it is done first.
+    func finish(code: i32, sig: i32) {
+        self.done = true
+        self.code = code
+        self.sig = sig
+        self.signaled = sig != 0
+        c.zyxexec_free(self.proc)
+    }
+
+    // outcome answers the recorded outcome in the shape a caller reads.
+    func outcome() -> Result<i32, Error> {
+        if self.signaled {
+            return Result.Err(Error {
+                Kind: ErrorKind.Interrupted
+                Errno: self.sig
+                Msg: "the child was ended by a signal"
+            })
+        }
+        return Result.Ok(self.code)
+    }
+}
+
+// Spawn starts a child that shares this process's standard streams.
+func Spawn(cmd: str, args: Array<str>) -> Result<Child, Error> {
+    return start(cmd, args, 0)
+}
+
+// SpawnPipe starts a child whose standard streams are pipes, so the parent
+// reads what the child writes and writes what it reads.
+func SpawnPipe(cmd: str, args: Array<str>) -> Result<Child, Error> {
+    return start(cmd, args, 1)
+}
+
+// start starts a child in one of the two modes the header names.
+func start(cmd: str, args: Array<str>, mode: i32) -> Result<Child, Error> {
+    var packed = packed_args(args)
+    var handle = c.zyxexec_start(cmd, packed, mode)
+    if c.zyxexec_error_kind() != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok(child_of(handle, mode))
+}
+
+// packed_args writes the arguments as the C side reads them: each ended by a
+// zero byte. The program's own name is left out, because it is passed apart.
+func packed_args(args: Array<str>) -> str {
+    var out = new Buf(0)
+    for arg in args {
+        out.WriteStr(arg)
+        out.WriteByte(0)
+    }
+    return out.Str()
+}
+
+// child_of builds the handle of a child from the record the C side made. The
+// streams are the pipes the C side made in pipe mode, and the null handle the
+// C side answers in inherit mode, where the child has no stream of its own.
+func child_of(handle: raw, mode: i32) -> Child {
+    var pipe = mode == 1
+    return Child {
+        proc: handle
+        pid: c.zyxexec_pid(handle)
+        inp: stream_file(c.zyxexec_stream(handle, 0), pipe)
+        out: stream_file(c.zyxexec_stream(handle, 1), pipe)
+        err: stream_file(c.zyxexec_stream(handle, 2), pipe)
+        done: false
+        signaled: false
+        code: 0
+        sig: 0
+    }
+}
+
+// stream_file wraps a pipe's handle as the file the file package reads. A
+// child whose streams were inherited has none, so the handle is null and the
+// file is closed: reading or writing it is refused.
+func stream_file(handle: raw, pipe: bool) -> fs.File {
+    return fs.File { Handle: handle, Closed: !pipe }
+}

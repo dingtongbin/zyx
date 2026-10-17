@@ -1,0 +1,61 @@
+full [http|user|pw|host|8080|/a/b|x=1&y=2|frag] http://user:pw@host:8080/a/b?x=1&y=2#frag
+plain [http|||host|0|||] http://host
+slash [http|||host|0|/||] http://host/
+default-port [http|||host|80|/path||] http://host:80/path
+ipv6 [https|||[::1]|443|/x||] https://[::1]:443/x
+ipv6-noport [https|||[fe80::1]|0|/x||] https://[fe80::1]/x
+authority [|||host|0|/path||] //host/path
+absolute [||||0|/absolute/path||] /absolute/path
+relative [||||0|relative/path||] relative/path
+opaque [mailto||||0|a@b||] mailto:a@b
+file [file||||0|/etc/hosts||] file:///etc/hosts
+user-only [http|user||host|0|/||] http://user@host/
+empty-user [http||pw|host|0|/||] http://:pw@host/
+empty-password [http|user||host|0|/||] http://user@host/
+scheme-only [scheme||||0|||] scheme:
+colon-path [a||||0|b/c||] a:b/c
+port-zero [http|||host|0|/||] http://host/
+port-empty [http|||host|0|/||] http://host/
+port-max [http|||host|65535|/||] http://host:65535/
+query-only [||||0||q=1|] ?q=1
+fragment-only [||||0|||frag] #frag
+empty [||||0|||] 
+upper [HTTP|||Host|0|/Path||] HTTP://Host/Path
+escaped-path [http|||h|0|/a%2Fb||] http://h/a%2Fb
+trailing-question [http|||h|0|/p||] http://h/p
+trailing-hash [http|||h|0|/p||] http://h/p
+many-at [http|a@b||host|0|/||] http://a@b@host/
+many-colon url: the port is not a number
+bad-scheme url: the text begins with a colon
+bad-host url: a bracketed host has no closing bracket
+bad-port-text url: the port is not a number
+bad-port-big url: the port is not a number
+bad-escape url: a percent escape is not two hexadecimal digits
+bad-escape-host url: a percent escape is not two hexadecimal digits
+bad-escape-query url: a percent escape is not two hexadecimal digits
+query-escape a+b%2Fc%3Fd%3D1%26e%2Bf~g
+path-escape a%20b%2Fc%3Fd=1&e+f~g
+query-escape-empty ||
+query-unescape a b/c
+path-unescape a+b/c
+unescape-hex //
+unescape-bad-short url: a percent escape is not two hexadecimal digits
+unescape-bad-hex url: a percent escape is not two hexadecimal digits
+unescape-bad-solo url: a percent escape is not two hexadecimal digits
+unescape-utf8 195 169 
+pairs 3 <a=1> <b=2> <a=3>
+pairs-empty 0
+pairs-bare 1 <a=>
+pairs-bare-tail 2 <a=1> <b=>
+pairs-empty-piece 2 <a=1> <b=2>
+pairs-leading-equals 1 <=v>
+pairs-many-equals 1 <k=v=w>
+pairs-decoded 2 <a= > <b= >
+pairs-bad-escape 1 <k=%zz>
+get-first 2
+get-none none
+get-decoded 1
+get-empty none
+encode a=1&b=two+words&c%2Bd=e%2Ff%26g&=empty+key
+encode-empty ||
+encode-roundtrip 4 b=two words c+d=e/f&g

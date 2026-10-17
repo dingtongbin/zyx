@@ -1,0 +1,297 @@
+package main
+
+import "std/fmt"
+import "std/fs"
+
+// What this program prints is what it wrote and read back, so nothing here
+// names a machine: the directory it uses is the one the system gives it, and
+// that path is never printed.
+
+const Mode: u32 = 493
+
+func main() {
+    // A path is written with the forward slash, so what these answer does
+    // not depend on the target.
+    fmt.Println(path3("a", "b", "c.txt"))
+    fmt.Println(path4("a/", "/b", "", "c"))
+    fmt.Println(join2("only", ""))
+    fmt.Println(fs.Base("/a/b/c.txt"))
+    fmt.Println(fs.Dir("/a/b/c.txt"))
+    fmt.Println(fs.Ext("/a/b/c.txt"))
+    fmt.Println(fs.Ext("/a/b/name"))
+    fmt.Println(fs.Ext("/a/b/.hidden"))
+    fmt.PrintBool(fs.IsAbs("/a"))
+    fmt.PrintNl()
+    fmt.PrintBool(fs.IsAbs("a"))
+    fmt.PrintNl()
+    fmt.Println(fs.Clean("/a//b/./c/../d/"))
+    fmt.Println(fs.Clean("a/../../b"))
+    fmt.Println(fs.Clean(""))
+    fmt.PrintBool(fs.IsAbs(fs.Abs("note.txt").Unwrap()))
+    fmt.PrintNl()
+    var dir = join2(fs.TempDir(), "zyx-corpus-fs")
+    match fs.RemoveAll(dir) {
+        Ok(_) => fmt.Println("clean")
+        Err(e) => fmt.Println("could not clean")
+    }
+    match fs.MkdirAll(join2(dir, "one"), Mode) {
+        Ok(_) => fmt.Println("made")
+        Err(e) => fmt.Println("could not make")
+    }
+    fmt.PrintBool(fs.Exists(dir))
+    fmt.PrintNl()
+    fmt.PrintBool(fs.Exists(join2(dir, "nothing")))
+    fmt.PrintNl()
+    var note = join2(dir, "note.txt")
+    show("write", fs.WriteFile(note, bytes_of("hello, file\n")))
+    show("append", fs.AppendFile(note, bytes_of("second line\n")))
+    var explicit = join2(dir, "explicit.txt")
+    var w = fs.Create(explicit).Unwrap()
+    show("explicit write", void_of_written(w.WriteStr("x")))
+    w.Close()
+    show("rename after close", fs.Rename(explicit, join2(dir, "moved.txt")))
+    match fs.ReadFile(note) {
+        Ok(v) => {
+            fmt.Print("read: ")
+            print_bytes(v)
+        }
+        Err(e) => fmt.Println("read failed")
+    }
+    match fs.Stat(note) {
+        Ok(v) => fmt.PrintI64(v.Size)
+        Err(e) => fmt.Print("no stat")
+    }
+    fmt.Print(" ")
+    fmt.PrintBool(fs.Stat(note).Unwrap().IsDir)
+    fmt.PrintNl()
+    // A file is read in pieces and the position is moved, which is what a
+    // program does with a file too large to hold at once.
+    var f = fs.Open(note).Unwrap()
+    var part = new Buf(0)
+    match f.Read(part, 5) {
+        Ok(n) => fmt.PrintI64(i64(n))
+        Err(e) => fmt.Print("no read")
+    }
+    fmt.Print(" ")
+    fmt.Print(part.Str())
+    fmt.PrintNl()
+    show("seek", void_of(f.Seek(7, 0)))
+    part.Reset()
+    match f.Read(part, 4) {
+        Ok(n) => fmt.Print(" ")
+        Err(e) => fmt.Print("no")
+    }
+    fmt.Print(part.Str())
+    fmt.PrintNl()
+    show("at end", void_of(f.Seek(0, 2)))
+    // A mapping holds the bytes of a file where a raw address names them. The
+    // language reads an address through one of its load methods, which this
+    // build does not lower yet, so what is checked here is that the mapping
+    // is made and given back.
+    match fs.Mmap(f, 5, 0) {
+        Ok(p) => match fs.Munmap(p, 5) {
+            Ok(_) => fmt.Print("mapped and unmapped")
+            Err(e) => fmt.Print("not unmapped")
+        }
+        Err(e) => fmt.Print("not mapped")
+    }
+    fmt.PrintNl()
+    f.Close()
+    fmt.PrintBool(f.Closed)
+    fmt.PrintNl()
+    match f.Read(part, 1) {
+        Ok(n) => fmt.Print("read a closed file")
+        Err(e) => match e.Kind { Closed => fmt.Print("closed refuses a read") _ => fmt.Print("another failure") }
+    }
+    fmt.PrintNl()
+    // Sync waits for what was written to reach the file system, which a
+    // handle that only reads cannot promise, so it is asked of a handle that
+    // writes.
+    var flush = fs.OpenAppend(note).Unwrap()
+    show("sync", flush.Sync())
+    flush.Close()
+    // The system's own permissions, where it has such a notion.
+    show("chmod", fs.Chmod(note, 420))
+    match fs.WriteFile(join2(dir, "b.txt"), bytes_of("b")) {
+        Ok(_) => fmt.Print("")
+        Err(e) => fmt.Print("no b")
+    }
+    match fs.WriteFile(join2(dir, "a.txt"), bytes_of("a")) {
+        Ok(_) => fmt.Print("")
+        Err(e) => fmt.Print("no a")
+    }
+    match fs.ListDir(dir) {
+        Ok(names) => {
+            for name in names {
+                fmt.Print(name)
+                fmt.Print(" ")
+            }
+        }
+        Err(e) => fmt.Print("no listing")
+    }
+    fmt.PrintNl()
+    match fs.ListDir(join2(dir, "one")) {
+        Ok(names) => {
+            fmt.Print("one: ")
+            fmt.PrintI64(i64(names.Len()))
+        }
+        Err(e) => fmt.Print("no listing")
+    }
+    fmt.PrintNl()
+    // The failures a missing path and a directory that is really a file
+    // report have a kind a program can branch on.
+    match fs.ReadFile(join2(dir, "nothing")) {
+        Ok(v) => fmt.Print("read nothing")
+        Err(e) => kind_of(e.Kind, "not found")
+    }
+    fmt.Print(" ")
+    match fs.ReadFile(dir) {
+        Ok(v) => fmt.Print("read a directory")
+        Err(e) => kind_of(e.Kind, "is a directory")
+    }
+    fmt.Print(" ")
+    match fs.Mkdir(dir, Mode) {
+        Ok(_) => fmt.Print("made again")
+        Err(e) => kind_of(e.Kind, "exists")
+    }
+    fmt.PrintNl()
+    show("rename", fs.Rename(join2(dir, "a.txt"), join2(dir, "c.txt")))
+    fmt.PrintBool(fs.Exists(join2(dir, "c.txt")))
+    fmt.PrintNl()
+    show("remove", fs.Remove(join2(dir, "c.txt")))
+    fmt.PrintBool(fs.Exists(join2(dir, "c.txt")))
+    fmt.PrintNl()
+    show("remove all", fs.RemoveAll(dir))
+    fmt.PrintBool(fs.Exists(dir))
+    fmt.PrintNl()
+    // A temporary file is one a program can write without naming it.
+    match fs.TempFile(fs.TempDir(), "zyx-corpus-") {
+        Ok(t) => {
+            show("temp write", void_of_written(t.WriteStr("temp")))
+            show("temp seek", void_of(t.Seek(0, 0)))
+            var small = new Buf(0)
+            match t.Read(small, 8) {
+                Ok(n) => fmt.Print("temp: ")
+                Err(e) => fmt.Print("no read")
+            }
+            fmt.Println(small.Str())
+            t.Close()
+        }
+        Err(e) => fmt.Println("no temp file")
+    }
+}
+
+// parts_of builds the parts of a path. The parts are pushed one at a time
+// rather than written as a literal, because a literal of an array of strings
+// does not read back yet.
+
+func parts_of(names: [str; 4]) -> Array<str> {
+    var out = new Array<str>(0)
+    out.Push(names[0])
+    out.Push(names[1])
+    out.Push(names[2])
+    return out
+}
+
+// join2 joins two parts.
+
+func join2(a: str, b: str) -> str {
+    var parts = new Array<str>(0)
+    parts.Push(a)
+    parts.Push(b)
+    return fs.Join(parts)
+}
+
+// path3 and path4 join three and four parts.
+
+func path3(one: str, two: str, three: str) -> str {
+    var parts = new Array<str>(0)
+    parts.Push(one)
+    parts.Push(two)
+    parts.Push(three)
+    return fs.Join(parts)
+}
+
+func path4(one: str, two: str, three: str, four: str) -> str {
+    var parts = new Array<str>(0)
+    parts.Push(one)
+    parts.Push(two)
+    parts.Push(three)
+    parts.Push(four)
+    return fs.Join(parts)
+}
+
+// kind_of prints the name a failure carries when it is the one a test expects
+// and says so plainly when it is another, because an enum is read by matching
+// it rather than by comparing it.
+
+func kind_of(k: fs.ErrorKind, want: str) {
+    match k {
+        NotFound => check(want, "not found")
+        IsDir => check(want, "is a directory")
+        Exists => check(want, "exists")
+        _ => fmt.Print("another kind")
+    }
+}
+
+func check(want: str, got: str) {
+    if want == got {
+        fmt.Print(got)
+    }  else {
+        fmt.Print("wrong kind")
+    }
+}
+
+// show prints what a call that answers nothing or a failure answered.
+
+func show(label: str, r: Result<(), fs.Error>) {
+    fmt.Print(label)
+    fmt.Print(": ")
+    match r {
+        Ok(_) => fmt.Print("ok")
+        Err(e) => fmt.Print("failed")
+    }
+    fmt.PrintNl()
+}
+
+// void_of turns a call that answers a value into one that answers nothing, so
+// a caller that only wants to know whether it worked reads it the same way as
+// the calls that answer nothing.
+
+func void_of(r: Result<i64, fs.Error>) -> Result<(), fs.Error> {
+    match r {
+        Ok(v) => {
+            return Result.Ok()}
+        Err(e) => {
+            return Result.Err(e)}
+    }
+}
+
+func void_of_written(r: Result<usize, fs.Error>) -> Result<(), fs.Error> {
+    match r {
+        Ok(v) => {
+            return Result.Ok()}
+        Err(e) => {
+            return Result.Err(e)}
+    }
+}
+
+// bytes_of turns a text into the bytes a write takes.
+
+func bytes_of(s: str) -> [u8] {
+    var out = new Array<u8>(0)
+    var i: usize = 0
+    for i < s.Len() {
+        out.Push(s[i])
+        i += 1
+    }
+    return out[0 .. out.Len()]
+}
+
+// print_bytes writes the bytes of an array as the text they are.
+
+func print_bytes(b: Array<u8>) {
+    for v in b {
+        fmt.PrintChar(char(u32(v)))
+    }
+}

@@ -1,0 +1,182 @@
+package main
+
+// The failures the TLS package defines, asked for where they are noticed. A
+// configuration is read before anything is bound or connected, so almost
+// everything here fails before the network is reached; the two listeners that
+// are accepted answer on the port the system picks, so nothing depends on the
+// machine. The text of a failure the library reported belongs to the version
+// of the library the program was linked with, so the lines below write the
+// kind, the number of a check that failed, and whether there is a text.
+
+import "std/fs"
+import "std/fmt"
+import "std/os"
+import "std/tls"
+
+import c "pems.h"
+
+// Mode is the permission bits of the directory this run makes, written as the
+// number rather than as an octal literal.
+const Mode: u32 = 493
+
+// kind_name names a failure kind, because an f-string writes a primitive type
+// or a text and the package's kind is an enumeration of its own.
+func kind_name(k: tls.ErrorKind) -> str {
+    match k {
+        NotFound => { return "NotFound" }
+        Permission => { return "Permission" }
+        Exists => { return "Exists" }
+        NotDir => { return "NotDir" }
+        IsDir => { return "IsDir" }
+        Invalid => { return "Invalid" }
+        Closed => { return "Closed" }
+        Timeout => { return "Timeout" }
+        Interrupted => { return "Interrupted" }
+        WouldBlock => { return "WouldBlock" }
+        Eof => { return "Eof" }
+        AddrInUse => { return "AddrInUse" }
+        AddrNotAvailable => { return "AddrNotAvailable" }
+        Refused => { return "Refused" }
+        Reset => { return "Reset" }
+        Unreachable => { return "Unreachable" }
+        Other => { return "Other" }
+    }
+}
+
+// failure writes one failure as text.
+func failure(what: str, e: tls.Error) -> str {
+    var has = "no"
+    if e.Msg.Len() > 0 {
+        has = "yes"
+    }
+    return f"{what}: {kind_name(e.Kind)} code {i64(e.Errno % 256)} message {has}"
+}
+
+// join2 joins two parts of a path.
+func join2(a: str, b: str) -> str {
+    var parts = new Array<str>(0)
+    parts.Push(a)
+    parts.Push(b)
+    return fs.Join(parts)
+}
+
+// listen runs one attempt to listen, so every case below reads as one line.
+func listen(what: str, cfg: tls.Config) {
+    match tls.Listen("tcp", "127.0.0.1:0", cfg) {
+        Ok(l) => {
+            fmt.Println(f"{what}: accepted")
+            l.Close()
+            l.Close()
+            match l.Accept() {
+                Ok(_) => { fmt.Println(f"{what}: a closed listener took a connection") }
+                Err(e) => { fmt.Println(failure(f"{what} after its close", e)) }
+            }
+        }
+        Err(e) => { fmt.Println(failure(what, e)) }
+    }
+}
+
+// dial runs one attempt to connect. Every configuration below is refused
+// before the network is reached.
+func dial(what: str, cfg: tls.Config) {
+    match tls.Dial("tcp", "127.0.0.1:0", cfg) {
+        Ok(_) => { fmt.Println(f"{what}: connected") }
+        Err(e) => { fmt.Println(failure(what, e)) }
+    }
+}
+
+func main() {
+    var parts = new Array<str>(0)
+    parts.Push(fs.TempDir())
+    parts.Push(f"zyx-tls-errors-{i64(os.Getpid())}")
+    var root = fs.Join(parts)
+    fs.RemoveAll(root)
+    match fs.Mkdir(root, Mode) {
+        Ok(_) => {}
+        Err(_) => { fmt.Println("could not make the directory") }
+    }
+    var cert = join2(root, "cert.pem")
+    var key = join2(root, "key.pem")
+    var absent_cert = join2(root, "no-certificate.pem")
+    var absent_key = join2(root, "no-key.pem")
+    var not_a_key = join2(root, "not-a-key.pem")
+    if c.zyxtest_write_material(cert, key) != 0 {
+        fmt.Println("could not write the material")
+    }
+    var words = new Array<u8>(0)
+    for ch in "this file is not a key" {
+        words.Push(u8(u32(ch)))
+    }
+    match fs.WriteFile(not_a_key, words[0 .. words.Len()]) {
+        Ok(_) => {}
+        Err(_) => { fmt.Println("could not write the file that is not a key") }
+    }
+
+    // A configuration that was never filled in names nothing and asks for
+    // nothing.
+    var fresh = new tls.Config()
+    fmt.Println(f"defaults [{fresh.CertFile}] [{fresh.KeyFile}] [{fresh.CaFile}] [{fresh.ServerName}] {fresh.InsecureSkipVerify} {i64(fresh.MinVersion)}")
+    // What was written into it is what is read back.
+    fresh.CertFile = "one.pem"
+    fresh.KeyFile = "two.pem"
+    fresh.CaFile = "three.pem"
+    fresh.ServerName = "localhost"
+    fresh.InsecureSkipVerify = true
+    fresh.MinVersion = 2
+    fmt.Println(f"named [{fresh.CertFile}] [{fresh.KeyFile}] [{fresh.CaFile}] [{fresh.ServerName}] {fresh.InsecureSkipVerify} {i64(fresh.MinVersion)}")
+
+    // A server must name the certificate it answers with and the key of it.
+    listen("server with nothing named", new tls.Config())
+    var no_key = new tls.Config()
+    no_key.CertFile = cert
+    listen("server without a key", no_key)
+
+    // A certificate or a key that is not there is a failure of the system.
+    var cert_gone = new tls.Config()
+    cert_gone.CertFile = absent_cert
+    cert_gone.KeyFile = key
+    listen("server whose certificate is not there", cert_gone)
+    var key_gone = new tls.Config()
+    key_gone.CertFile = cert
+    key_gone.KeyFile = absent_key
+    listen("server whose key is not there", key_gone)
+    var key_wrong = new tls.Config()
+    key_wrong.CertFile = cert
+    key_wrong.KeyFile = not_a_key
+    listen("server whose key is not a key", key_wrong)
+
+    // A version other than the two the package names is refused, and the two
+    // it names are taken.
+    var unknown = new tls.Config()
+    unknown.CertFile = cert
+    unknown.KeyFile = key
+    unknown.MinVersion = 7
+    listen("server that asks for a version that is not one", unknown)
+
+    var older = new tls.Config()
+    older.CertFile = cert
+    older.KeyFile = key
+    older.MinVersion = 1
+    listen("server that speaks TLS 1.2 from now on", older)
+
+    var newest = new tls.Config()
+    newest.CertFile = cert
+    newest.KeyFile = key
+    newest.MinVersion = 2
+    listen("server that speaks TLS 1.3 from now on", newest)
+
+    // A client that checks certificates must name the ones it trusts.
+    dial("client with nothing to trust", new tls.Config())
+
+    var trust_gone = new tls.Config()
+    trust_gone.CaFile = absent_cert
+    trust_gone.ServerName = "localhost"
+    dial("client whose certificates to trust are not there", trust_gone)
+
+    // The failure a program reads keeps the shape every package reports, and
+    // the text of it is written with the name of the package.
+    var mistake = tls.Error { Kind: tls.ErrorKind.Invalid, Errno: 0, Msg: "a failure of our own" }
+    fmt.Println(f"a failure kind {kind_name(mistake.Kind)} number {i64(mistake.Errno)} text [{mistake.Msg}]")
+    fmt.PrintlnValue(mistake)
+    fs.RemoveAll(root)
+}

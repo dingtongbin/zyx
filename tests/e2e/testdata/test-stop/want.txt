@@ -1,0 +1,8 @@
+suite.zyx:60:5: fail: cannot go on
+case_fatal: failed=true skipped=false
+suite.zyx:70:5: skip: not today
+case_skip: failed=false skipped=true
+suite.zyx:80:5: fail: got an error, want a value: no value here
+case_ok_fails: failed=true skipped=false
+suite.zyx:90:5: fail: got a value, want an error
+case_err_fails: failed=true skipped=false

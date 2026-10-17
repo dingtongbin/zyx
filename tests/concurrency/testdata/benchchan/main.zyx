@@ -1,0 +1,35 @@
+package main
+
+import "std/fmt"
+
+// A million requests, one at a time, each one parking a coroutine and waking
+// the other. This is the cost of the wake itself, with nothing else mixed in.
+
+func responder(requests: chan<i64>, replies: chan<i64>) {
+    for {
+        var v, ok = requests.Recv()
+        if !ok {
+            return
+        }
+        replies.Send(v + 1)
+    }
+}
+
+func main() {
+    var requests = new chan<i64>(1)
+    var replies = new chan<i64>(1)
+    var total: i64 = 0
+    region {
+        spawn responder(requests, replies)
+        for i in 0..1000000 {
+            requests.Send(i)
+            var v, ok = replies.Recv()
+            if ok {
+                total = total + v
+            }
+        }
+        requests.Close()
+    }
+    fmt.PrintI64(total)
+    fmt.PrintNl()
+}

@@ -1,0 +1,38 @@
+package main
+
+import "std/fmt"
+
+// Two coroutines passing work back and forth, one request at a time. The
+// answer is the same whatever the scheduler does, so a handoff that loses a
+// wake or runs a coroutine twice shows up here.
+
+func responder(requests: chan<i64>, replies: chan<i64>) {
+    for {
+        var v, ok = requests.Recv()
+        if !ok {
+            return
+        }
+        replies.Send(v + 1)
+    }
+}
+
+func main() {
+    var requests = new chan<i64>(1)
+    var replies = new chan<i64>(1)
+    var sum: i64 = 0
+    region {
+        spawn responder(requests, replies)
+        for i in 0..1000 {
+            requests.Send(i)
+            var v, ok = replies.Recv()
+            if ok {
+                sum = sum + v
+            }
+        }
+        // Closing the requests lets the responder return, which is what the
+        // region waits for before it ends.
+        requests.Close()
+    }
+    fmt.PrintI64(sum)
+    fmt.PrintNl()
+}

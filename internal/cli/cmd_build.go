@@ -36,17 +36,6 @@ var compilerIdentity = sync.OnceValue(func() string {
 // the module root unless the caller named a directory or the environment
 // points at a shared one.
 func (s *Session) backendOptions(o *options, output, root string) build.BackendOptions {
-	cacheDir := o.cacheDir
-	if cacheDir == "" {
-		cacheDir = s.env("ZYX_CACHE")
-	}
-	if cacheDir == "" {
-		cacheDir = filepath.Join(root, ".zyx-cache")
-	}
-	if o.noCache {
-		// A run that disables the cache neither reads nor writes one.
-		cacheDir = ""
-	}
 	return build.BackendOptions{
 		Output:       output,
 		Level:        o.level,
@@ -55,9 +44,37 @@ func (s *Session) backendOptions(o *options, output, root string) build.BackendO
 		Freestanding: o.freestanding,
 		Libs:         o.libs,
 		LibDirs:      o.libDirs,
-		CacheDir:     cacheDir,
+		CacheDir:     s.cacheDir(o, root),
 		Compiler:     compilerIdentity(),
 	}
+}
+
+// cacheDir returns the directory the cache of one run lives in. An empty
+// directory means the run neither reads nor writes one.
+func (s *Session) cacheDir(o *options, root string) string {
+	if o.noCache {
+		return ""
+	}
+	if o.cacheDir != "" {
+		return o.cacheDir
+	}
+	if dir := s.env("ZYX_CACHE"); dir != "" {
+		return dir
+	}
+	return filepath.Join(root, ".zyx-cache")
+}
+
+// session returns the front-end session of a run. It carries the front-end
+// cache, because check and build share the entry of a package: the product is
+// the .zyxc text and its diagnostics, which the backend then reads back.
+func (s *Session) session(m *module, o *options) *build.Session {
+	front := &build.Session{Loader: s.loader(m, o), Freestanding: o.freestanding}
+	front.Cache = build.OpenFrontEnd(m.Root, build.FrontEndOptions{
+		CacheDir:     s.cacheDir(o, m.Root),
+		Compiler:     compilerIdentity(),
+		Freestanding: o.freestanding,
+	})
+	return front
 }
 
 // build compiles every main package among the targets to an executable.
@@ -77,7 +94,7 @@ func (s *Session) build(args []string) int {
 	if err != nil {
 		return s.usageError(err)
 	}
-	session := &build.Session{Loader: s.loader(m, o)}
+	session := s.session(m, o)
 	reported := map[string]bool{}
 	// The front end runs before any output is chosen, because where an
 	// executable goes depends on how many main packages the targets hold.
@@ -141,7 +158,7 @@ func (s *Session) run(args []string) int {
 	if err != nil {
 		return s.usageError(err)
 	}
-	session := &build.Session{Loader: s.loader(m, o)}
+	session := s.session(m, o)
 	reported := map[string]bool{}
 	for _, path := range paths {
 		results, err := session.FrontEnd(path)
@@ -202,7 +219,7 @@ func (s *Session) emitBackend(command string, args []string) int {
 	if len(paths) != 1 {
 		return s.usageError(fmt.Errorf("%s takes a single package", command))
 	}
-	session := &build.Session{Loader: s.loader(m, o)}
+	session := s.session(m, o)
 	results, err := session.FrontEnd(paths[0])
 	if err != nil {
 		fmt.Fprintln(s.Stderr, "zyx:", err)

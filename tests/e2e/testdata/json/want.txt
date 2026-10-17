@@ -1,0 +1,74 @@
+ok null
+ok true
+ok false
+ok true
+ok 0
+ok 0
+ok 123
+ok -45
+ok 1.5
+ok -1.5
+ok 0.5
+ok 1000
+ok 1000
+ok 1000
+ok 0.01
+ok 123.456
+ok 9007199254740992
+ok -9007199254740992
+ok 1e-07
+ok null
+ok ""
+ok "a"
+ok "two words"
+bytes 195 169 
+bytes 240 159 152 128 
+bytes 10 9 34 92 47 8 12 13 
+bytes 239 191 189 
+bytes 65 66 
+ok []
+ok [1]
+ok [1,2,3]
+ok [[1],[2,3]]
+ok {}
+ok {"a":1}
+ok {"a":1,"b":2}
+ok {"a":{"b":[true,null]}}
+ok {"dup":2}
+ok [1,2]
+bad json: the text ends where a value belongs at $ (byte 0)
+bad json: the text ends where a value belongs at $ (byte 3)
+bad json: the text holds no literal here at $ (byte 0)
+bad json: the text holds no literal here at $ (byte 0)
+bad json: the text holds no literal here at $ (byte 0)
+bad json: trailing text follows the value at $ (byte 4)
+bad json: the text holds no value here at $[1] (byte 3)
+bad json: the text holds no value here at $[3] (byte 7)
+bad json: an element is not followed by a comma or a closing bracket at $[0] (byte 3)
+bad json: trailing text follows the value at $ (byte 3)
+bad json: a member name is not followed by a colon at $ (byte 4)
+bad json: the text holds no value here at $.a (byte 5)
+bad json: a member name is not quoted at $ (byte 1)
+bad json: a member name is not quoted at $.a (byte 7)
+bad json: trailing text follows the value at $ (byte 7)
+bad json: the text ends inside a string at $ (byte 13)
+bad json: the escape names no character at $ (byte 7)
+bad json: an escape does not hold four hexadecimal digits at $ (byte 3)
+bad json: the text ends inside an escape at $ (byte 3)
+bad json: trailing text follows the value at $ (byte 1)
+bad json: a fraction has no digit at $ (byte 2)
+bad json: the text holds no value here at $ (byte 0)
+bad json: a number has no digit at $ (byte 1)
+bad json: the text holds no value here at $ (byte 0)
+bad json: an exponent has no digit at $ (byte 2)
+bad json: an exponent has no digit at $ (byte 3)
+bad json: the whole number is larger than a float holds exactly at $ (byte 16)
+bad json: the whole number is larger than a float holds exactly at $ (byte 20)
+bad json: the whole number is larger than a float holds exactly at $ (byte 21)
+bad json: the text holds no value here at $.a[2].b (byte 15)
+bad json: the text ends inside an array at $[1] (byte 5)
+bad json: the text ends inside an object at $.a (byte 6)
+bad json: a control byte stands in a string at $ (byte 2)
+len 512
+bad the nesting is deeper than 256
+769

@@ -71,6 +71,12 @@ func (s *Session) Link(entry string, results []*Result, opts BackendOptions) (st
 	if err != nil {
 		return "", err
 	}
+	// The C libraries a standard package binds ship with the toolchain, so the
+	// packages this program reaches decide what the link takes and the program
+	// itself names none. They come before the flags the caller gave, so a caller
+	// can still add its own.
+	opts.Libs = append(toolchain.StdCLibs(prog.Order), opts.Libs...)
+	opts.LibDirs = append(toolchain.CLibDirs(), opts.LibDirs...)
 	t, err := toolchain.Locate()
 	if err != nil {
 		return "", err
@@ -219,7 +225,7 @@ func copyFile(from, to string) error {
 		os.Remove(name)
 		return err
 	}
-	if err := os.Rename(name, to); err != nil {
+	if err := cache.ReplaceFile(name, to); err != nil {
 		os.Remove(name)
 		return err
 	}
@@ -351,4 +357,20 @@ func (s *Session) IRText(entry, pkg string, results []*Result) ([]byte, error) {
 		return nil, err
 	}
 	return llvmgen.Generate(prog, pkg, s.Loader.Target)
+}
+
+// MonoText returns the intermediate form of one package after
+// monomorphization: the same format the front end writes, with every generic
+// definition replaced by the instances the program uses, one per signature
+// and in source order.
+func (s *Session) MonoText(entry, pkg string, results []*Result) ([]byte, error) {
+	prog, err := s.monoProgram(entry, results)
+	if err != nil {
+		return nil, err
+	}
+	file := prog.Files[pkg]
+	if file == nil {
+		return nil, fmt.Errorf("package %s has no tree", pkg)
+	}
+	return zyxc.Format(file), nil
 }

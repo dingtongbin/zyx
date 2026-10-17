@@ -29,6 +29,9 @@ type Toolchain struct {
 	Opt string
 	// CC compiles the C runtime and performs the link.
 	CC string
+	// NM reads the symbols of an object file, which is what lets the C a
+	// program brings carry a table a fault report can read.
+	NM string
 	// Archiver puts the runtime objects into the library a program links.
 	Archiver string
 	// Runtime is the runtime tree, which holds include/ and the sources.
@@ -95,10 +98,14 @@ func Locate() (*Toolchain, error) {
 		LLC:      findTool("llc", dirs),
 		Opt:      findTool("opt", dirs),
 		CC:       findTool("clang", dirs),
+		NM:       findTool("llvm-nm", dirs),
 		Archiver: findTool("llvm-ar", dirs),
 		Runtime:  findRuntime(),
 		id:       &compilerIdentity{},
 		ar:       &compilerIdentity{},
+	}
+	if t.NM == "" {
+		t.NM = findTool("nm", dirs)
 	}
 	if t.Archiver == "" {
 		t.Archiver = findTool("ar", dirs)
@@ -241,6 +248,7 @@ func (t *Toolchain) Sources(target Target) []string {
 	sources := []string{
 		filepath.Join(t.Runtime, "core", "start.c"),
 		filepath.Join(t.Runtime, "core", "panic.c"),
+		filepath.Join(t.Runtime, "core", "frames.c"),
 		filepath.Join(t.Runtime, "core", "abi.c"),
 		filepath.Join(t.Runtime, "core", "format.c"),
 		filepath.Join(t.Runtime, "core", "defer.c"),
@@ -249,10 +257,14 @@ func (t *Toolchain) Sources(target Target) []string {
 		filepath.Join(t.Runtime, "mem", "pool.c"),
 		filepath.Join(t.Runtime, "mem", "stack.c"),
 		filepath.Join(t.Runtime, "sched", "sched.c"),
+		filepath.Join(t.Runtime, "sched", "wheel.c"),
+		filepath.Join(t.Runtime, "sched", "preempt.c"),
 		filepath.Join(t.Runtime, "sched", "timer.c"),
 		filepath.Join(t.Runtime, "io", "blockpool.c"),
 		filepath.Join(t.Runtime, "io", "loop.c"),
 		filepath.Join(t.Runtime, "io", t.loopBackend(target)),
+		filepath.Join(t.Runtime, "platform", "note.c"),
+		filepath.Join(t.Runtime, "platform", "fault.c"),
 		filepath.Join(t.Runtime, "chan", "chan.c"),
 		filepath.Join(t.Runtime, "sync", "sync.c"),
 		filepath.Join(t.Runtime, "container", "array.c"),
@@ -460,6 +472,31 @@ func (t *Toolchain) IncludeFlags() []string {
 	}
 }
 
+// sanitizeFlags returns the flags that instrument a build for a sanitizer.
+// ZYX_SANITIZE names one, such as "address", and a build with it must use a
+// cache of its own: the flag is not part of what a cache key covers, so the
+// artifacts of an instrumented build and a plain one must not share a
+// directory. An instrumented build carries debug information, because what it
+// is for is finding out where something went wrong.
+func sanitizeFlags() []string {
+	name := os.Getenv("ZYX_SANITIZE")
+	if name == "" {
+		return debugFlags()
+	}
+	return append([]string{"-fsanitize=" + name, "-fno-omit-frame-pointer", "-g"}, debugFlags()...)
+}
+
+// debugFlags returns the flags a debug build carries: line information and
+// frame pointers, so a backtrace names the frames it walks. ZYX_DEBUG asks for
+// it, and like a sanitizer it must use a cache of its own, because the flags
+// are not part of what a cache key covers.
+func debugFlags() []string {
+	if os.Getenv("ZYX_DEBUG") == "" {
+		return nil
+	}
+	return []string{"-g", "-fno-omit-frame-pointer"}
+}
+
 // CompileIR turns LLVM IR text into an object file.
 func (t *Toolchain) CompileIR(ir []byte, out string, opts CompileOptions) error {
 	src, err := writeTemp(ir, "zyx-*.ll")
@@ -480,6 +517,7 @@ func (t *Toolchain) CompileIR(ir []byte, out string, opts CompileOptions) error 
 		if opts.Debug {
 			args = append(args, "-g")
 		}
+		args = append(args, sanitizeFlags()...)
 		return t.run(t.Clang, args)
 	}
 	args := []string{"-filetype=obj", "-o", out, src}
@@ -547,7 +585,32 @@ func (t *Toolchain) CompileC(src, out string, opts CompileOptions) error {
 	if opts.Debug {
 		args = append(args, "-g")
 	}
+	args = append(args, sanitizeFlags()...)
 	return t.run(t.CC, args)
+}
+
+// ObjectFunctions lists the functions an object file defines, by the name each
+// one carries. Only the names that are not local to their translation unit come
+// back: the table that names them is built in a unit of its own, so it can take
+// the address of a function another unit defines and not of a static one.
+func (t *Toolchain) ObjectFunctions(object string) ([]string, error) {
+	var names []string
+	if t.NM == "" {
+		return nil, fmt.Errorf("no symbol reader found: install llvm-nm")
+	}
+	out, err := exec.Command(t.NM, "--defined-only", "--format=posix", object).Output()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", filepath.Base(t.NM), err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[1] != "T" {
+			continue
+		}
+		names = append(names, fields[0])
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // Link turns object files into an executable. It appends the runtime
@@ -566,9 +629,13 @@ func (t *Toolchain) Link(target Target, objects []string, out string, libs, libD
 		args = append(args, "-l"+lib)
 	}
 	args = append(args, "-lm")
+	args = append(args, sanitizeFlags()...)
 	// A static link keeps the unwinder and the C runtime inside the
-	// executable, so a built program runs wherever it is copied to.
-	args = append(args, "-static")
+	// executable, so a built program runs wherever it is copied to. An
+	// instrumented build keeps the sanitizer runtime beside it instead.
+	if os.Getenv("ZYX_SANITIZE") == "" {
+		args = append(args, "-static")
+	}
 	return t.run(t.CC, args)
 }
 
@@ -579,6 +646,10 @@ func platformLibs(target Target) []string {
 	switch target.OS {
 	case "windows":
 		return []string{"ws2_32"}
+	case "linux", "android", "harmony":
+		// A crash report asks the dynamic loader which module an address
+		// belongs to, which is the loader's own library on these systems.
+		return []string{"dl"}
 	default:
 		return nil
 	}

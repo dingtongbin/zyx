@@ -1,0 +1,205 @@
+package main
+
+import "std/fmt"
+import "std/url"
+
+// The whole surface of std/url: every part a text can carry, the failures the
+// parser names, the two escapes, and the query helpers. A text that is not
+// printable is shown one byte at a time.
+
+// bytes_of prints a text one byte at a time.
+func bytes_of(s: str) {
+    var n = s.Len()
+    var i: usize = 0
+    for i < n {
+        fmt.PrintU64(u64(s[i]))
+        fmt.Print(" ")
+        i += 1
+    }
+    fmt.PrintNl()
+}
+
+// parse prints every part of a text and the text written back.
+func parse(label: str, src: str) {
+    fmt.Print(label)
+    fmt.Print(" ")
+    match url.Parse(src) {
+        Ok(u) => {
+            fmt.Print("[")
+            fmt.Print(u.Scheme)
+            fmt.Print("|")
+            fmt.Print(u.User)
+            fmt.Print("|")
+            fmt.Print(u.Password)
+            fmt.Print("|")
+            fmt.Print(u.Host)
+            fmt.Print("|")
+            fmt.PrintI64(i64(u.Port))
+            fmt.Print("|")
+            fmt.Print(u.Path)
+            fmt.Print("|")
+            fmt.Print(u.RawQuery)
+            fmt.Print("|")
+            fmt.Print(u.Fragment)
+            fmt.Print("] ")
+            fmt.Println(u.String())
+        }
+        Err(e) => {
+            fmt.PrintValue(e)
+            fmt.PrintNl()
+        }
+    }
+}
+
+// pairs prints a query read into its pairs.
+func pairs(label: str, raw_query: str) {
+    fmt.Print(label)
+    fmt.Print(" ")
+    var got = url.QueryPairs(raw_query)
+    fmt.PrintI64(i64(got.Len()))
+    var i: usize = 0
+    for i < got.Len() {
+        fmt.Print(" <")
+        fmt.Print(got[i].0)
+        fmt.Print("=")
+        fmt.Print(got[i].1)
+        fmt.Print(">")
+        i += 1
+    }
+    fmt.PrintNl()
+}
+
+// get prints what a query answers for a key.
+func get(label: str, raw_query: str, key: str) {
+    fmt.Print(label)
+    fmt.Print(" ")
+    match url.QueryGet(raw_query, key) {
+        Some(v) => fmt.Print(v)
+        None => fmt.Print("none")
+    }
+    fmt.PrintNl()
+}
+
+// unescaped prints a text after unescaping, or the fault.
+func unescaped(label: str, f: i32, src: str) {
+    fmt.Print(label)
+    fmt.Print(" ")
+    var outcome: Result<str, url.Error> = Result.Ok("")
+    if f == 1 {
+        outcome = url.QueryUnescape(src)
+    } else {
+        outcome = url.PathUnescape(src)
+    }
+    match outcome {
+        Ok(v) => fmt.Print(v)
+        Err(e) => fmt.PrintValue(e)
+    }
+    fmt.PrintNl()
+}
+
+func main() {
+    // Parsing: every part, the authority with and without it, and the shapes a
+    // text can take.
+    parse("full", "http://user:pw@host:8080/a/b?x=1&y=2#frag")
+    parse("plain", "http://host")
+    parse("slash", "http://host/")
+    parse("default-port", "http://host:80/path")
+    parse("ipv6", "https://[::1]:443/x")
+    parse("ipv6-noport", "https://[fe80::1]/x")
+    parse("authority", "//host/path")
+    parse("absolute", "/absolute/path")
+    parse("relative", "relative/path")
+    parse("opaque", "mailto:a@b")
+    parse("file", "file:///etc/hosts")
+    parse("user-only", "http://user@host/")
+    parse("empty-user", "http://:pw@host/")
+    parse("empty-password", "http://user:@host/")
+    parse("scheme-only", "scheme:")
+    parse("colon-path", "a:b/c")
+    parse("port-zero", "http://host:0/")
+    parse("port-empty", "http://host:/")
+    parse("port-max", "http://host:65535/")
+    parse("query-only", "?q=1")
+    parse("fragment-only", "#frag")
+    parse("empty", "")
+    parse("upper", "HTTP://Host/Path")
+    parse("escaped-path", "http://h/a%2Fb")
+    parse("trailing-question", "http://h/p?")
+    parse("trailing-hash", "http://h/p#")
+    parse("many-at", "http://a@b@host/")
+    parse("many-colon", "http://host:a:b/")
+
+    // Parsing: the faults.
+    parse("bad-scheme", ":x")
+    parse("bad-host", "http://[::1/x")
+    parse("bad-port-text", "http://host:8x/")
+    parse("bad-port-big", "http://host:99999999999/")
+    parse("bad-escape", "http://h/a%zz")
+    parse("bad-escape-host", "http://h%zz/")
+    parse("bad-escape-query", "http://h/?a=%zz")
+
+    // The two escapes.
+    fmt.Print("query-escape ")
+    fmt.Println(url.QueryEscape("a b/c?d=1&e+f~g"))
+    fmt.Print("path-escape ")
+    fmt.Println(url.PathEscape("a b/c?d=1&e+f~g"))
+    fmt.Print("query-escape-empty ")
+    fmt.Print("|")
+    fmt.Print(url.QueryEscape(""))
+    fmt.Println("|")
+    unescaped("query-unescape", 1, "a+b%2Fc")
+    unescaped("path-unescape", 2, "a+b%2Fc")
+    unescaped("unescape-hex", 2, "%2F%2f")
+    unescaped("unescape-bad-short", 1, "a%2")
+    unescaped("unescape-bad-hex", 1, "a%zz")
+    unescaped("unescape-bad-solo", 1, "%")
+    fmt.Print("unescape-utf8 ")
+    match url.PathUnescape("%C3%A9") {
+        Ok(v) => bytes_of(v)
+        Err(e) => {
+            fmt.PrintValue(e)
+            fmt.PrintNl()
+        }
+    }
+
+    // Queries: pairs in the order they appear, empty keys and values, and the
+    // keys a lookup finds.
+    pairs("pairs", "a=1&b=2&a=3")
+    pairs("pairs-empty", "")
+    pairs("pairs-bare", "a")
+    pairs("pairs-bare-tail", "a=1&b")
+    pairs("pairs-empty-piece", "a=1&&b=2")
+    pairs("pairs-leading-equals", "=v")
+    pairs("pairs-many-equals", "k=v=w")
+    pairs("pairs-decoded", "a=%20&b=+")
+    pairs("pairs-bad-escape", "k=%zz")
+    get("get-first", "a=1&b=2", "b")
+    get("get-none", "a=1&b=2", "c")
+    get("get-decoded", "a%20b=1", "a b")
+    get("get-empty", "", "a")
+
+    // Encoding: the order given, and both sides escaped.
+    var p = new Array<(str, str)>(0)
+    p.Push(("a", "1"))
+    p.Push(("b", "two words"))
+    p.Push(("c+d", "e/f&g"))
+    p.Push(("", "empty key"))
+    fmt.Print("encode ")
+    fmt.Println(url.QueryEncode(p))
+    fmt.Print("encode-empty ")
+    fmt.Print("|")
+    fmt.Print(url.QueryEncode(new Array<(str, str)>(0)))
+    fmt.Println("|")
+    fmt.Print("encode-roundtrip ")
+    var pairs_again = url.QueryPairs(url.QueryEncode(p))
+    fmt.PrintI64(i64(pairs_again.Len()))
+    fmt.Print(" ")
+    fmt.Print(pairs_again[1].0)
+    fmt.Print("=")
+    fmt.Print(pairs_again[1].1)
+    fmt.Print(" ")
+    fmt.Print(pairs_again[2].0)
+    fmt.Print("=")
+    fmt.Print(pairs_again[2].1)
+    fmt.PrintNl()
+}

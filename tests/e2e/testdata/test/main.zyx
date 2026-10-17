@@ -1,0 +1,160 @@
+package main
+
+import "std/fmt"
+import "std/test"
+
+// The runner that discovers cases and runs each in a coroutine of its own is
+// the compiler's work, so this program is a runner written by hand: it builds
+// a sink, runs a fixed set of cases, and prints what the package reported.
+//
+// The place a case stands is handed to its handle here, because the language
+// has no way for a library to ask where it was called from; a real runner
+// knows each case's declaration and passes the same kind of text.
+
+// LineSink writes each reported line as it arrives, which is what a runner
+// does with the sink of a package.
+struct LineSink {
+    impl test.Sink {
+        func WriteLine(s: str) {
+            fmt.Println(s)
+        }
+    }
+}
+
+// took is a fixed span, so the summary line does not depend on the moment.
+const took: Duration = dur.ms(5)
+
+func main() {
+    var sink = LineSink { }
+
+    var pass = new test.T(sink, "suite.zyx:10:5", false)
+    case_pass(pass)
+    note(sink, "case_pass", pass)
+
+    var bad = new test.T(sink, "suite.zyx:20:5", false)
+    case_fail(bad)
+    note(sink, "case_fail", bad)
+
+    var results = new test.T(sink, "suite.zyx:30:5", false)
+    case_results(results)
+    note(sink, "case_results", results)
+
+    var sub = new test.T(sink, "suite.zyx:40:5", false)
+    case_sub_fail(sub)
+    note(sink, "case_sub_fail", sub)
+
+    var parallel = new test.T(sink, "suite.zyx:45:5", false)
+    case_parallel(parallel)
+    note(sink, "case_parallel", parallel)
+
+    var loud = new test.T(sink, "suite.zyx:50:5", true)
+    case_log(loud)
+    note(sink, "case_log", loud)
+
+    // The line that ends a run names the tally, which a runner counts.
+    test.Summary(sink, 4, 2, 0, took)
+
+    // A benchmark handle keeps its own clock and is told how many times its
+    // body runs.
+    var b = new test.B(100)
+    b.ResetTimer()
+    var elapsed: Duration = b.Elapsed()
+    fmt.PrintBool(b.N == 100)
+    fmt.Print(" ")
+    fmt.PrintBool(elapsed == elapsed)
+    fmt.PrintNl()
+}
+
+// case_pass is a case in which every assertion holds.
+func case_pass(t: test.T) {
+    test.True(t, true)
+    test.False(t, false)
+    test.Equal(t, 1, 1)
+    test.NotEq(t, 1, 2)
+    test.Equal(t, "same", "same")
+    test.Near(t, 1.0, 1.4, 0.5)
+    test.Near(t, 2.0, 2.0, 0.0)
+    test.Contains(t, "hello world", "lo wo")
+    test.Contains(t, "hello", "")
+    // The value of a result that is the successful one comes back.
+    var r: Result<i64, str> = Result.Ok(5)
+    var v = test.Ok(t, r)
+    test.Equal(t, v, 5)
+    // The failure of a result that failed comes back.
+    var f: Result<i64, str> = Result.Err("bad")
+    var e = test.Err(t, f)
+    test.Equal(t, e, "bad")
+    // A sub-test of a case reports its failure to the case, and one that
+    // holds makes the case no worse.
+    test.Run(t, "inner holds", func inner_holds)
+    // A log is quiet while the case has not failed.
+    test.Log(t, "quiet")
+}
+
+// inner_holds is the sub-test of a passing case.
+func inner_holds(t: test.T) {
+    test.Equal(t, 2, 2)
+}
+
+// case_fail shows the shape of each failure: where it stands, and both sides
+// of what was compared. The case goes on after each one.
+func case_fail(t: test.T) {
+    test.True(t, false)
+    test.False(t, true)
+    test.Equal(t, 1, 2)
+    test.NotEq(t, 3, 3)
+    test.Near(t, 1.0, 2.0, 0.1)
+    test.Contains(t, "abc", "z")
+    test.Log(t, "shown because the case has failed")
+}
+
+// case_results exercises both results that hold.
+func case_results(t: test.T) {
+    var r: Result<i64, str> = Result.Ok(7)
+    test.Equal(t, test.Ok(t, r), 7)
+    var f: Result<i64, str> = Result.Err("why")
+    test.Equal(t, test.Err(t, f), "why")
+}
+
+// case_sub_fail shows that a failing sub-test makes its case fail.
+func case_sub_fail(t: test.T) {
+    test.Run(t, "inner fails", func inner_fails)
+    test.True(t, true)
+}
+
+// inner_fails is the sub-test of a failing case.
+func inner_fails(t: test.T) {
+    test.True(t, false)
+}
+
+// case_parallel runs a sub-test through the parallel entry, which this build
+// runs where the caller stands.
+func case_parallel(t: test.T) {
+    test.RunParallel(t, "parallel holds", func inner_holds)
+}
+
+// case_log shows that a verbose run writes a log that would otherwise wait
+// for a failure.
+func case_log(t: test.T) {
+    test.Log(t, "shown by a verbose run")
+    test.True(t, true)
+}
+
+// note writes what a case ended as, which a runner keeps for its tally.
+func note(sink: test.Sink, name: str, t: test.T) {
+    var line = new Buf(0)
+    line.WriteStr(name)
+    line.WriteStr(": failed=")
+    line.WriteStr(bool_text(t.Failed()))
+    line.WriteStr(" skipped=")
+    line.WriteStr(bool_text(t.Skipped()))
+    sink.WriteLine(line.Str())
+}
+
+// bool_text answers true or false as text.
+func bool_text(v: bool) -> str {
+    if v {
+        return "true"
+    }
+    return "false"
+}

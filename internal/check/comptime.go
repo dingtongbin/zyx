@@ -100,7 +100,7 @@ func (c *checker) eval(e ast.Expr) *Value {
 			return v
 		}
 		sym := c.symOf(v)
-		if sym != nil && isTypeSymbol(sym) {
+		if sym != nil && IsTypeSymbol(sym) {
 			return &Value{Type: types.TypeValue, TypeVal: c.typeOfSymbol(sym)}
 		}
 		return c.constValue(sym)
@@ -342,7 +342,7 @@ func (c *checker) evalAggregate(v *ast.AggregateLitExpr) *Value {
 // a type body.
 func (c *checker) evalTypeConst(v *ast.SelectorExpr) *Value {
 	id, ok := v.X.(*ast.Ident)
-	if !ok || !isTypeSymbol(c.symOf(id)) {
+	if !ok || !IsTypeSymbol(c.symOf(id)) {
 		return nil
 	}
 	con := c.memberConst(c.typeOfSymbol(c.symOf(id)), v.Name.Name)
@@ -645,7 +645,7 @@ func (c *checker) evalCall(v *ast.CallExpr) *Value {
 		return c.callComptime(f, sym, v.Args)
 	}
 	if id, ok := v.Fn.(*ast.Ident); ok {
-		if isTypeSymbol(c.symOf(id)) {
+		if IsTypeSymbol(c.symOf(id)) {
 			return c.evalConvert(c.out.Nodes[v], v.Args)
 		}
 	}
@@ -654,7 +654,7 @@ func (c *checker) evalCall(v *ast.CallExpr) *Value {
 			if isNamespaceName(id.Name) {
 				return c.evalNamespace(sel, v, id.Name)
 			}
-			if isTypeSymbol(c.symOf(id)) {
+			if IsTypeSymbol(c.symOf(id)) {
 				return c.evalVariant(c.out.Nodes[v], sel.Name.Name, v.Args)
 			}
 		}

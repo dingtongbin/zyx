@@ -66,8 +66,8 @@ static int wake_pair(void) {
 }
 
 int zyxrt_loop_backend_init(void) {
-  WSADATA data;
-  if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return -1;
+  /* The socket library is up before this runs, because the process brought it
+     up at startup. */
   if (wake_pair() != 0) return -1;
   return 0;
 }

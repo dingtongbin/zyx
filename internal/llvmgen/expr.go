@@ -4,6 +4,7 @@ package llvmgen
 
 import (
 	"fmt"
+	"math"
 	"math/big"
 	"strconv"
 	"strings"
@@ -162,9 +163,39 @@ func (g *generator) expr(module string, n *zyxc.Node, want *types.Type) *value {
 		// because the block that computed it need not dominate the release.
 		slot := g.alloca(types.Raw)
 		g.emit("  store ptr %s, ptr %s", g.addrText(v), slot)
-		g.fn.pending = append(g.fn.pending, pendingRelease{typ: v.typ, slot: slot})
+		g.fn.pending = append(g.fn.pending, pendingRelease{typ: v.typ, slot: slot, depth: g.creationDepth(n)})
 	}
 	return v
+}
+
+// creationDepth returns how many loops enclosed the object an expression
+// marks as finished. A name reads an object its binding holds, so the answer
+// is the depth the binding was created at; every other expression creates the
+// object it names, so the answer is the depth now.
+//
+// The count is what keeps a release out of a loop the object was created
+// outside: `for i in 0 .. 4 { total += table[i] }` marks the last use of
+// table inside the loop, and the loop reads the same object on its later
+// rounds, so the release has to wait until the loop is left.
+func (g *generator) creationDepth(n *zyxc.Node) int {
+	if n.Kind == "name" && len(n.Payload) > 1 {
+		if depth, ok := g.fn.created[n.Payload[1]]; ok {
+			return depth
+		}
+	}
+	return len(g.fn.loops)
+}
+
+// rememberBinding records how many loops enclose a binding now, which is what
+// tells a later release whether the object it names outlives a loop.
+func (g *generator) rememberBinding(id string) {
+	if id == "" || g.fn == nil {
+		return
+	}
+	if g.fn.created == nil {
+		g.fn.created = map[string]int{}
+	}
+	g.fn.created[id] = len(g.fn.loops)
 }
 
 // releasable reports whether the backend can return a value's object to its
@@ -267,6 +298,13 @@ func (g *generator) name(module string, n *zyxc.Node) *value {
 		return &value{text: slot.alloca, ll: g.llPass(slot.typ), typ: slot.typ, lvalue: true}
 	}
 	if decl := g.tab.decl(id); decl != nil {
+		if decl.Kind == "func" {
+			// A function named where a value is expected answers its value: the
+			// thunk that drops the receiver a value carries, and no receiver. The
+			// thunk of a function that crosses the C boundary passes arguments the
+			// way the C ABI does and calls the symbol under the name C defines.
+			return g.functionValue(id, g.funcType(decl))
+		}
 		typ := g.bindingType(module, decl, id)
 		if typ == nil {
 			g.fail(fmt.Errorf("llvmgen: the type of %s is not settled", n.Payload[0]))
@@ -409,16 +447,33 @@ func (g *generator) bufWriter(typ *types.Type) (string, []string, bool) {
 // table names. A 128-bit value is handed over as its two halves, because the
 // runtime is portable C11 and has no 128-bit type to receive it.
 func (g *generator) bufArgs(typ *types.Type, v *value) []string {
-	if typ.Kind != types.KindInt128 && typ.Kind != types.KindUint128 {
+	if typ.IsFloat() || typ.Kind == types.KindBool || typ.Kind == types.KindChar ||
+		typ.Kind == types.KindDuration || typ.Kind == types.KindInt128 || typ.Kind == types.KindUint128 {
+		// The writer takes the width the fixed table names: a float is a
+		// double, a bool a byte, a char a code point, a duration a count of
+		// nanoseconds, and a 128-bit value its two halves.
+		switch typ.Kind {
+		case types.KindInt128, types.KindUint128:
+			high := g.newReg()
+			g.emit("  %s = lshr i128 %s, 64", high, v.text)
+			upper := g.newReg()
+			g.emit("  %s = trunc i128 %s to %s", upper, high, g.ptrInt())
+			lower := g.newReg()
+			g.emit("  %s = trunc i128 %s to %s", lower, v.text, g.ptrInt())
+			return []string{upper, lower}
+		}
 		return []string{v.text}
 	}
-	high := g.newReg()
-	g.emit("  %s = lshr i128 %s, 64", high, v.text)
-	upper := g.newReg()
-	g.emit("  %s = trunc i128 %s to %s", upper, high, g.ptrInt())
-	lower := g.newReg()
-	g.emit("  %s = trunc i128 %s to %s", lower, v.text, g.ptrInt())
-	return []string{upper, lower}
+	// An integer narrower than the writer's parameter is widened, so the call
+	// names the width the runtime reads.
+	want := types.Int64
+	if !typ.IsSigned() {
+		want = types.Uint64
+	}
+	if widened := g.cast(v, want); widened != nil {
+		return []string{widened.text}
+	}
+	return []string{v.text}
 }
 
 // typedArgs renders the LLVM types of a call beside the registers that fill
@@ -689,6 +744,20 @@ func (g *generator) literal(module string, n *zyxc.Node, want *types.Type) *valu
 		out := g.newReg()
 		g.emit("  %s = insertvalue { ptr, %s } %s, %s %d, 1", out, g.ptrInt(), lenReg, g.ptrInt(), len(text))
 		return &value{text: out, ll: "{ ptr, " + g.ptrInt() + " }", typ: typ}
+	case "bytes":
+		// A byte string is a view of static bytes, and it may hold a
+		// sequence that is not valid UTF-8, which is exactly what a str
+		// cannot hold.
+		global := g.m.stringGlobal(text)
+		ptr := g.newReg()
+		g.emit("  %s = getelementptr inbounds [%d x i8], ptr %s, i64 0, i64 0", ptr, len(text), global)
+		slice := types.SliceOf(types.Uint8)
+		ll := g.llType(slice)
+		first := g.newReg()
+		g.emit("  %s = insertvalue %s undef, ptr %s, 0", first, ll, ptr)
+		out := g.newReg()
+		g.emit("  %s = insertvalue %s %s, %s %d, 1", out, ll, first, g.ptrInt(), len(text))
+		return &value{text: out, ll: ll, typ: slice}
 	case "char":
 		runes := []rune(text)
 		if len(runes) != 1 {
@@ -702,6 +771,16 @@ func (g *generator) literal(module string, n *zyxc.Node, want *types.Type) *valu
 			g.fail(fmt.Errorf("llvmgen: %q is not an integer", text))
 			return nil
 		}
+		if typ.IsFloat() {
+			// An integer written where a float is wanted is a floating-point
+			// constant, which always names its decimal point.
+			v, err := strconv.ParseFloat(digits, 64)
+			if err != nil && !math.IsInf(v, 0) {
+				g.fail(fmt.Errorf("llvmgen: %q does not fit %s", text, typ))
+				return nil
+			}
+			return &value{text: floatConstant(v, g.llType(typ)), ll: g.llType(typ), typ: typ}
+		}
 		return &value{text: digits, ll: g.llType(typ), typ: typ}
 	case "float":
 		v, err := strconv.ParseFloat(text, 64)
@@ -710,14 +789,54 @@ func (g *generator) literal(module string, n *zyxc.Node, want *types.Type) *valu
 			return nil
 		}
 		ll := g.llType(typ)
-		out := strconv.FormatFloat(v, 'g', -1, 64)
-		if !strings.ContainsAny(out, ".eEni") {
-			out += ".0"
+		if ll == "float" {
+			small, err := strconv.ParseFloat(text, 32)
+			if err == nil {
+				v = small
+			}
 		}
-		return &value{text: out, ll: ll, typ: typ}
+		return &value{text: floatConstant(v, ll), ll: ll, typ: typ}
 	}
 	g.fail(fmt.Errorf("llvmgen: a %s literal is not lowered", kind))
 	return nil
+}
+
+// floatConstant renders a floating-point constant in a form LLVM accepts. A
+// decimal that names its point is what LLVM reads, and a value with no finite
+// form, an infinity or a NaN, is written in the hexadecimal form it reads.
+func floatConstant(v float64, ll string) string {
+	switch {
+	case math.IsNaN(v):
+		if ll == "float" {
+			return "0x7FC00000"
+		}
+		return "0x7FF8000000000000"
+	case math.IsInf(v, 1):
+		if ll == "float" {
+			return "0x7F800000"
+		}
+		return "0x7FF0000000000000"
+	case math.IsInf(v, -1):
+		if ll == "float" {
+			return "0xFF800000"
+		}
+		return "0xFFF0000000000000"
+	}
+	bits := 64
+	if ll == "float" {
+		bits = 32
+	}
+	out := strconv.FormatFloat(v, 'g', -1, bits)
+	if i := strings.IndexAny(out, "eE"); i >= 0 {
+		if !strings.Contains(out[:i], ".") {
+			out = out[:i] + ".0" + out[i:]
+		}
+		return out
+	}
+	if !strings.Contains(out, ".") {
+		out += ".0"
+	}
+	return out
 }
 
 // intLiteralText returns the decimal text of an integer literal, whatever
@@ -769,10 +888,47 @@ func (g *generator) binary(module string, n *zyxc.Node) *value {
 	if lhs == nil || rhs == nil {
 		return nil
 	}
+	if op == "+" && lhs.typ != nil && lhs.typ.Kind == types.KindStr {
+		// The language defines `+` on two strings as their concatenation,
+		// which allocates the text the answer holds.
+		return g.concat(module, lhs, rhs)
+	}
 	if isComparison(op) {
 		return g.compare(op, lhs, rhs)
 	}
 	return g.arith(op, lhs, rhs)
+}
+
+// concat lowers `a + b` on two strings: a buffer takes both and answers the
+// text it holds. The bytes are copied, so the answer outlives the operands the
+// way an allocated string does.
+func (g *generator) concat(module string, a, b *value) *value {
+	a, b = g.load(a), g.load(b)
+	if a == nil || b == nil {
+		return nil
+	}
+	g.declareRuntime("zyxrt_buf_new", "ptr", g.ptrInt())
+	buf := g.newReg()
+	g.emit("  %s = call ptr @zyxrt_buf_new(%s 0)", buf, g.ptrInt())
+	for _, v := range []*value{a, b} {
+		if !g.addValue(module, buf, v) {
+			return nil
+		}
+	}
+	length := g.alloca(types.Usize)
+	text := g.alloca(types.Raw)
+	g.declareRuntime("zyxrt_buf_str", "void", "ptr", "ptr", "ptr")
+	g.emit("  call void @zyxrt_buf_str(ptr %s, ptr %s, ptr %s)", buf, text, length)
+	ptr := g.newReg()
+	g.emit("  %s = load ptr, ptr %s", ptr, text)
+	size := g.newReg()
+	g.emit("  %s = load %s, ptr %s", size, g.ptrInt(), length)
+	ll := g.llType(types.Str)
+	first := g.newReg()
+	g.emit("  %s = insertvalue %s undef, ptr %s, 0", first, ll, ptr)
+	out := g.newReg()
+	g.emit("  %s = insertvalue %s %s, %s %s, 1", out, ll, first, g.ptrInt(), size)
+	return &value{text: out, ll: ll, typ: types.Str}
 }
 
 // logical lowers the short-circuit operators.
@@ -834,7 +990,44 @@ func (g *generator) compare(op string, a, b *value) *value {
 	var instr string
 	switch {
 	case a.typ.IsFloat():
-		instr = "fcmp o" + pred
+		switch op {
+		case "!=":
+			// A NaN is unordered with everything, itself included, so the
+			// negation of equality is not the same predicate: `!=` asks
+			// whether the two are unordered or differ.
+			instr = "fcmp une"
+		case "==":
+			// Equality is ordered: a NaN is equal to nothing.
+			instr = "fcmp oeq"
+		default:
+			instr = "fcmp o" + pred
+		}
+	case a.typ.Kind == types.KindEnum && (pred == "eq" || pred == "ne"):
+		// An enum whose variants carry nothing is its tag, so equality compares
+		// the two tags: no instruction compares the aggregate a payload would
+		// make of it, and the checker admits only the enums that carry nothing.
+		// An operand that answers with the object's address is read first.
+		left, right := a, b
+		if a.ll == "ptr" {
+			reg := g.newReg()
+			g.emit("  %s = load %s, ptr %s", reg, g.llType(a.typ), a.text)
+			left = &value{text: reg, ll: g.llType(a.typ), typ: a.typ}
+		}
+		if b.ll == "ptr" {
+			reg := g.newReg()
+			g.emit("  %s = load %s, ptr %s", reg, g.llType(b.typ), b.text)
+			right = &value{text: reg, ll: g.llType(b.typ), typ: b.typ}
+		}
+		tag := g.tagType(g.tagSize(a.typ))
+		tags := make([]string, 2)
+		for i, v := range []*value{left, right} {
+			reg := g.newReg()
+			g.emit("  %s = extractvalue %s %s, 0", reg, v.ll, v.text)
+			tags[i] = reg
+		}
+		reg := g.newReg()
+		g.emit("  %s = icmp %s %s %s, %s", reg, pred, tag, tags[0], tags[1])
+		return &value{text: reg, ll: "i1", typ: types.Bool}
 	case pred == "eq" || pred == "ne":
 		// Equality carries no signedness.
 		instr = "icmp " + pred
@@ -1000,8 +1193,10 @@ func (g *generator) unary(module string, n *zyxc.Node) *value {
 			g.emit("  %s = sub %s 0, %s", reg, v.ll, v.text)
 		}
 	case "!":
-		g.emit("  %s = xor i8 %s, 1", reg, v.text)
-		return &value{text: reg, ll: "i8", typ: types.Bool}
+		// A comparison answers one bit and a stored bool one byte, so the
+		// negation works in whatever the operand is.
+		g.emit("  %s = xor %s %s, 1", reg, v.ll, v.text)
+		return &value{text: reg, ll: v.ll, typ: types.Bool}
 	case "~":
 		g.emit("  %s = xor %s %s, -1", reg, v.ll, v.text)
 	default:
@@ -1063,6 +1258,12 @@ func (g *generator) cast(src *value, dst *types.Type) *value {
 	}
 	reg := g.newReg()
 	switch {
+	case src.typ.Kind == types.KindRaw && to != "ptr":
+		// An address becomes the integer of the same width; a pointer is not
+		// an integer, so this is a conversion and not an extension.
+		g.emit("  %s = ptrtoint ptr %s to %s", reg, src.text, to)
+	case dst.Kind == types.KindRaw && from != "ptr":
+		g.emit("  %s = inttoptr %s %s to ptr", reg, from, src.text)
 	case src.typ.IsFloat() && dst.IsFloat():
 		op := "fpext"
 		if llSize(to) < llSize(from) {
@@ -1225,11 +1426,21 @@ func (g *generator) tupleIndex(module string, n *zyxc.Node) *value {
 	}
 	reg := g.newReg()
 	g.emit("  %s = extractvalue %s %s, %d", reg, g.llType(recv.typ), recv.text, index)
-	return &value{text: reg, ll: g.llPass(recv.typ.Elems[index]), typ: recv.typ.Elems[index]}
+	elem := recv.typ.Elems[index]
+	if byAddress(elem) {
+		// The element is the object itself, which a register can hold but a
+		// field access needs an address for, so the object is placed where one
+		// is and the element answers as the object lying there.
+		slot := g.allocate(elem)
+		g.emit("  store %s %s, ptr %s", g.llType(elem), reg, slot)
+		return g.inlineObject(slot, elem)
+	}
+	return &value{text: reg, ll: g.llPass(elem), typ: elem}
 }
 
 // sliceExpr lowers a view of a sequence: the address of the first element it
-// keeps and the number of elements.
+// keeps and the number of elements. The bytes are not copied, so the view
+// shares the buffer the source holds.
 func (g *generator) sliceExpr(module string, n *zyxc.Node) *value {
 	recv := g.load(g.expr(module, g.wrapped(n, "recv"), nil))
 	lo := g.load(g.expr(module, g.wrapped(n, "lo"), types.Usize))
@@ -1243,19 +1454,51 @@ func (g *generator) sliceExpr(module string, n *zyxc.Node) *value {
 	}
 	elem := recv.typ.Elem
 	base := g.addrText(recv)
-	if recv.typ.Kind == types.KindSlice {
-		base, _ = g.splitFat(recv)
+	// A view of text is text, because that is what the language names it;
+	// every other view is a slice of the element type.
+	view := (*types.Type)(nil)
+	switch recv.typ.Kind {
+	case types.KindSlice:
+		var length string
+		base, length = g.splitFat(recv)
+		g.guardRange(lo.text, hi.text, length)
+	case types.KindArray:
+		g.guardRange(lo.text, hi.text, strconv.FormatUint(recv.typ.Len, 10))
+	case types.KindStr:
+		elem, view = types.Uint8, types.Str
+		var length string
+		base, length = g.splitFat(recv)
+		g.guardRange(lo.text, hi.text, length)
+	case types.KindContainer:
+		if recv.typ.Name != "Array" {
+			g.fail(fmt.Errorf("llvmgen: a view of %s is not lowered", recv.typ))
+			return nil
+		}
+		// The elements live in the buffer the runtime owns, so the view is
+		// that buffer and a range of it, and the bounds are checked against
+		// the length the runtime reports.
+		elem = arg(recv.typ, 0)
+		g.declareRuntime("zyxrt_array_len", g.ptrInt(), "ptr")
+		length := g.newReg()
+		g.emit("  %s = call %s @zyxrt_array_len(ptr %s)", length, g.ptrInt(), recv.text)
+		g.guardRange(lo.text, hi.text, length)
+		g.declareRuntime("zyxrt_array_slot", "ptr", "ptr", g.ptrInt())
+		first := g.newReg()
+		g.emit("  %s = call ptr @zyxrt_array_slot(ptr %s, %s 0)", first, recv.text, g.ptrInt())
+		base = first
 	}
 	ptr := g.newReg()
 	g.emit("  %s = getelementptr inbounds %s, ptr %s, %s %s", ptr, g.llType(elem), base, lo.ll, lo.text)
 	count := g.newReg()
 	g.emit("  %s = sub %s %s, %s", count, lo.ll, hi.text, lo.text)
-	typ := types.SliceOf(elem)
+	if view == nil {
+		view = types.SliceOf(elem)
+	}
 	fat := g.newReg()
-	g.emit("  %s = insertvalue %s undef, ptr %s, 0", fat, g.llType(typ), ptr)
+	g.emit("  %s = insertvalue %s undef, ptr %s, 0", fat, g.llType(view), ptr)
 	out := g.newReg()
-	g.emit("  %s = insertvalue %s %s, %s %s, 1", out, g.llType(typ), fat, g.ptrInt(), count)
-	return &value{text: out, ll: g.llType(typ), typ: typ}
+	g.emit("  %s = insertvalue %s %s, %s %s, 1", out, g.llType(view), fat, g.ptrInt(), count)
+	return &value{text: out, ll: g.llType(view), typ: view}
 }
 
 // structLit lowers a struct construction. The object is created in the
@@ -1324,7 +1567,11 @@ func (g *generator) structLit(module string, n *zyxc.Node) *value {
 	return &value{text: base, ll: "ptr", typ: typ}
 }
 
-// arrayLit lowers an array construction.
+// arrayLit lowers an array construction. A construction the tree annotates as
+// a growable array becomes one: a container is a handle the runtime owns, so a
+// block of elements is not the same thing and a reader that went through the
+// runtime would fault. A fixed-size array lies in one block, which is what its
+// own annotation says.
 func (g *generator) arrayLit(module string, n *zyxc.Node) *value {
 	elem := (*types.Type)(nil)
 	var nodes []*zyxc.Node
@@ -1332,6 +1579,9 @@ func (g *generator) arrayLit(module string, n *zyxc.Node) *value {
 		if child.Kind == "elem" {
 			nodes = append(nodes, g.sole(child))
 		}
+	}
+	if annotated := g.typeOfNode(n.First("type"), module); annotated != nil && annotated.Kind == types.KindContainer {
+		return g.arrayLitContainer(module, annotated, nodes)
 	}
 	typ := types.ArrayOf(types.Int64, uint64(len(nodes)))
 	base := g.allocate(typ)
@@ -1354,6 +1604,41 @@ func (g *generator) arrayLit(module string, n *zyxc.Node) *value {
 		return nil
 	}
 	return &value{text: base, ll: "ptr", typ: typ}
+}
+
+// arrayLitContainer builds a growable array from a literal: the runtime makes
+// a container with room for every element, and each element is pushed into it.
+// The elements are read back the way the runtime wrote them, which is what
+// makes a literal and a sequence of pushes the same.
+func (g *generator) arrayLitContainer(module string, typ *types.Type, nodes []*zyxc.Node) *value {
+	if typ.Name != "Array" {
+		g.fail(fmt.Errorf("llvmgen: a literal of %s is not lowered", typ))
+		return nil
+	}
+	elem := arg(typ, 0)
+	if elem == nil {
+		g.fail(fmt.Errorf("llvmgen: a literal of %s has no element type", typ))
+		return nil
+	}
+	count := zyxc.New("lit", "int", strconv.Itoa(len(nodes)))
+	request := &zyxc.Node{Kind: "new"}
+	request.Child(zyxc.New("type", typ.Canonical()))
+	request.Child(zyxc.New("arg").Child(count))
+	handle := g.newContainer(module, request, typ)
+	if handle == nil {
+		return nil
+	}
+	g.declareRuntime("zyxrt_array_push", "void", "ptr", "ptr")
+	for _, node := range nodes {
+		v := g.load(g.expr(module, node, elem))
+		if v == nil {
+			return nil
+		}
+		slot := g.objectAlloca(elem)
+		g.storeInto(slot, elem, v, true)
+		g.emit("  call void @zyxrt_array_push(ptr %s, ptr %s)", handle.text, slot)
+	}
+	return handle
 }
 
 // arrayRepeat lowers the `[value] * count` form. A fixed-size array is one
@@ -1476,7 +1761,15 @@ func (g *generator) tupleLit(module string, n *zyxc.Node) *value {
 	reg := "undef"
 	for i, v := range vals {
 		next := g.newReg()
-		g.emit("  %s = insertvalue %s %s, %s %s, %d", next, ll, reg, v.ll, v.text, i)
+		operand := v
+		if byAddress(v.typ) {
+			// The element's storage is the object itself, so the insert takes
+			// the object the expression named rather than the reference to it.
+			object := g.newReg()
+			g.emit("  %s = load %s, ptr %s", object, g.llType(v.typ), g.addrText(v))
+			operand = &value{text: object, ll: g.llType(v.typ), typ: v.typ}
+		}
+		g.emit("  %s = insertvalue %s %s, %s %s, %d", next, ll, reg, operand.ll, operand.text, i)
 		reg = next
 	}
 	return &value{text: reg, ll: ll, typ: typ}

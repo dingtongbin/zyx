@@ -42,23 +42,34 @@ func (g *generator) global(module string, n *zyxc.Node) {
 // globalValue emits one top-level binding. Its initializer is evaluated in
 // a function of its own, which keeps a computed initializer out of the
 // module's global section.
+//
+// The storage a binding takes is the one a local of the same type takes: a
+// value whose type lives at an address, such as a struct or a fixed-size
+// array, is held behind a pointer, and every other type holds its value. A
+// module that reads the binding from another package declares the same
+// storage, which is what lets the two meet at the link.
 func (g *generator) globalValue(module string, n *zyxc.Node, id, name string) {
 	typ := g.typeOfNode(n.First("type"), module)
-	init := g.initChild(n)
-	if init == nil {
-		if typ == nil {
-			g.fail(fmt.Errorf("llvmgen: the type of global %s is not settled", name))
-			return
-		}
-		fmt.Fprintf(&g.m.funcs, "@%s = %sglobal %s %s\n", llvmName(id), globalLinkage(name), g.llType(typ), g.zero(typ))
-		return
-	}
 	if typ == nil {
 		g.fail(fmt.Errorf("llvmgen: the type of global %s is not settled", name))
 		return
 	}
-	fmt.Fprintf(&g.m.funcs, "@%s = %sglobal %s %s\n", llvmName(id), globalLinkage(name), g.llType(typ), g.zero(typ))
-	g.m.globalInits = append(g.m.globalInits, globalInit{module: module, id: id, typ: typ, init: init})
+	ll := g.llPass(typ)
+	zero := g.globalZero(typ, ll)
+	if init := g.initChild(n); init != nil {
+		g.m.globalInits = append(g.m.globalInits, globalInit{module: module, id: id, typ: typ, init: init})
+	}
+	fmt.Fprintf(&g.m.funcs, "@%s = %sglobal %s %s\n", llvmName(id), globalLinkage(name), ll, zero)
+}
+
+// globalZero returns the zero value of the storage a global is declared with.
+// A binding held behind a pointer starts at no object, because the
+// initializer puts the object it makes there.
+func (g *generator) globalZero(typ *types.Type, ll string) string {
+	if ll == "ptr" {
+		return "null"
+	}
+	return g.zero(typ)
 }
 
 // A globalInit is a top-level initializer that runs before main.
@@ -192,13 +203,18 @@ func (g *generator) entryPoint() {
 	}
 	fmt.Fprintf(&g.m.funcs, "  ret void\n}\n")
 	fmt.Fprintf(&g.m.funcs, "define i32 @main() {\n")
-	fmt.Fprintf(&g.m.funcs, "  call i32 @zyxrt_run_main(ptr @zyx.main.thunk, ptr null)\n")
+	// The runtime answers with the code the process reports when the root
+	// coroutine panicked, and with nothing otherwise; that code wins over what
+	// the language main returned, because a panic is not a value.
+	fmt.Fprintf(&g.m.funcs, "  %%zyx.runtime = call i32 @zyxrt_run_main(ptr @zyx.main.thunk, ptr null)\n")
 	if result == nil {
-		fmt.Fprintf(&g.m.funcs, "  ret i32 0\n}\n")
+		fmt.Fprintf(&g.m.funcs, "  ret i32 %%zyx.runtime\n}\n")
 		return
 	}
 	fmt.Fprintf(&g.m.funcs, "  %%zyx.status = load i32, ptr @zyx.exit\n")
-	fmt.Fprintf(&g.m.funcs, "  ret i32 %%zyx.status\n}\n")
+	fmt.Fprintf(&g.m.funcs, "  %%zyx.panicked = icmp ne i32 %%zyx.runtime, 0\n")
+	fmt.Fprintf(&g.m.funcs, "  %%zyx.code = select i1 %%zyx.panicked, i32 %%zyx.runtime, i32 %%zyx.status\n")
+	fmt.Fprintf(&g.m.funcs, "  ret i32 %%zyx.code\n}\n")
 }
 
 // funcResult returns the declared result type of a function.
@@ -516,10 +532,10 @@ func (g *generator) function(module string, n *zyxc.Node) {
 		}
 		body = zyxc.New("block").Child(zyxc.New("return").Child(bodyExpr))
 	}
-	if g.m.defined[symbol] {
+	if _, ok := g.m.defined[symbol]; ok {
 		return
 	}
-	g.m.defined[symbol] = true
+	g.m.defined[symbol] = n.Pos
 
 	g.fn = &funcState{symbol: symbol, vars: map[string]*varSlot{}, result: result}
 	g.fn.entry = g.newLabel("entry")
@@ -541,6 +557,9 @@ func (g *generator) function(module string, n *zyxc.Node) {
 			g.storeFat(slot, p)
 		}
 		g.fn.vars[fmt.Sprintf("%s#%d", sym, i+1)] = &varSlot{alloca: slot, typ: p.typ}
+		// A parameter's object belongs to the caller, so it counts as
+		// created outside every loop of this function.
+		g.rememberBinding(fmt.Sprintf("%s#%d", sym, i+1))
 	}
 
 	// The region the function runs in is the home of every object that
@@ -583,10 +602,13 @@ func (g *generator) function(module string, n *zyxc.Node) {
 	}
 	out.WriteString(strings.Join(parts, ", "))
 	// uwtable keeps the frame's unwind information, which a panic needs to
-	// walk past it.
+	// walk past it. The check reads the frame it just built, so it is asked
+	// for before the frame is written out.
+	check := g.stackCheck()
 	out.WriteString(") uwtable {\n")
 	out.WriteString(g.fn.entry + ":\n")
 	out.WriteString(g.fn.allocas.String())
+	out.WriteString(check)
 	out.WriteString(g.fn.body.String())
 	out.WriteString("}\n")
 	g.m.funcs.WriteString(out.String())

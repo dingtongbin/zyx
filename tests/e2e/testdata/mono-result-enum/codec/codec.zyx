@@ -1,0 +1,34 @@
+package codec
+
+// A codec that reports a fault with a fieldless enum. The codec package
+// instantiates Result twice: Result<u32, Error>, whose payload is aligned to
+// u32, and Result<(), Error>, whose payload is aligned to one byte. The two
+// instantiations must stay distinct, or the caller reads a fault out of the
+// padding of the record it was handed and names the wrong variant.
+
+// Faults a codec can report.
+enum Error {
+    Truncated
+    Corrupt
+    Checksum
+    Level
+}
+
+// First names Result<u32, Error> in this package: a decoder that reads a wide
+// value reports it through this shape.
+func First() -> Result<u32, Error> {
+    return Result.Ok(u32(5))
+}
+
+// Second, Third, and Fourth report a fault through Result<(), Error>.
+func Second() -> Result<(), Error> {
+    return Result.Err(Error.Corrupt)
+}
+
+func Third() -> Result<(), Error> {
+    return Result.Err(Error.Checksum)
+}
+
+func Fourth() -> Result<(), Error> {
+    return Result.Err(Error.Level)
+}

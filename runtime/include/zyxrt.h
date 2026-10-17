@@ -28,6 +28,9 @@ void zyxrt_array_get_unchecked(void *handle, size_t index, void *out);
 /* zyxrt_array_slot is the address of an element, which the compiler reads and
    writes through. It stays valid until the array is structurally modified. */
 void *zyxrt_array_slot(void *handle, size_t index);
+/* zyxrt_array_swap exchanges two elements inside the buffer, which serves an
+   element of any size. An index past the end is a fault. */
+void zyxrt_array_swap(void *handle, size_t a, size_t b);
 void zyxrt_array_remove(void *handle, size_t index);
 /* zyxrt_array_cap is the room the array has, zyxrt_array_clear drops every
    element and keeps it, zyxrt_array_reserve makes room for n elements,
@@ -39,6 +42,10 @@ void zyxrt_array_clear(void *handle);
 void zyxrt_array_reserve(void *handle, size_t n);
 void zyxrt_array_insert(void *handle, size_t index, const void *value);
 void zyxrt_array_remove_range(void *handle, size_t index, size_t n);
+/* zyxrt_array_mod_gen is the count of the structural modifications an array
+   has taken. A loop takes the count when it begins and compares it each round,
+   because a structural modification may replace the buffer the loop walks. */
+size_t zyxrt_array_mod_gen(void *handle);
 
 /* A map hashes and compares a key through the two functions it is given, so
    the same table serves a scalar key, a string key, and a key of a type with
@@ -55,18 +62,45 @@ int zyxrt_map_remove(void *handle, const void *key, void *out);
 void zyxrt_map_keys(void *handle, void *out);
 void zyxrt_map_values(void *handle, void *out);
 void *zyxrt_map_key_list(void *handle, size_t key_size);
+/* zyxrt_map_clear drops every entry and keeps the table. */
+void zyxrt_map_clear(void *handle);
+/* zyxrt_set_is_subset reports whether every element of the first set is in the
+   second. */
+int zyxrt_set_is_subset(void *handle, void *other);
+/* The combining operations, each O(n) over the two sets: intersect keeps the
+   elements both hold, difference keeps the ones only the receiver holds, and
+   union adds the ones only the other holds. */
+void zyxrt_set_intersect(void *handle, void *other);
+void zyxrt_set_difference(void *handle, void *other);
+void zyxrt_set_union(void *handle, void *other);
+/* zyxrt_map_mod_gen is the count of the structural modifications a map has
+   taken, which an iteration compares each round for the same reason an array
+   iteration does. */
+size_t zyxrt_map_mod_gen(void *handle);
+/* An iteration walks the entries of a map, or the elements of a set, which is
+   a map whose value is never read. The cursor lives in the region that made
+   it; zyxrt_map_iter_next answers whether there was another entry. */
+void *zyxrt_map_iter_new(void *handle);
+int zyxrt_map_iter_next(void *handle, void *key, void *value);
+void *zyxrt_set_iter_new(void *handle);
+int zyxrt_set_iter_next(void *handle, void *elem);
 
 /* A priority queue is a heap ordered by a comparison the caller supplies. */
 void *zyxrt_queue_new(size_t elem, void *less);
 size_t zyxrt_queue_len(void *handle);
 void zyxrt_queue_push(void *handle, const void *value);
 int zyxrt_queue_pop(void *handle, void *out);
+/* zyxrt_queue_peek copies the first element out without taking it, and
+   zyxrt_queue_clear drops every element and keeps the buffer. */
+int zyxrt_queue_peek(void *handle, void *out);
+void zyxrt_queue_clear(void *handle);
 
 /* A blocking queue is bounded and ordered by a comparison the caller
    supplies. A push waits while it is full and a pop waits while it is
    empty, so coroutines hand work to one another through it. */
 void *zyxrt_bqueue_new(size_t elem, size_t cap, void *less);
 size_t zyxrt_bqueue_len(void *handle);
+size_t zyxrt_bqueue_cap(void *handle);
 void zyxrt_bqueue_push(void *handle, const void *value);
 int zyxrt_bqueue_try_push(void *handle, const void *value);
 void zyxrt_bqueue_pop(void *handle, void *out);
@@ -94,6 +128,10 @@ size_t zyxrt_ring_len(void *handle);
 size_t zyxrt_ring_cap(void *handle);
 void zyxrt_ring_push(void *handle, const void *value);
 int zyxrt_ring_pop(void *handle, void *out);
+/* zyxrt_ring_peek copies the oldest element out without taking it, and
+   zyxrt_ring_clear drops every element. */
+int zyxrt_ring_peek(void *handle, void *out);
+void zyxrt_ring_clear(void *handle);
 
 /* A set holds each element once. */
 void *zyxrt_set_new(size_t elem_size, void *hash, void *eq);
@@ -124,6 +162,10 @@ int8_t zyxrt_str_eq(const char *a, size_t an, const char *b, size_t bn);
 /* zyxrt_str_compare orders two strings by their bytes, answering a negative
    number, zero, or a positive number. */
 int32_t zyxrt_str_compare(const char *a, size_t an, const char *b, size_t bn);
+/* zyxrt_str_rune decodes the rune at a byte offset and writes where the next
+   one begins. A byte sequence that is not valid UTF-8 is U+FFFD and the offset
+   advances by one, so a decoder always makes progress. */
+uint32_t zyxrt_str_rune(const char *s, size_t len, size_t at, size_t *next);
 
 /* The text of one value, in the single form the language writes it. Each
    function renders into a buffer the caller owns and reports the byte count.
@@ -172,11 +214,26 @@ typedef void (*zyxrt_fn)(void *arg);
 /* zyxrt_watch_fn is a supervisor: it takes the receiver of the function value
    the program wrote and the exception the coroutine raised. */
 typedef void (*zyxrt_watch_fn)(void *recv, void *panic);
-void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg);
+/* The stack a coroutine starts on. A coroutine whose body can reach only the
+   runtime's own C, and the operations the language itself performs, starts on a
+   small stack that commits little and grows as it is used; one that can reach C
+   of unknown depth starts on the full one. A tier changes how much a coroutine
+   commits before it runs, not what it can do: a stack that turns out to be too
+   small grows, so a coroutine of the wrong tier is slower and not wrong. */
+#define ZYXXRT_STACK_PACKED 0
+#define ZYXXRT_STACK_FULL 1
+void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg, int tier);
 /* zyxrt_coro_spawn_watched starts a coroutine and binds a supervisor to it.
    The supervisor runs when the coroutine raises, before the coroutine's
    region is released, so the exception it is given is still valid. */
-void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, void *watch_recv);
+void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, void *watch_recv, int tier);
+/* zyxrt_stack_committed answers how many bytes of coroutine stacks the program
+   has asked the system to commit. What the system charges for that is rounded up
+   to whole pages, and a coroutine's stack sits in a page of its own, so the
+   resident cost of a live coroutine is a page even when this number is a
+   kilobyte: what this counts is what the runtime asked for, not what the system
+   gave. */
+size_t zyxrt_stack_committed(void);
 /* zyxrt_coro_join waits for a coroutine and reports how it ended. It returns
    the value the coroutine recorded and writes the exception it raised to
    *panic, or NULL when it completed. The coroutine is released when the
@@ -285,6 +342,18 @@ void zyxrt_chan_close(void *ch);
 #define ZYXRT_FD_READ 1
 #define ZYXRT_FD_WRITE 2
 int zyxrt_loop_wait(int fd, int events);
+
+/* zyxrt_loop_wait_until waits for readiness or for a deadline, whichever comes
+   first: 0 the descriptor is ready, 1 it was released, 2 this target has no
+   event loop or the wait cannot be made, 3 the deadline passed first. A deadline
+   of zero is no deadline, and the wait is then the one without one. The deadline
+   is absolute, in the clock's own units. */
+int zyxrt_loop_wait_until(int fd, int events, uint64_t deadline);
+
+/* zyxrt_deadline_after answers the absolute deadline a relative wait of ns
+   nanoseconds ends at, in the clock the event loop reads, so a program states a
+   timeout as a duration and never as a reading of a clock it does not own. */
+uint64_t zyxrt_deadline_after(uint64_t ns);
 void zyxrt_loop_release(int fd);
 size_t zyxrt_loop_fds(void);
 

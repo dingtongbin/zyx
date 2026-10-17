@@ -1,0 +1,303 @@
+package main
+
+// The failures of the database package, over a database of its own in the
+// temporary directory of the machine. The program asks for each failure the
+// surface defines and prints its kind, and prints either the result code the
+// library reported or the text the package wrote, so nothing here depends on
+// the version of SQLite the program was linked with. The paths it builds are
+// never printed.
+
+import "std/fs"
+import "std/fmt"
+import "std/os"
+import "std/sqlite"
+
+// Mode is the permission bits of the directory this run makes, written as the
+// number rather than as an octal literal.
+const Mode: u32 = 493
+
+// kind_name names a failure kind, because an f-string writes a primitive type
+// or a text and the package's kind is an enumeration of its own.
+func kind_name(k: sqlite.ErrorKind) -> str {
+    match k {
+        NotFound => { return "NotFound" }
+        Permission => { return "Permission" }
+        Exists => { return "Exists" }
+        NotDir => { return "NotDir" }
+        IsDir => { return "IsDir" }
+        Invalid => { return "Invalid" }
+        Closed => { return "Closed" }
+        Timeout => { return "Timeout" }
+        Interrupted => { return "Interrupted" }
+        WouldBlock => { return "WouldBlock" }
+        Eof => { return "Eof" }
+        AddrInUse => { return "AddrInUse" }
+        AddrNotAvailable => { return "AddrNotAvailable" }
+        Refused => { return "Refused" }
+        Reset => { return "Reset" }
+        Unreachable => { return "Unreachable" }
+        Other => { return "Other" }
+    }
+}
+
+// report prints one failure. A failure SQLite reported carries the text of the
+// library version the program was linked with, so only its kind and its
+// primary result code are printed; a failure the package itself reported has
+// no result code and carries text of its own.
+func report(what: str, e: sqlite.Error) {
+    if e.Errno == 0 {
+        fmt.Println(f"{what}: {kind_name(e.Kind)} {e.Msg}")
+    } else {
+        fmt.Println(f"{what}: {kind_name(e.Kind)} code {i64(e.Errno % 256)}")
+    }
+}
+
+// params1 builds the parameters of a statement that takes one value.
+func params1(v: Value) -> Array<Value> {
+    var out = new Array<Value>(0)
+    out.Push(v)
+    return out
+}
+
+// join2 joins two parts of a path.
+func join2(a: str, b: str) -> str {
+    var parts = new Array<str>(0)
+    parts.Push(a)
+    parts.Push(b)
+    return fs.Join(parts)
+}
+
+// open_failure opens a database and reports what became of it. SQLite opens a
+// file without reading it, so a file that is not a database is noticed by the
+// first statement rather than by the open.
+func open_failure(what: str, path: str) {
+    match sqlite.Open(path) {
+        Ok(db) => {
+            var none = new Array<Value>(0)
+            match db.Exec("SELECT 1", none) {
+                Ok(_) => { fmt.Println(f"{what}: no failure") }
+                Err(e) => { report(what, e) }
+            }
+            db.Close()
+        }
+        Err(e) => { report(what, e) }
+    }
+}
+
+// schema reports the tables a connection holds, so a statement that was
+// refused is seen not to have run.
+func schema(db: sqlite.Db, what: str) {
+    var none = new Array<Value>(0)
+    match db.Query("SELECT name FROM sqlite_master ORDER BY name", none) {
+        Ok(rows) => {
+            var found = 0
+            for rows.Next() {
+                found += 1
+                fmt.Println(f"{what} table {rows.Text(0)}")
+            }
+            fmt.Println(f"{what} tables {found}")
+            rows.Close()
+        }
+        Err(e) => { report(what, e) }
+    }
+}
+
+func statements(root: str) -> Result<(), sqlite.Error> {
+    var db = try sqlite.Open(join2(root, "statements.db"))
+    var none = new Array<Value>(0)
+
+    // A statement that does not parse names a position rather than running
+    // half of it.
+    match db.Exec("SELEC 1", none) {
+        Ok(_) => { fmt.Println("syntax: no failure") }
+        Err(e) => { report("syntax", e) }
+    }
+
+    // A table is made, and a second statement in the same text is refused
+    // rather than left behind.
+    match db.Exec("CREATE TABLE a (x INTEGER); CREATE TABLE b (y INTEGER)", none) {
+        Ok(_) => { fmt.Println("two statements: no failure") }
+        Err(e) => { report("two statements", e) }
+    }
+    schema(db, "after two statements")
+
+    // What follows a statement may be a comment, which says nothing.
+    match db.Exec("CREATE TABLE c (x INTEGER) -- the table of c", none) {
+        Ok(_) => { fmt.Println("trailing comment: ran") }
+        Err(e) => { report("trailing comment", e) }
+    }
+
+    // A text that holds no statement at all is refused by the same check.
+    match db.Exec("", none) {
+        Ok(_) => { fmt.Println("empty: no failure") }
+        Err(e) => { report("empty", e) }
+    }
+    match db.Exec("  /* nothing here */ ;", none) {
+        Ok(_) => { fmt.Println("comment only: no failure") }
+        Err(e) => { report("comment only", e) }
+    }
+
+    // A binding of a parameter the statement does not have is out of range.
+    var many = new Array<Value>(0)
+    many.Push(Value.Float(1.0))
+    many.Push(Value.Float(2.0))
+    match db.Exec("CREATE TABLE d (x INTEGER)", many) {
+        Ok(_) => { fmt.Println("extra parameter: no failure") }
+        Err(e) => { report("extra parameter", e) }
+    }
+
+    // A value that is a collection has no column to stand for it.
+    var nested = new Array<Value>(0)
+    nested.Push(Value.Array(new Array<Value>(0)))
+    match db.Exec("CREATE TABLE e (x INTEGER)", nested) {
+        Ok(_) => { fmt.Println("array parameter: no failure") }
+        Err(e) => { report("array parameter", e) }
+    }
+    var mapped = new Array<Value>(0)
+    mapped.Push(Value.Map(new Map<str, Value>()))
+    match db.Exec("CREATE TABLE f (x INTEGER)", mapped) {
+        Ok(_) => { fmt.Println("map parameter: no failure") }
+        Err(e) => { report("map parameter", e) }
+    }
+    schema(db, "after refused statements")
+    db.Close()
+    return Result.Ok()
+}
+
+func constraints(root: str) -> Result<(), sqlite.Error> {
+    var db = try sqlite.Open(join2(root, "constraints.db"))
+    var none = new Array<Value>(0)
+    try db.Exec("CREATE TABLE names (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)", none)
+
+    var first = new Array<Value>(0)
+    first.Push(Value.Float(1.0))
+    first.Push(Value.Str("Ada"))
+    var made = try db.Exec("INSERT INTO names (id, name) VALUES (?, ?)", first)
+    fmt.Println(f"first changed {made}")
+
+    // A primary key that is already there.
+    match db.Exec("INSERT INTO names (id, name) VALUES (?, ?)", first) {
+        Ok(_) => { fmt.Println("duplicate key: no failure") }
+        Err(e) => { report("duplicate key", e) }
+    }
+
+    // The same value on a column that must hold each value once.
+    var other = new Array<Value>(0)
+    other.Push(Value.Float(2.0))
+    other.Push(Value.Str("Ada"))
+    match db.Exec("INSERT INTO names (id, name) VALUES (?, ?)", other) {
+        Ok(_) => { fmt.Println("duplicate name: no failure") }
+        Err(e) => { report("duplicate name", e) }
+    }
+
+    // No value at all on a column that must hold one.
+    var blank = new Array<Value>(0)
+    blank.Push(Value.Float(3.0))
+    blank.Push(Value.Null)
+    match db.Exec("INSERT INTO names (id, name) VALUES (?, ?)", blank) {
+        Ok(_) => { fmt.Println("missing value: no failure") }
+        Err(e) => { report("missing value", e) }
+    }
+
+    var counted = try db.Query("SELECT count(*) FROM names", none)
+    var kept: i64 = 0
+    if counted.Next() {
+        kept = counted.Int(0)
+    }
+    counted.Close()
+    fmt.Println(f"kept {kept}")
+    db.Close()
+    return Result.Ok()
+}
+
+func handles(root: str) -> Result<(), sqlite.Error> {
+    var db = try sqlite.Open(join2(root, "handles.db"))
+    var none = new Array<Value>(0)
+    try db.Exec("CREATE TABLE t (x INTEGER)", none)
+
+    var rows = try db.Query("SELECT x FROM t", none)
+    fmt.Println(f"columns {rows.Columns().Len()}")
+    fmt.Println(f"first row {rows.Next()}")
+    rows.Close()
+    rows.Close()
+    fmt.Println(f"closed row {rows.Next()}")
+    fmt.Println(f"closed columns {rows.Columns().Len()}")
+
+    db.Close()
+    db.Close()
+    match db.Exec("SELECT 1", none) {
+        Ok(_) => { fmt.Println("closed exec: no failure") }
+        Err(e) => { report("closed exec", e) }
+    }
+    match db.Query("SELECT 1", none) {
+        Ok(_) => { fmt.Println("closed query: no failure") }
+        Err(e) => { report("closed query", e) }
+    }
+    return Result.Ok()
+}
+
+// statements_without_rows runs a statement through Query rather than Exec,
+// which is allowed: the rows it answers are empty and it runs when it is
+// stepped.
+func statements_without_rows(root: str) -> Result<(), sqlite.Error> {
+    var db = try sqlite.Open(join2(root, "quiet.db"))
+    var none = new Array<Value>(0)
+    var made = try db.Query("CREATE TABLE spare (x INTEGER)", none)
+    fmt.Println(f"quiet columns {made.Columns().Len()}")
+    fmt.Println(f"quiet row {made.Next()}")
+    made.Close()
+    var wrote = try db.Query("INSERT INTO spare (x) VALUES (7)", none)
+    fmt.Println(f"quiet insert row {wrote.Next()}")
+    wrote.Close()
+    var back = try db.Query("SELECT x FROM spare", none)
+    var value: i64 = 0
+    if back.Next() {
+        value = back.Int(0)
+    }
+    back.Close()
+    fmt.Println(f"quiet value {value}")
+    db.Close()
+    return Result.Ok()
+}
+
+func run(root: str) -> Result<(), sqlite.Error> {
+    // A path whose directory is not there cannot hold a database.
+    open_failure("open below a missing directory", join2(join2(root, "missing"), "db.sqlite"))
+    // A directory is not a database either.
+    open_failure("open a directory", root)
+
+    // A file that is not a database is noticed when a statement reads it.
+    var not_a_database = join2(root, "not-a-database")
+    var bytes = new Array<u8>(0)
+    for ch in "this file is not a database" {
+        bytes.Push(u8(u32(ch)))
+    }
+    match fs.WriteFile(not_a_database, bytes[0 .. bytes.Len()]) {
+        Ok(_) => {}
+        Err(e) => { fmt.Println("could not write the file") }
+    }
+    open_failure("open a file that is not a database", not_a_database)
+
+    try statements(root)
+    try constraints(root)
+    try handles(root)
+    try statements_without_rows(root)
+    return Result.Ok()
+}
+
+func main() {
+    var parts = new Array<str>(0)
+    parts.Push(fs.TempDir())
+    parts.Push(f"zyx-sqlite-errors-{i64(os.Getpid())}")
+    var root = fs.Join(parts)
+    fs.RemoveAll(root)
+    match fs.Mkdir(root, Mode) {
+        Ok(_) => {}
+        Err(e) => { fmt.Println("could not make the directory") }
+    }
+    match run(root) {
+        Ok(_) => {}
+        Err(e) => { report("failed", e) }
+    }
+    fs.RemoveAll(root)
+}

@@ -82,11 +82,17 @@ func (c *checker) checkFuncBody(f *ast.FuncDecl, self *types.Type) {
 	}
 	prevSelf, prevReceiver := c.self, c.receiver
 	prevResult, prevComptime := c.result, c.inComptime
+	prevCFunc := c.inCFunc
 	c.self, c.receiver = self, receiver
 	c.result, c.inComptime = c.buildType(f.Result), f.Quals.Comptime
+	// A `c func` is called from C on a blocking-pool thread, so its body runs
+	// with no coroutine and no region: what the callback subset refuses is what
+	// such a body has nowhere to do.
+	c.inCFunc = f.Quals.CAbi
 	defer func() {
 		c.self, c.receiver = prevSelf, prevReceiver
 		c.result, c.inComptime = prevResult, prevComptime
+		c.inCFunc = prevCFunc
 	}()
 
 	for _, p := range f.Params {
@@ -141,6 +147,7 @@ func (c *checker) checkStmt(s ast.Stmt) {
 	case *ast.DeferStmt:
 		c.checkExpr(v.Call, nil)
 	case *ast.RegionStmt:
+		c.freestandingRegion(v)
 		c.inRegion++
 		c.checkBlock(v.Body)
 		c.inRegion--
@@ -153,6 +160,8 @@ func (c *checker) checkStmt(s ast.Stmt) {
 	case *ast.MatchStmt:
 		c.checkMatch(v)
 	case *ast.SelectStmt:
+		c.cFuncSelect(v)
+		c.freestandingSelect(v)
 		c.checkSelect(v)
 	case *ast.VarDecl:
 		c.checkLocalVar(v)

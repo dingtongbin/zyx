@@ -1,0 +1,5 @@
+a frame was written
+the frame reads back
+an empty body reads back
+a level outside the range is refused
+bytes that are not a frame are refused

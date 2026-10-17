@@ -1,1 +1,716 @@
 package json
+
+// JSON, read into the Value type the language predeclares and written back.
+// Reading is strict, because the format leaves no room to guess: an object
+// without a colon, a number without a digit, an escape that is not one, and a
+// nesting deeper than the limit are each a fault with a place and a path.
+//
+// Writing puts an object's members in the order of their names, so one value
+// has one text and a build does not decide what it looks like. A number that
+// is not finite is written as null, because JSON has no way to write one.
+
+// The bytes the format gives a meaning to.
+const space: u8 = 32
+const tab: u8 = 9
+const line_feed: u8 = 10
+const carriage_return: u8 = 13
+const backspace: u8 = 8
+const form_feed: u8 = 12
+
+// hex_digits is the alphabet a unicode escape writes.
+const hex_digits: str = "0123456789abcdef"
+
+// Error is one fault of a reading, with where in the text it stands, which
+// value of the tree it belongs to, and what went wrong.
+struct Error {
+    Pos: usize
+    Path: str
+    Msg: str
+
+    impl Show {
+        func Show(w: Buf) {
+            w.WriteStr(f"json: {self.Msg} at {self.Path} (byte {i64(self.Pos)})")
+        }
+    }
+}
+
+// Parse reads a text of bytes into a value.
+func Parse(b: [u8]) -> Result<Value, Error> {
+    var src = new Buf(0)
+    for x in b {
+        src.WriteByte(x)
+    }
+    return ParseStr(src.Str())
+}
+
+// ParseStr reads a text into a value.
+func ParseStr(s: str) -> Result<Value, Error> {
+    var p = Parser { src: s, at: 0, depth: 0, path: "$" }
+    var v = try p.value()
+    p.skip_space()
+    if !p.finished() {
+        return Result.Err(p.fault("trailing text follows the value"))
+    }
+    return Result.Ok(v)
+}
+
+// Encode writes a value.
+func Encode(dst: Buf, v: Value) {
+    write_value(dst, v, false, 0)
+}
+
+// EncodeStr answers a value's text as a string of its own.
+func EncodeStr(v: Value) -> str {
+    var dst = new Buf(0)
+    write_value(dst, v, false, 0)
+    return dst.Str()
+}
+
+// EncodePretty writes a value with each member of an object and each element of
+// an array on its own line, indented two spaces for each level.
+func EncodePretty(dst: Buf, v: Value) {
+    write_value(dst, v, true, 0)
+}
+
+// A Parser holds the text being read, how far the reading has gone, how deep
+// the value being read stands, and where in the tree it is. The path is written
+// as a root, a dot and a member name, and a bracketed index.
+struct Parser {
+    src: str
+    at: usize
+    depth: usize
+    path: str
+
+    // finished reports whether the reading has reached the end of the text.
+    func finished() -> bool {
+        return self.at >= self.src.Len()
+    }
+
+    // fault names a failure at the reading point.
+    func fault(msg: str) -> Error {
+        return Error { Pos: self.at, Path: self.path, Msg: msg }
+    }
+
+    // value reads one value.
+    func value() -> Result<Value, Error> {
+        self.skip_space()
+        if self.finished() {
+            return Result.Err(self.fault("the text ends where a value belongs"))
+        }
+        var b = self.src[self.at]
+        if b == byte_of('{') {
+            return self.object()
+        }
+        if b == byte_of('[') {
+            return self.array()
+        }
+        if b == byte_of('"') {
+            var s = try self.string()
+            return Result.Ok(Value.Str(s))
+        }
+        if b == byte_of('t') || b == byte_of('f') || b == byte_of('n') {
+            return self.literal()
+        }
+        if b == byte_of('-') || is_digit(b) {
+            var x = try self.number()
+            return Result.Ok(Value.Float(x))
+        }
+        return Result.Err(self.fault("the text holds no value here"))
+    }
+
+    // object reads an object.
+    func object() -> Result<Value, Error> {
+        self.depth += 1
+        if self.depth > 256 {
+            return Result.Err(self.fault("the nesting is deeper than 256"))
+        }
+        var outer = self.path
+        self.at += 1
+        var members = new Map<str, Value>()
+        self.skip_space()
+        if !self.finished() && self.src[self.at] == byte_of('}') {
+            self.at += 1
+            self.depth -= 1
+            return Result.Ok(Value.Map(members))
+        }
+        for {
+            self.skip_space()
+            if self.finished() {
+                return Result.Err(self.fault("the text ends inside an object"))
+            }
+            if self.src[self.at] != byte_of('"') {
+                return Result.Err(self.fault("a member name is not quoted"))
+            }
+            var key = try self.string()
+            self.skip_space()
+            if self.finished() || self.src[self.at] != byte_of(':') {
+                return Result.Err(self.fault("a member name is not followed by a colon"))
+            }
+            self.at += 1
+            self.path = f"{outer}.{key}"
+            var item = try self.value()
+            members.Insert(key, item)
+            self.skip_space()
+            if self.finished() {
+                return Result.Err(self.fault("the text ends inside an object"))
+            }
+            var b = self.src[self.at]
+            if b == byte_of(',') {
+                self.at += 1
+                continue
+            }
+            if b == byte_of('}') {
+                self.at += 1
+                break
+            }
+            return Result.Err(self.fault("a member is not followed by a comma or a closing brace"))
+        }
+        self.depth -= 1
+        self.path = outer
+        return Result.Ok(Value.Map(members))
+    }
+
+    // array reads an array.
+    func array() -> Result<Value, Error> {
+        self.depth += 1
+        if self.depth > 256 {
+            return Result.Err(self.fault("the nesting is deeper than 256"))
+        }
+        var outer = self.path
+        self.at += 1
+        var items = new Array<Value>(0)
+        self.skip_space()
+        if !self.finished() && self.src[self.at] == byte_of(']') {
+            self.at += 1
+            self.depth -= 1
+            return Result.Ok(Value.Array(items))
+        }
+        var index: usize = 0
+        for {
+            self.path = f"{outer}[{i64(index)}]"
+            var item = try self.value()
+            items.Push(item)
+            index += 1
+            self.skip_space()
+            if self.finished() {
+                return Result.Err(self.fault("the text ends inside an array"))
+            }
+            var b = self.src[self.at]
+            if b == byte_of(',') {
+                self.at += 1
+                continue
+            }
+            if b == byte_of(']') {
+                self.at += 1
+                break
+            }
+            return Result.Err(self.fault("an element is not followed by a comma or a closing bracket"))
+        }
+        self.depth -= 1
+        self.path = outer
+        return Result.Ok(Value.Array(items))
+    }
+
+    // string reads a quoted text, escapes and all.
+    func string() -> Result<str, Error> {
+        var n = self.src.Len()
+        self.at += 1
+        var out = new Buf(0)
+        for self.at < n {
+            var b = self.src[self.at]
+            if b == byte_of('"') {
+                self.at += 1
+                return Result.Ok(out.Str())
+            }
+            if b == byte_of('\\') {
+                self.at += 1
+                if self.at >= n {
+                    return Result.Err(self.fault("the text ends inside an escape"))
+                }
+                var e = self.src[self.at]
+                self.at += 1
+                if e == byte_of('"') {
+                    out.WriteByte(byte_of('"'))
+                } else if e == byte_of('\\') {
+                    out.WriteByte(byte_of('\\'))
+                } else if e == byte_of('/') {
+                    out.WriteByte(byte_of('/'))
+                } else if e == byte_of('b') {
+                    out.WriteByte(8)
+                } else if e == byte_of('f') {
+                    out.WriteByte(12)
+                } else if e == byte_of('n') {
+                    out.WriteByte(line_feed)
+                } else if e == byte_of('r') {
+                    out.WriteByte(carriage_return)
+                } else if e == byte_of('t') {
+                    out.WriteByte(tab)
+                } else if e == byte_of('u') {
+                    try self.read_escape(out)
+                } else {
+                    return Result.Err(self.fault("the escape names no character"))
+                }
+                continue
+            }
+            if b < space {
+                return Result.Err(self.fault("a control byte stands in a string"))
+            }
+            out.WriteByte(b)
+            self.at += 1
+        }
+        return Result.Err(self.fault("the text ends inside a string"))
+    }
+
+    // read_escape reads the four hexadecimal digits of a unicode escape and
+    // writes the character they name. A pair of escapes that name one character
+    // outside the basic plane is read as that character, and a lone half of
+    // such a pair reads as the replacement character.
+    func read_escape(out: Buf) -> Result<(), Error> {
+        var n = self.src.Len()
+        var cp = try self.read_hex4()
+        if cp >= 0xD800 && cp <= 0xDBFF {
+            if self.at + 1 < n && self.src[self.at] == byte_of('\\') && self.src[self.at + 1] == byte_of('u') {
+                var save = self.at
+                self.at += 2
+                match self.read_hex4() {
+                    Ok(lo) => {
+                        if lo >= 0xDC00 && lo <= 0xDFFF {
+                            var joined: u32 = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00)
+                            write_rune(out, joined)
+                            return Result.Ok()
+                        }
+                        self.at = save
+                    }
+                    Err(e) => return Result.Err(e)
+                }
+            }
+            write_rune(out, 0xFFFD)
+            return Result.Ok()
+        }
+        if cp >= 0xDC00 && cp <= 0xDFFF {
+            write_rune(out, 0xFFFD)
+            return Result.Ok()
+        }
+        write_rune(out, cp)
+        return Result.Ok()
+    }
+
+    // read_hex4 reads four hexadecimal digits.
+    func read_hex4() -> Result<u32, Error> {
+        var n = self.src.Len()
+        if self.at + 4 > n {
+            return Result.Err(self.fault("the text ends inside an escape"))
+        }
+        var value: u32 = 0
+        var i: usize = 0
+        for i < 4 {
+            var h = hex_value(self.src[self.at + i])
+            if h < 0 {
+                return Result.Err(self.fault("an escape does not hold four hexadecimal digits"))
+            }
+            value = value * 16 + u32(h)
+            i += 1
+        }
+        self.at += 4
+        return Result.Ok(value)
+    }
+
+    // literal reads true, false, or null.
+    func literal() -> Result<Value, Error> {
+        if self.matches("true") {
+            self.at += 4
+            return Result.Ok(Value.Bool(true))
+        }
+        if self.matches("false") {
+            self.at += 5
+            return Result.Ok(Value.Bool(false))
+        }
+        if self.matches("null") {
+            self.at += 4
+            return Result.Ok(Value.Null)
+        }
+        return Result.Err(self.fault("the text holds no literal here"))
+    }
+
+    // number reads a number. A whole number whose magnitude is larger than a
+    // float holds exactly is refused, because reading it back would answer a
+    // different number.
+    func number() -> Result<f64, Error> {
+        var n = self.src.Len()
+        var negative = false
+        if self.src[self.at] == byte_of('-') {
+            negative = true
+            self.at += 1
+        }
+        if self.at >= n || !is_digit(self.src[self.at]) {
+            return Result.Err(self.fault("a number has no digit"))
+        }
+        var mantissa: u64 = 0
+        var scale: i64 = 0
+        var kept: usize = 0
+        var whole = true
+        if self.src[self.at] == byte_of('0') {
+            self.at += 1
+        } else {
+            for self.at < n && is_digit(self.src[self.at]) {
+                if kept < 18 {
+                    mantissa = mantissa * 10 + u64(self.src[self.at] - byte_of('0'))
+                    kept += 1
+                } else {
+                    scale += 1
+                }
+                self.at += 1
+            }
+        }
+        if self.at < n && self.src[self.at] == byte_of('.') {
+            whole = false
+            self.at += 1
+            if self.at >= n || !is_digit(self.src[self.at]) {
+                return Result.Err(self.fault("a fraction has no digit"))
+            }
+            for self.at < n && is_digit(self.src[self.at]) {
+                if kept < 18 {
+                    mantissa = mantissa * 10 + u64(self.src[self.at] - byte_of('0'))
+                    kept += 1
+                    scale -= 1
+                }
+                self.at += 1
+            }
+        }
+        if self.at < n && (self.src[self.at] == byte_of('e') || self.src[self.at] == byte_of('E')) {
+            whole = false
+            self.at += 1
+            var down = false
+            if self.at < n && (self.src[self.at] == byte_of('+') || self.src[self.at] == byte_of('-')) {
+                down = self.src[self.at] == byte_of('-')
+                self.at += 1
+            }
+            if self.at >= n || !is_digit(self.src[self.at]) {
+                return Result.Err(self.fault("an exponent has no digit"))
+            }
+            var power: i64 = 0
+            for self.at < n && is_digit(self.src[self.at]) {
+                if power < 100000 {
+                    power = power * 10 + i64(self.src[self.at] - byte_of('0'))
+                }
+                self.at += 1
+            }
+            if down {
+                power = -power
+            }
+            scale += power
+        }
+        if whole && (mantissa > 9007199254740992 || scale > 0) {
+            return Result.Err(self.fault("the whole number is larger than a float holds exactly"))
+        }
+        if scale > 100000 {
+            scale = 100000
+        }
+        if scale < 0 - 100000 {
+            scale = 0 - 100000
+        }
+        var value = f64(mantissa)
+        if scale > 0 {
+            var i: i64 = 0
+            for i < scale && i < 400 {
+                value = value * 10.0
+                i += 1
+            }
+        } else {
+            var i = scale
+            var steps: i64 = 0
+            for i < 0 {
+                value = value / 10.0
+                i += 1
+                steps += 1
+                if value == 0.0 || steps >= 400 {
+                    break
+                }
+            }
+        }
+        if negative {
+            value = - value
+        }
+        return Result.Ok(value)
+    }
+
+    // matches reports whether a text stands at the reading point.
+    func matches(text: str) -> bool {
+        if self.at + text.Len() > self.src.Len() {
+            return false
+        }
+        var i: usize = 0
+        for i < text.Len() {
+            if self.src[self.at + i] != text[i] {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
+
+    // skip_space steps over the white space the format allows.
+    func skip_space() {
+        var n = self.src.Len()
+        for self.at < n {
+            var b = self.src[self.at]
+            if b == space || b == tab || b == line_feed || b == carriage_return {
+                self.at += 1
+                continue
+            }
+            break
+        }
+    }
+}
+
+// write_value writes one value.
+func write_value(dst: Buf, v: Value, pretty: bool, level: usize) {
+    match v {
+        Null => dst.WriteStr("null")
+        Bool(b) => {
+            if b {
+                dst.WriteStr("true")
+            } else {
+                dst.WriteStr("false")
+            }
+        }
+        Int(x) => dst.WriteStr(f"{x}")
+        Float(x) => write_number(dst, x)
+        Str(s) => write_text(dst, s)
+        Array(items) => write_array(dst, items, pretty, level)
+        Map(members) => write_object(dst, members, pretty, level)
+    }
+}
+
+// write_number writes a number. A whole value is written without a decimal
+// point, and a whole value a float holds exactly is written in full, so a value
+// as large as the largest integer a float names reads back as itself. An
+// infinity and a value that is not a number are written as null, because the
+// format cannot write them.
+func write_number(dst: Buf, x: f64) {
+    if x * 0.0 == 0.0 {
+        write_finite(dst, x)
+        return
+    }
+    dst.WriteStr("null")
+}
+
+// write_finite writes a value that is finite.
+func write_finite(dst: Buf, x: f64) {
+    var bound = exact_integer_limit()
+    if x >= - bound && x <= bound {
+        var whole = i64(x)
+        if f64(whole) == x {
+            dst.WriteStr(f"{whole}")
+            return
+        }
+    }
+    dst.WriteStr(f"{x}")
+}
+
+// exact_integer_limit is 2^53, the largest whole value for which every whole
+// value below it is a float of its own.
+func exact_integer_limit() -> f64 {
+    var value = 1.0
+    var i: usize = 0
+    for i < 53 {
+        value = value * 2.0
+        i += 1
+    }
+    return value
+}
+
+// write_text writes a text, quoted, with the bytes the format requires escaped.
+func write_text(dst: Buf, s: str) {
+    dst.WriteByte(byte_of('"'))
+    var n = s.Len()
+    var i: usize = 0
+    for i < n {
+        var b = s[i]
+        if b == byte_of('"') {
+            dst.WriteStr("\\\"")
+        } else if b == byte_of('\\') {
+            dst.WriteStr("\\\\")
+        } else if b == backspace {
+            dst.WriteStr("\\b")
+        } else if b == tab {
+            dst.WriteStr("\\t")
+        } else if b == line_feed {
+            dst.WriteStr("\\n")
+        } else if b == form_feed {
+            dst.WriteStr("\\f")
+        } else if b == carriage_return {
+            dst.WriteStr("\\r")
+        } else if b < space {
+            dst.WriteStr("\\u00")
+            dst.WriteByte(hex_digits[usize(b >> 4)])
+            dst.WriteByte(hex_digits[usize(b & 15)])
+        } else {
+            dst.WriteByte(b)
+        }
+        i += 1
+    }
+    dst.WriteByte(byte_of('"'))
+}
+
+// write_array writes an array.
+func write_array(dst: Buf, items: Array<Value>, pretty: bool, level: usize) {
+    var n = items.Len()
+    if n == 0 {
+        dst.WriteStr("[]")
+        return
+    }
+    dst.WriteStr("[")
+    var i: usize = 0
+    for i < n {
+        if i > 0 {
+            dst.WriteStr(",")
+        }
+        if pretty {
+            dst.WriteStr("\n")
+            write_indent(dst, level + 1)
+        }
+        write_value(dst, items[i], pretty, level + 1)
+        i += 1
+    }
+    if pretty {
+        dst.WriteStr("\n")
+        write_indent(dst, level)
+    }
+    dst.WriteStr("]")
+}
+
+// write_object writes an object with its members in the order of their names,
+// so one value has one text.
+func write_object(dst: Buf, members: Map<str, Value>, pretty: bool, level: usize) {
+    var keys = sorted_keys(members)
+    var n = keys.Len()
+    if n == 0 {
+        dst.WriteStr("{}")
+        return
+    }
+    dst.WriteStr("{")
+    var i: usize = 0
+    for i < n {
+        if i > 0 {
+            dst.WriteStr(",")
+        }
+        if pretty {
+            dst.WriteStr("\n")
+            write_indent(dst, level + 1)
+        }
+        write_text(dst, keys[i])
+        dst.WriteStr(":")
+        if pretty {
+            dst.WriteStr(" ")
+        }
+        write_value(dst, members[keys[i]], pretty, level + 1)
+        i += 1
+    }
+    if pretty {
+        dst.WriteStr("\n")
+        write_indent(dst, level)
+    }
+    dst.WriteStr("}")
+}
+
+// write_indent writes two spaces for each level.
+func write_indent(dst: Buf, level: usize) {
+    var count = level * 2
+    var i: usize = 0
+    for i < count {
+        dst.WriteByte(space)
+        i += 1
+    }
+}
+
+// sorted_keys answers an object's names in byte order.
+func sorted_keys(members: Map<str, Value>) -> Array<str> {
+    var keys = members.KeyList()
+    var n = keys.Len()
+    var i: usize = 1
+    for i < n {
+        var key = keys[i]
+        var j = i
+        for j > 0 && compare(keys[j - 1], key) > 0 {
+            keys[j] = keys[j - 1]
+            j -= 1
+        }
+        keys[j] = key
+        i += 1
+    }
+    return keys
+}
+
+// compare orders two texts by their bytes.
+func compare(a: str, b: str) -> i32 {
+    var n = a.Len()
+    var m = b.Len()
+    var limit = n
+    if m < limit {
+        limit = m
+    }
+    var i: usize = 0
+    for i < limit {
+        if a[i] != b[i] {
+            if a[i] < b[i] {
+                return 0 - 1
+            }
+            return 1
+        }
+        i += 1
+    }
+    if n < m {
+        return 0 - 1
+    }
+    if n > m {
+        return 1
+    }
+    return 0
+}
+
+// write_rune writes a character as its UTF-8 bytes.
+func write_rune(out: Buf, cp: u32) {
+    if cp < 0x80 {
+        out.WriteByte(u8(cp))
+        return
+    }
+    if cp < 0x800 {
+        out.WriteByte(u8(0xC0 | (cp >> 6)))
+        out.WriteByte(u8(0x80 | (cp & 0x3F)))
+        return
+    }
+    if cp < 0x10000 {
+        out.WriteByte(u8(0xE0 | (cp >> 12)))
+        out.WriteByte(u8(0x80 | ((cp >> 6) & 0x3F)))
+        out.WriteByte(u8(0x80 | (cp & 0x3F)))
+        return
+    }
+    out.WriteByte(u8(0xF0 | (cp >> 18)))
+    out.WriteByte(u8(0x80 | ((cp >> 12) & 0x3F)))
+    out.WriteByte(u8(0x80 | ((cp >> 6) & 0x3F)))
+    out.WriteByte(u8(0x80 | (cp & 0x3F)))
+}
+
+// hex_value is the value of a hexadecimal digit, or -1 when the byte is not
+// one.
+func hex_value(b: u8) -> i32 {
+    if b >= byte_of('0') && b <= byte_of('9') {
+        return i32(b - byte_of('0'))
+    }
+    if b >= byte_of('a') && b <= byte_of('f') {
+        return i32(b - byte_of('a')) + 10
+    }
+    if b >= byte_of('A') && b <= byte_of('F') {
+        return i32(b - byte_of('A')) + 10
+    }
+    return 0 - 1
+}
+
+func is_digit(b: u8) -> bool {
+    return b >= byte_of('0') && b <= byte_of('9')
+}
+
+func byte_of(ch: char) -> u8 {
+    return u8(u32(ch))
+}

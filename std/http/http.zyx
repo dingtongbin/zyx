@@ -1,1 +1,547 @@
 package http
+
+// HTTP/1.1 over a stream: the messages a program sends and receives, the
+// header fields they carry, a client that speaks the protocol to a server, and
+// a server that speaks it to a client.
+//
+// A message is a start line, its header fields, and a body. The fields say how
+// the body is framed, and this package reads a whole body before it hands the
+// message on: a handler always sees a complete request, and a caller always
+// sees a complete response. Both framings the protocol defines for a body that
+// is not simply the rest of the stream are read here, a length and a sequence
+// of chunks.
+//
+// Header names are compared without regard to the case of their letters, which
+// is the protocol's rule, and Entries keeps the order the fields were added
+// in.
+//
+// A client keeps connections that may serve another request; a server runs one
+// coroutine for each connection it accepts. A connection that may not serve
+// another request is closed, and closing a server closes every connection it
+// holds.
+
+import "std/net"
+
+// ErrorKind is what went wrong, in the shape every system package reports.
+enum ErrorKind {
+    NotFound
+    Permission
+    Exists
+    NotDir
+    IsDir
+    Invalid
+    Closed
+    Timeout
+    Interrupted
+    WouldBlock
+    Eof
+    AddrInUse
+    AddrNotAvailable
+    Refused
+    Reset
+    Unreachable
+    Other
+}
+
+// Error is one failure of a call. Errno is the number the system reported, or
+// zero when the failure is not one the system names, and Msg is the text that
+// goes with it.
+struct Error {
+    Kind: ErrorKind
+    Errno: i32
+    Msg: str
+
+    impl Show {
+        func Show(w: Buf) {
+            w.WriteStr(f"http: {self.Msg}")
+        }
+    }
+}
+
+// protocol_error builds a failure of a message that does not follow the
+// protocol.
+func protocol_error(msg: str) -> Error {
+    return Error { Kind: ErrorKind.Invalid, Errno: 0, Msg: msg }
+}
+
+// eof_error builds the failure of a stream that ended before a message did.
+func eof_error(msg: str) -> Error {
+    return Error { Kind: ErrorKind.Eof, Errno: 0, Msg: msg }
+}
+
+// error_of_net reads a failure of the network package as a failure of this
+// one.
+func error_of_net(e: net.Error) -> Error {
+    return Error { Kind: kind_of_net(e.Kind), Errno: e.Errno, Msg: e.Msg }
+}
+
+// kind_of_net maps the kind of a network failure onto the kind of this
+// package. The language does not convert between two enums, so the mapping is
+// written out.
+func kind_of_net(k: net.ErrorKind) -> ErrorKind {
+    var n = i32(k)
+    if n == i32(net.ErrorKind.NotFound) {
+        return ErrorKind.NotFound
+    }
+    if n == i32(net.ErrorKind.Permission) {
+        return ErrorKind.Permission
+    }
+    if n == i32(net.ErrorKind.Exists) {
+        return ErrorKind.Exists
+    }
+    if n == i32(net.ErrorKind.NotDir) {
+        return ErrorKind.NotDir
+    }
+    if n == i32(net.ErrorKind.IsDir) {
+        return ErrorKind.IsDir
+    }
+    if n == i32(net.ErrorKind.Invalid) {
+        return ErrorKind.Invalid
+    }
+    if n == i32(net.ErrorKind.Closed) {
+        return ErrorKind.Closed
+    }
+    if n == i32(net.ErrorKind.Timeout) {
+        return ErrorKind.Timeout
+    }
+    if n == i32(net.ErrorKind.Interrupted) {
+        return ErrorKind.Interrupted
+    }
+    if n == i32(net.ErrorKind.WouldBlock) {
+        return ErrorKind.WouldBlock
+    }
+    if n == i32(net.ErrorKind.Eof) {
+        return ErrorKind.Eof
+    }
+    if n == i32(net.ErrorKind.AddrInUse) {
+        return ErrorKind.AddrInUse
+    }
+    if n == i32(net.ErrorKind.AddrNotAvailable) {
+        return ErrorKind.AddrNotAvailable
+    }
+    if n == i32(net.ErrorKind.Refused) {
+        return ErrorKind.Refused
+    }
+    if n == i32(net.ErrorKind.Reset) {
+        return ErrorKind.Reset
+    }
+    if n == i32(net.ErrorKind.Unreachable) {
+        return ErrorKind.Unreachable
+    }
+    return ErrorKind.Other
+}
+
+// The bytes a message's own spelling uses.
+const sp: u8 = 32
+
+const ht: u8 = 9
+
+const cr: u8 = 13
+
+const lf: u8 = 10
+
+const colon: u8 = 58
+
+const semi: u8 = 59
+
+const comma: u8 = 44
+
+const slash: u8 = 47
+
+const zero: u8 = 48
+
+const nine: u8 = 57
+
+const upper_a: u8 = 65
+
+const upper_z: u8 = 90
+
+// lower_byte answers the byte in lower case. The protocol compares header
+// names and tokens over the ASCII letters only, so only those are mapped.
+func lower_byte(b: u8) -> u8 {
+    if b >= upper_a && b <= upper_z {
+        return b + 32
+    }
+    return b
+}
+
+// fold_equal reports whether two texts are equal without regard to the case of
+// ASCII letters.
+func fold_equal(a: str, b: str) -> bool {
+    if a.Len() != b.Len() {
+        return false
+    }
+    var i: usize = 0
+    for i < a.Len() {
+        if lower_byte(a[i]) != lower_byte(b[i]) {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+// is_ws reports whether a byte is a space or a horizontal tab, the two bytes a
+// header value is trimmed of.
+func is_ws(b: u8) -> bool {
+    return b == sp || b == ht
+}
+
+// trim_ascii answers a text with the leading and trailing spaces and tabs
+// removed. The answer has bytes of its own rather than a view of the source,
+// because a field outlives the line it was read from.
+func trim_ascii(s: str) -> str {
+    var lo: usize = 0
+    var hi = s.Len()
+    for lo < hi && is_ws(s[lo]) {
+        lo += 1
+    }
+    for hi > lo && is_ws(s[hi - 1]) {
+        hi -= 1
+    }
+    return copy_str(s, lo, hi)
+}
+
+// dup_str answers a text with bytes of its own, so that what a header stores
+// does not depend on the text it was given.
+func dup_str(s: str) -> str {
+    return copy_str(s, 0, s.Len())
+}
+
+// copy_str answers the bytes of a text between two positions as a text of
+// their own.
+func copy_str(s: str, from: usize, to: usize) -> str {
+    var out = new Buf(to - from)
+    var i = from
+    for i < to {
+        out.WriteByte(s[i])
+        i += 1
+    }
+    return out.Str()
+}
+
+// index_byte answers where a byte first appears, or nothing.
+func index_byte(s: str, b: u8) -> Option<usize> {
+    var i: usize = 0
+    for i < s.Len() {
+        if s[i] == b {
+            return Option.Some(i)
+        }
+        i += 1
+    }
+    return Option.None
+}
+
+// last_index_byte answers where a byte last appears, or nothing.
+func last_index_byte(s: str, b: u8) -> Option<usize> {
+    var i = s.Len()
+    for i > 0 {
+        i -= 1
+        if s[i] == b {
+            return Option.Some(i)
+        }
+    }
+    return Option.None
+}
+
+// has_prefix reports whether a text begins with another.
+func has_prefix(s: str, p: str) -> bool {
+    if s.Len() < p.Len() {
+        return false
+    }
+    var i: usize = 0
+    for i < p.Len() {
+        if s[i] != p[i] {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+// copy_range appends the bytes of src between two positions to dst.
+func copy_range(dst: Buf, src: [u8], from: usize, to: usize) {
+    var i = from
+    for i < to {
+        dst.WriteByte(src[i])
+        i += 1
+    }
+}
+
+// parse_decimal reads a non-negative decimal number. A text that is empty or
+// holds a byte that is not a digit, or a number beyond the range of a signed
+// 64-bit integer, answers -1, which no count may be.
+func parse_decimal(s: str) -> i64 {
+    if s.Len() == 0 {
+        return - 1
+    }
+    var v: i64 = 0
+    var i: usize = 0
+    for i < s.Len() {
+        var b = s[i]
+        if b < zero || b > nine {
+            return - 1
+        }
+        v = v * 10 + i64(b - zero)
+        if v > 922337203685477580 {
+            return - 1
+        }
+        i += 1
+    }
+    return v
+}
+
+// hex_digit answers the value of a hexadecimal digit, or -1 when the byte is
+// not one.
+func hex_digit(b: u8) -> i64 {
+    if b >= zero && b <= nine {
+        return i64(b - zero)
+    }
+    if b >= 97 && b <= 102 {
+        return i64(b - 97) + 10
+    }
+    if b >= upper_a && b <= 70 {
+        return i64(b - upper_a) + 10
+    }
+    return - 1
+}
+
+// token_has reports whether a comma-separated field value holds a word, which
+// is how Transfer-Encoding and Connection name their tokens.
+func token_has(value: str, word: str) -> bool {
+    var start: usize = 0
+    var i: usize = 0
+    for i <= value.Len() {
+        if i == value.Len() || value[i] == comma {
+            if fold_equal(trim_ascii(copy_str(value, start, i)), word) {
+                return true
+            }
+            start = i + 1
+        }
+        i += 1
+    }
+    return false
+}
+
+// bodyless reports whether a status names a response that carries no body
+// whatever its fields say.
+func bodyless(status: i32) -> bool {
+    if status >= 100 && status < 200 {
+        return true
+    }
+    if status == 204 {
+        return true
+    }
+    if status == 304 {
+        return true
+    }
+    return false
+}
+
+// reason answers the text that goes with a status on a status line. A status
+// this package has no text for is written with an empty one, which the
+// protocol allows.
+func reason(status: i32) -> str {
+    if status == 200 {
+        return "OK"
+    }
+    if status == 201 {
+        return "Created"
+    }
+    if status == 202 {
+        return "Accepted"
+    }
+    if status == 204 {
+        return "No Content"
+    }
+    if status == 206 {
+        return "Partial Content"
+    }
+    if status == 301 {
+        return "Moved Permanently"
+    }
+    if status == 302 {
+        return "Found"
+    }
+    if status == 303 {
+        return "See Other"
+    }
+    if status == 304 {
+        return "Not Modified"
+    }
+    if status == 307 {
+        return "Temporary Redirect"
+    }
+    if status == 308 {
+        return "Permanent Redirect"
+    }
+    if status == 400 {
+        return "Bad Request"
+    }
+    if status == 401 {
+        return "Unauthorized"
+    }
+    if status == 403 {
+        return "Forbidden"
+    }
+    if status == 404 {
+        return "Not Found"
+    }
+    if status == 405 {
+        return "Method Not Allowed"
+    }
+    if status == 408 {
+        return "Request Timeout"
+    }
+    if status == 411 {
+        return "Length Required"
+    }
+    if status == 413 {
+        return "Payload Too Large"
+    }
+    if status == 414 {
+        return "URI Too Long"
+    }
+    if status == 415 {
+        return "Unsupported Media Type"
+    }
+    if status == 426 {
+        return "Upgrade Required"
+    }
+    if status == 431 {
+        return "Request Header Fields Too Large"
+    }
+    if status == 500 {
+        return "Internal Server Error"
+    }
+    if status == 501 {
+        return "Not Implemented"
+    }
+    if status == 502 {
+        return "Bad Gateway"
+    }
+    if status == 503 {
+        return "Service Unavailable"
+    }
+    if status == 504 {
+        return "Gateway Timeout"
+    }
+    return ""
+}
+
+// A Header is the named values a message carries. A name is compared without
+// regard to the case of its letters, and the entries keep the order they were
+// added in. Every name and value is copied, so a header outlives whatever text
+// it was built from.
+struct Header {
+    entries: Array<(str, str)>
+
+    // init builds an empty header.
+    func init() -> Self {
+        return Header { entries: new Array<(str, str)>(0) }
+    }
+
+    // Get answers the first value of a name, or nothing when no field has it.
+    func Get(name: str) -> Option<str> {
+        var i: usize = 0
+        for i < self.entries.Len() {
+            var e = self.entries[i]
+            if fold_equal(e.0, name) {
+                return Option.Some(e.1)
+            }
+            i += 1
+        }
+        return Option.None
+    }
+
+    // Set replaces every value of a name with one value, keeping the position
+    // of the first, and adds a field when no field has the name.
+    func Set(name: str, v: str) {
+        var out = new Array<(str, str)>(0)
+        var found = false
+        var i: usize = 0
+        for i < self.entries.Len() {
+            var e = self.entries[i]
+            if fold_equal(e.0, name) {
+                if !found {
+                    out.Push((e.0, dup_str(v)))
+                    found = true
+                }
+            } else {
+                out.Push(e)
+            }
+            i += 1
+        }
+        if !found {
+            out.Push((dup_str(name), dup_str(v)))
+        }
+        self.entries = out
+    }
+
+    // Add appends a value of a name and keeps every value already there.
+    func Add(name: str, v: str) {
+        self.entries.Push((dup_str(name), dup_str(v)))
+    }
+
+    // Del removes every value of a name.
+    func Del(name: str) {
+        var out = new Array<(str, str)>(0)
+        var i: usize = 0
+        for i < self.entries.Len() {
+            var e = self.entries[i]
+            if !fold_equal(e.0, name) {
+                out.Push(e)
+            }
+            i += 1
+        }
+        self.entries = out
+    }
+
+    // Len answers how many entries the header holds.
+    func Len() -> usize {
+        return self.entries.Len()
+    }
+
+    // Entries answers the entries in the order they were added, as an array of
+    // its own so a caller cannot change the header through it.
+    func Entries() -> Array<(str, str)> {
+        var out = new Array<(str, str)>(0)
+        var i: usize = 0
+        for i < self.entries.Len() {
+            out.Push(self.entries[i])
+            i += 1
+        }
+        return out
+    }
+}
+
+// A Request is what a client sends and a server reads. URL is the whole URL a
+// client was given; the path of that URL is what travels on the wire.
+struct Request {
+    Method: str
+    URL: str
+    Header: Header
+    Body: Buf
+}
+
+// A Response is what a server sends and a client reads. Status is the number
+// of the status line. conn is the connection the request arrived on, and taken
+// records whether the handler has taken it over: a handler that answers with a
+// protocol of its own, as a WebSocket upgrade does, takes the connection, writes
+// its own bytes, and the server then writes nothing and closes nothing.
+struct Response {
+    Status: i32
+    Header: Header
+    Body: Buf
+
+    conn: net.Conn
+    taken: bool
+
+    // TakeConn gives the handler the connection the request arrived on, which is
+    // what an upgrade to another protocol needs: the bytes of that protocol then
+    // travel on a connection the handler owns.
+    func TakeConn() -> net.Conn {
+        self.taken = true
+        return self.conn
+    }
+}

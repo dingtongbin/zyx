@@ -1,1 +1,184 @@
 package redis
+
+// A redis client. hiredis speaks the protocol and the design names it for this
+// package, so the client reaches it through the wrapper beside this file: a
+// command is one call, and the reply it answers is read as the shapes the
+// protocol defines.
+//
+// The connection is a value of this package rather than a descriptor, so a
+// program hands it around the way it hands any other value, and every failure is
+// the one shape the system packages report.
+
+import c "zyxredis.h" {
+    fast zyxredis_close
+    fast zyxredis_error_kind, zyxredis_error_number, zyxredis_error_message
+    fast zyxredis_reply_free, zyxredis_reply_kind, zyxredis_reply_integer
+    fast zyxredis_reply_text_into, zyxredis_reply_count, zyxredis_reply_at
+}
+
+// The entry that connects and the one that runs a command wait for the server,
+// so they are declared rather than marked fast with the rest: a call that
+// answers at once is fast, and these two do not.
+extern func zyxredis_connect(addr: str) -> raw
+extern func zyxredis_do(handle: raw, cmd: str, args: [u8]) -> raw
+
+// ErrorKind is what went wrong. Every system package reports failures in this
+// shape, so one program reads them the same way wherever they come from.
+enum ErrorKind {
+    NotFound
+    Permission
+    Exists
+    NotDir
+    IsDir
+    Invalid
+    Closed
+    Timeout
+    Interrupted
+    WouldBlock
+    Eof
+    AddrInUse
+    AddrNotAvailable
+    Refused
+    Reset
+    Unreachable
+    Other
+}
+
+// Error is one failure of this package.
+struct Error {
+    Kind: ErrorKind
+    Errno: i32
+    Msg: str
+
+    impl Show {
+        func Show(w: Buf) {
+            w.WriteStr(f"redis: {self.Msg}")
+        }
+    }
+}
+
+// Reply is what a command answered: a simple status, an error the server
+// reported, an integer, a bulk string, nothing, or an array of replies, which is
+// the whole vocabulary the protocol has.
+enum Reply {
+    Status(str)
+    Error(str)
+    Int(i64)
+    Bulk(str)
+    Nil
+    Array(Array<Reply>)
+}
+
+// error_kind maps the number the binding reports onto the kind of failure it is.
+// The numbers are the ones the package's own header defines.
+func error_kind(code: i32) -> ErrorKind {
+    if code == c.ZYXREDIS_INVALID {
+        return ErrorKind.Invalid
+    }
+    if code == c.ZYXREDIS_REFUSED {
+        return ErrorKind.Refused
+    }
+    if code == c.ZYXREDIS_CLOSED {
+        return ErrorKind.Closed
+    }
+    return ErrorKind.Other
+}
+
+// last_error builds the failure the binding just reported.
+func last_error() -> Error {
+    var text = new Buf(0)
+    c.zyxredis_error_message(text)
+    return Error {
+        Kind: error_kind(c.zyxredis_error_kind())
+        Errno: c.zyxredis_error_number()
+        Msg: text.Str()
+    }
+}
+
+// A Client is a connection to a redis server. It is a value, and a call on a
+// connection that was closed is refused rather than reaching the library.
+struct Client {
+    handle: raw
+    closed: bool
+
+    impl SyncSafe { }
+
+    // init connects to the server the address names, as host:port. A port that
+    // is left out is the one a server listens on by default.
+    func init(addr: str) -> Result<Client, Error> {
+        var handle = c.zyxredis_connect(addr)
+        if c.zyxredis_error_kind() != 0 {
+            return Result.Err(last_error())
+        }
+        return Result.Ok(Client { handle: handle, closed: false })
+    }
+
+    // Do runs one command with its arguments and answers what the server
+    // replied. The command and every argument are texts, and the arguments are
+    // sent as the list they are, so a value never has to be quoted by hand.
+    func Do(cmd: str, args: Array<str>) -> Result<Reply, Error> {
+        if self.closed {
+            return Result.Err(Error { Kind: ErrorKind.Closed, Errno: 0, Msg: "the client is closed" })
+        }
+        var packed = new Buf(0)
+        for arg in args {
+            packed.WriteStr(arg)
+            packed.WriteByte(0)
+        }
+        var reply = c.zyxredis_do(self.handle, cmd, packed.Bytes())
+        if c.zyxredis_error_kind() != 0 {
+            return Result.Err(last_error())
+        }
+        var read = read_reply(reply)
+        c.zyxredis_reply_free(reply)
+        return Result.Ok(read)
+    }
+
+    // Close gives the connection up. It is idempotent, and a call on the client
+    // afterwards is refused.
+    func Close() {
+        if self.closed {
+            return
+        }
+        self.closed = true
+        c.zyxredis_close(self.handle)
+    }
+}
+
+// read_reply reads one reply of the binding as a reply of this package. An array
+// reads its elements, which live as long as the reply they came from, so the
+// whole tree is read before the binding's reply is given up.
+func read_reply(reply: raw) -> Reply {
+    var kind = c.zyxredis_reply_kind(reply)
+    if kind == 1 {
+        return Reply.Status(text_of(reply))
+    }
+    if kind == 2 {
+        return Reply.Error(text_of(reply))
+    }
+    if kind == 3 {
+        return Reply.Int(c.zyxredis_reply_integer(reply))
+    }
+    if kind == 4 {
+        return Reply.Bulk(text_of(reply))
+    }
+    if kind == 6 {
+        var count = usize(c.zyxredis_reply_count(reply))
+        var out = new Array<Reply>(count)
+        var i: usize = 0
+        for i < count {
+            out.Push(read_reply(c.zyxredis_reply_at(reply, i)))
+            i += 1
+        }
+        return Reply.Array(out)
+    }
+    return Reply.Nil
+}
+
+// text_of copies the text a reply carries out of it, so the text outlives the
+// reply it came from.
+func text_of(reply: raw) -> str {
+    var out = new Buf(0)
+    c.zyxredis_reply_text_into(reply, out)
+    return out.Str()
+}

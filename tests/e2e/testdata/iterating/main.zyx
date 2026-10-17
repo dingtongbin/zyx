@@ -1,0 +1,118 @@
+package main
+
+import "std/fmt"
+
+// A container, a str, a fixed-size array, a slice, and a range are all
+// iterable. A map binds a key and a value; everything else binds one name.
+
+func sum(xs: Array<i64>) -> i64 {
+    var total: i64 = 0
+    for x in xs {
+        total += x
+    }
+    return total
+}
+
+func main() {
+    var xs = new Array<i64>(0)
+    for i in 1 .. 5 {
+        xs.Push(i)
+    }
+    fmt.PrintI64(sum(xs))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(xs.Len()))
+    fmt.PrintNl()
+
+    // A binding written as _ walks the container without a name.
+    var seen: i64 = 0
+    for _ in xs {
+        seen += 1
+    }
+    fmt.PrintI64(seen)
+    fmt.PrintNl()
+
+    // break and continue reach the loop the label names.
+    var odd: i64 = 0
+    outer: for x in xs {
+        if x == 3 {
+            continue outer
+        }
+        if x == 4 {
+            break outer
+        }
+        odd += x
+    }
+    fmt.PrintI64(odd)
+    fmt.PrintNl()
+
+    var ids = new Set<i64>()
+    for i in 0 .. 4 {
+        ids.Add(i)
+        ids.Add(i)
+    }
+    var total: i64 = 0
+    for v in ids {
+        total += v
+    }
+    fmt.PrintI64(total)
+    fmt.Print(" ")
+    fmt.PrintI64(i64(ids.Len()))
+    fmt.PrintNl()
+
+    var scores = new Map<str, i64>()
+    scores.Insert("alice", 10)
+    scores.Insert("bob", 20)
+    scores.Insert("carol", 30)
+    var names: i64 = 0
+    var points: i64 = 0
+    for name, score in scores {
+        names += i64(name.Len())
+        points += score
+    }
+    fmt.PrintI64(names)
+    fmt.Print(" ")
+    fmt.PrintI64(points)
+    fmt.Print(" ")
+    fmt.PrintI64(i64(scores.Len()))
+    fmt.PrintNl()
+
+    // A map value is written where it lies, so an iteration can change it.
+    for name, score in scores {
+        if name == "bob" {
+            scores[name] = score + 1
+        }
+    }
+    fmt.PrintI64(scores["bob"])
+    fmt.PrintNl()
+
+    var text = "hi \u{4E2D}\u{1F600}"
+    var runes: i64 = 0
+    var wide: i64 = 0
+    for ch in text {
+        runes += 1
+        if u32(ch) > 127 {
+            wide += 1
+        }
+    }
+    fmt.PrintI64(runes)
+    fmt.Print(" ")
+    fmt.PrintI64(wide)
+    fmt.PrintNl()
+
+    // A str that is not valid UTF-8 decodes as U+FFFD and moves on one byte.
+    var bytes = new Buf()
+    bytes.Write(b"a\xFFb")
+    var broken = bytes.Str()
+    var count: i64 = 0
+    for ch in broken {
+        count += 1
+        if ch == '\u{FFFD}' {
+            fmt.Print("?")
+        } else {
+            fmt.PrintChar(ch)
+        }
+    }
+    fmt.Print(" ")
+    fmt.PrintI64(count)
+    fmt.PrintNl()
+}

@@ -1,0 +1,507 @@
+package main
+
+import "std/compress"
+import "std/fmt"
+
+// The three codecs are held to the streams the format documents give, to what
+// the encoder writes for them, and to a round trip over input that compresses,
+// input that does not, and the sizes in between. Every failure a decoder can
+// report is asked for once. Nothing here depends on the machine or the moment.
+
+const lower_hex: str = "0123456789abcdef"
+
+const upper_hex: str = "0123456789ABCDEF"
+
+// bytesOf builds the bytes of an ASCII text.
+
+func bytesOf(src: str) -> Array<u8> {
+    var out = new Array<u8>(0)
+    for i in 0 .. src.Len() {
+        out.Push(src[i])
+    }
+    return out
+}
+
+// concat builds an array holding the bytes of both arguments.
+
+func concat(a: Array<u8>, b: Array<u8>) -> Array<u8> {
+    var out = new Array<u8>(0)
+    for i in 0 .. a.Len() {
+        out.Push(a[i])
+    }
+    for i in 0 .. b.Len() {
+        out.Push(b[i])
+    }
+    return out
+}
+
+// repeatBytes builds n copies of one byte.
+
+func repeatBytes(b: u8, n: usize) -> Array<u8> {
+    var out = new Array<u8>(0)
+    for _ in 0 .. n {
+        out.Push(b)
+    }
+    return out
+}
+
+// noise builds n bytes from a fixed recurrence, so the same bytes come out
+// wherever the program runs.
+
+func noise(n: usize) -> Array<u8> {
+    var out = new Array<u8>(0)
+    var x: u32 = u32(12345)
+    for _ in 0 .. n {
+        x = x.wrap_mul(u32(1103515245)).wrap_add(u32(12345))
+        out.Push(u8(x >> u32(16)))
+    }
+    return out
+}
+
+// digitValue answers the value of a hexadecimal character, or -1.
+
+func digitValue(ch: u8) -> i32 {
+    var i: usize = 0
+    for i < 16 {
+        if lower_hex[i] == ch || upper_hex[i] == ch {
+            return i32(i)
+        }
+        i += 1
+    }
+    return- 1
+}
+
+// fromHex builds the bytes a hexadecimal text stands for.
+
+func fromHex(s: str) -> Array<u8> {
+    var out = new Array<u8>(0)
+    var i: usize = 0
+    for i + 1 < s.Len() {
+        out.Push(u8(digitValue(s[i]) * 16 + digitValue(s[i + 1])))
+        i += 2
+    }
+    return out
+}
+
+// hexOf writes the bytes of a buffer as lowercase hexadecimal.
+
+func hexOf(buf: Buf) -> str {
+    var out = new Buf(0)
+    var b = buf.Bytes()
+    for i in 0 .. buf.Len() {
+        var v = b[i]
+        out.WriteByte(lower_hex[usize(v >> u8(4))])
+        out.WriteByte(lower_hex[usize(v & u8(15))])
+    }
+    return out.Str()
+}
+
+// count counts the bytes of a view.
+
+func count(b: [u8]) -> usize {
+    var n: usize = 0
+    for _ in b {
+        n += 1
+    }
+    return n
+}
+
+// sameBytes reports whether two views hold the same bytes.
+
+func sameBytes(a: [u8], b: [u8]) -> bool {
+    var n = count(a)
+    if count(b) != n {
+        return false
+    }
+    var i: usize = 0
+    for i < n {
+        if a[i] != b[i] {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+// errName is what a codec's refusal is called.
+
+func errName(e: compress.Error) -> str {
+    match e {
+        Truncated => return "truncated"
+        Corrupt => return "corrupt"
+        Checksum => return "checksum"
+        Level(n) => return "level"
+    }
+}
+
+// report prints what an operation answered.
+
+func report(label: str, r: Result<(), compress.Error>) {
+    fmt.Print(label)
+    fmt.Print(" ")
+    match r {
+        Ok(_) => fmt.Print("ok")
+        Err(e) => fmt.Print(errName(e))
+    }
+    fmt.PrintNl()
+}
+
+// loremText repeats one sentence the number of times the vector does.
+
+func loremText() -> str {
+    var b = new Buf(0)
+    for _ in 0 .. 40 {
+        b.WriteStr("Lorem ipsum dolor sit amet, consectetur adipiscing elit. ")
+    }
+    return b.Str()
+}
+
+// digitsText repeats the ten digits the number of times the vector does.
+
+func digitsText() -> str {
+    var b = new Buf(0)
+    for _ in 0 .. 400 {
+        b.WriteStr("0123456789")
+    }
+    return b.Str()
+}
+
+// vector prints the encoder's answer for one input and whether it is the
+// stream the format documents.
+
+func vector(label: str, src: Array<u8>, level: i32, want: str) {
+    var out = new Buf(0)
+    match compress.DeflateEncode(out, src[0 .. src.Len()], level) {
+        Ok(_) => {
+            var got = hexOf(out)
+            fmt.Print(label)
+            fmt.Print(" ")
+            fmt.PrintBool(got == want)
+            fmt.Print(" ")
+            fmt.Print(got)
+            fmt.PrintNl()
+        }
+        Err(_) => {
+            fmt.Print(label)
+            fmt.Print(" encode failed")
+            fmt.PrintNl()
+        }
+    }
+}
+
+// selfCheck prints the size of the encoder's own stream for one input and
+// whether it reads back.
+
+func selfCheck(label: str, src: Array<u8>, level: i32) {
+    var out = new Buf(0)
+    match compress.DeflateEncode(out, src[0 .. src.Len()], level) {
+        Ok(_) => {
+            var back = new Buf(0)
+            match compress.DeflateDecode(back, out.Bytes()) {
+                Ok(_) => {
+                    fmt.Print(label)
+                    fmt.Print(" ")
+                    fmt.PrintBool(sameBytes(back.Bytes(), src[0 .. src.Len()]))
+                    fmt.Print(" ")
+                    fmt.PrintI64(i64(out.Len()))
+                    fmt.PrintNl()
+                }
+                Err(_) => {
+                    fmt.Print(label)
+                    fmt.Print(" decode failed")
+                    fmt.PrintNl()
+                }
+            }
+        }
+        Err(_) => {
+            fmt.Print(label)
+            fmt.Print(" encode failed")
+            fmt.PrintNl()
+        }
+    }
+}
+
+// decodeDeflate prints whether a documented stream decodes to its text.
+
+func decodeDeflate(label: str, hex: str, text: str) {
+    var src = fromHex(hex)
+    var out = new Buf(0)
+    match compress.DeflateDecode(out, src[0 .. src.Len()]) {
+        Ok(_) => {
+            fmt.Print(label)
+            fmt.Print(" ")
+            fmt.PrintBool(out.Str() == text)
+            fmt.Print(" ")
+            fmt.PrintI64(i64(out.Len()))
+            fmt.PrintNl()
+        }
+        Err(_) => {
+            fmt.Print(label)
+            fmt.Print(" decode failed")
+            fmt.PrintNl()
+        }
+    }
+}
+
+// printDecoded prints an accepted decode and whether its text is the one asked
+// for.
+
+func printDecoded(label: str, out: Buf, text: str) {
+    fmt.Print(label)
+    fmt.Print(" ")
+    fmt.PrintBool(out.Str() == text)
+    fmt.Print(" ")
+    fmt.PrintI64(i64(out.Len()))
+    fmt.PrintNl()
+}
+
+// printFailed prints a decode that was refused.
+
+func printFailed(label: str) {
+    fmt.Print(label)
+    fmt.Print(" decode failed")
+    fmt.PrintNl()
+}
+
+// decodeWrapper prints whether a documented zlib or gzip stream decodes.
+
+func decodeWrapper(label: str, hex: str, text: str, zlib: bool) {
+    var src = fromHex(hex)
+    var out = new Buf(0)
+    if zlib {
+        match compress.ZlibDecode(out, src[0 .. src.Len()]) {
+            Ok(_) => printDecoded(label, out, text)
+            Err(_) => printFailed(label)
+        }
+    }  else {
+        match compress.GzipDecode(out, src[0 .. src.Len()]) {
+            Ok(_) => printDecoded(label, out, text)
+            Err(_) => printFailed(label)
+        }
+    }
+}
+
+// badDeflate prints what a raw stream was refused with.
+
+func badDeflate(label: str, hex: str) {
+    var src = fromHex(hex)
+    var out = new Buf(0)
+    report(label, compress.DeflateDecode(out, src[0 .. src.Len()]))
+}
+
+// badWrapper prints what a zlib or gzip stream was refused with.
+
+func badWrapper(label: str, src: Array<u8>, zlib: bool) {
+    var out = new Buf(0)
+    if zlib {
+        report(label, compress.ZlibDecode(out, src[0 .. src.Len()]))
+    }  else {
+        report(label, compress.GzipDecode(out, src[0 .. src.Len()]))
+    }
+}
+
+// roundTrip prints the compressed size and whether the input came back, for one
+// input and one level of each wrapper.
+
+func roundTrip(label: str, src: Array<u8>, level: i32) {
+    var view = src[0 .. src.Len()]
+    var deflated = new Buf(0)
+    var dlen: i64 =- 1
+    var dok = false
+    match compress.DeflateEncode(deflated, view, level) {
+        Ok(_) => {
+            dlen = i64(deflated.Len())
+            var back = new Buf(0)
+            match compress.DeflateDecode(back, deflated.Bytes()) {
+                Ok(_) => dok = sameBytes(back.Bytes(), view)
+                Err(_) => dok = false
+            }
+        }
+        Err(_) => dlen =- 1
+    }
+    var zlibbed = new Buf(0)
+    var zlen: i64 =- 1
+    var zok = false
+    match compress.ZlibEncode(zlibbed, view, level) {
+        Ok(_) => {
+            zlen = i64(zlibbed.Len())
+            var back = new Buf(0)
+            match compress.ZlibDecode(back, zlibbed.Bytes()) {
+                Ok(_) => zok = sameBytes(back.Bytes(), view)
+                Err(_) => zok = false
+            }
+        }
+        Err(_) => zlen =- 1
+    }
+    var gzipped = new Buf(0)
+    var glen: i64 =- 1
+    var gok = false
+    match compress.GzipEncode(gzipped, view) {
+        Ok(_) => {
+            glen = i64(gzipped.Len())
+            var back = new Buf(0)
+            match compress.GzipDecode(back, gzipped.Bytes()) {
+                Ok(_) => gok = sameBytes(back.Bytes(), view)
+                Err(_) => gok = false
+            }
+        }
+        Err(_) => glen =- 1
+    }
+    fmt.Print(label)
+    fmt.Print(" ")
+    fmt.PrintI64(i64(count(view)))
+    fmt.Print(" deflate ")
+    fmt.PrintI64(dlen)
+    fmt.Print(" ")
+    fmt.PrintBool(dok)
+    fmt.Print(" zlib ")
+    fmt.PrintI64(zlen)
+    fmt.Print(" ")
+    fmt.PrintBool(zok)
+    fmt.Print(" gzip ")
+    fmt.PrintI64(glen)
+    fmt.Print(" ")
+    fmt.PrintBool(gok)
+    fmt.PrintNl()
+}
+
+func main() {
+    var hello = bytesOf("hello")
+    var hello_view = hello[0 .. hello.Len()]
+    // What the encoder writes for the smallest streams the format documents.
+    vector("deflate empty", repeatBytes(u8(0), 0), 6, "0300")
+    vector("deflate a", bytesOf("a"), 6, "4b0400")
+    vector("deflate hello", hello, 6, "cb48cdc9c90700")
+    // A stream with a match is the encoder's own answer, not the format's, so
+    // it is held to reading back rather than to bytes.
+    selfCheck("deflate repeats", bytesOf("hello hello hello hello"), 6)
+    // A stream written by a level of zero is a stored block.
+    var stored = new Buf(0)
+    match compress.DeflateEncode(stored, hello_view, 0) {
+        Ok(_) => {
+            fmt.Print("deflate stored ")
+            fmt.PrintBool(hexOf(stored) == "010500faff68656c6c6f")
+            fmt.Print(" ")
+            fmt.Print(hexOf(stored))
+            fmt.PrintNl()
+        }
+        Err(_) => {
+            fmt.Print("deflate stored failed")
+            fmt.PrintNl()
+        }
+    }
+    // The wrappers over the same stream.
+    var zl = new Buf(0)
+    match compress.ZlibEncode(zl, hello_view, 6) {
+        Ok(_) => {
+            fmt.Print("zlib hello ")
+            fmt.PrintBool(hexOf(zl) == "789ccb48cdc9c90700062c0215")
+            fmt.Print(" ")
+            fmt.Print(hexOf(zl))
+            fmt.PrintNl()
+        }
+        Err(_) => {
+            fmt.Print("zlib hello failed")
+            fmt.PrintNl()
+        }
+    }
+    var gz = new Buf(0)
+    match compress.GzipEncode(gz, hello_view) {
+        Ok(_) => {
+            fmt.Print("gzip hello ")
+            fmt.PrintBool(hexOf(gz) == "1f8b0800000000000003cb48cdc9c9070086a6103605000000")
+            fmt.Print(" ")
+            fmt.Print(hexOf(gz))
+            fmt.PrintNl()
+        }
+        Err(_) => {
+            fmt.Print("gzip hello failed")
+            fmt.PrintNl()
+        }
+    }
+    // Documented streams read back to their text: an empty block, stored
+    // blocks, a fixed block, and two dynamic blocks.
+    decodeDeflate("decode empty", "0300", "")
+    decodeDeflate("decode stored", "010500faff68656c6c6f", "hello")
+    decodeDeflate("decode two stored", "000300fcff616263010300fcff646566", "abcdef")
+    decodeDeflate("decode fixed repeat", "cb48cdc9c957c8402701", "hello hello hello hello")
+    decodeDeflate("decode dynamic lorem", "edcbc10900210c04c056b680e32ab109d120013592c4feaf8d7becfca798cb829eb80bdda639421375493e68b6435a4a5e47ed7a349aee01999a2f0a23232323232323e3bfe307", loremText())
+    decodeDeflate("decode dynamic digits", "edc6490100200800b04a7820dabf9831f86cafc5986be7a9fbc2cccccccccccccc9af601", digitsText())
+    decodeWrapper("decode zlib hello", "789ccb48cdc9c90700062c0215", "hello", true)
+    decodeWrapper("decode gzip hello", "1f8b0800000000000003cb48cdc9c9070086a6103605000000", "hello", false)
+    decodeWrapper("decode gzip empty", "1f8b080000000000000303000000000000000000", "", false)
+    // A gzip header with each optional field a foreign writer may add.
+    decodeWrapper("decode gzip named", "1f8b08080000000000036e616d6500cb48cdc9c9070086a6103605000000", "hello", false)
+    decodeWrapper("decode gzip extra", "1f8b08040000000000030400aabbccddcb48cdc9c9070086a6103605000000", "hello", false)
+    decodeWrapper("decode gzip comment", "1f8b0810000000000003686900cb48cdc9c9070086a6103605000000", "hello", false)
+    decodeWrapper("decode gzip hcrc", "1f8b0802000000000003a777cb48cdc9c9070086a6103605000000", "hello", false)
+    decodeWrapper("decode gzip all", "1f8b081e000000000003020001026e616d65006e6f7465009293cb48cdc9c9070086a6103605000000", "hello", false)
+    // Round trips: nothing, one byte, a run, noise that does not compress, a
+    // sentence that does, and a long distance that reaches the far end of the
+    // distance table.
+    roundTrip("empty", repeatBytes(u8(0), 0), 6)
+    roundTrip("one", bytesOf("a"), 6)
+    roundTrip("run", repeatBytes(u8(0x78), 1000), 6)
+    roundTrip("noise", noise(1000), 6)
+    roundTrip("text", bytesOf(loremText()), 6)
+    roundTrip("distance", concat(noise(30000), noise(30000)), 6)
+    // Every level the encoder takes is a round trip, and zero stores.
+    var level: i32 = 0
+    for level <= 9 {
+        var src = bytesOf(loremText())
+        var out = new Buf(0)
+        var ok = false
+        var size: i64 =- 1
+        match compress.DeflateEncode(out, src[0 .. src.Len()], level) {
+            Ok(_) => {
+                size = i64(out.Len())
+                var back = new Buf(0)
+                match compress.DeflateDecode(back, out.Bytes()) {
+                    Ok(_) => ok = sameBytes(back.Bytes(), src[0 .. src.Len()])
+                    Err(_) => ok = false
+                }
+            }
+            Err(_) => ok = false
+        }
+        fmt.Print("level ")
+        fmt.PrintI64(i64(level))
+        fmt.Print(" ")
+        fmt.PrintI64(size)
+        fmt.Print(" ")
+        fmt.PrintBool(ok)
+        fmt.PrintNl()
+        level += 1
+    }
+    // Refusals. Each names what was wrong.
+    badDeflate("bad kind", "07")
+    badDeflate("truncated fixed", "4b04")
+    badWrapper("zlib short", fromHex("789c"), true)
+    badWrapper("zlib bad fcheck", fromHex("789dcb48cdc9c90700062c0215"), true)
+    badWrapper("zlib truncated", fromHex("789ccb48cdc9c907"), true)
+    var zbad = fromHex("789ccb48cdc9c90700062c0215")
+    zbad[11] = zbad[11] ^ u8(0xff)
+    badWrapper("zlib bad adler", zbad, true)
+    badWrapper("gzip bad magic", fromHex("1e8b0800000000000003cb48cdc9c9070086a6103605000000"), false)
+    var gbad = fromHex("1f8b0800000000000003cb48cdc9c9070086a6103605000000")
+    gbad[17] = gbad[17] ^ u8(0xff)
+    badWrapper("gzip bad crc", gbad, false)
+    var gsize = fromHex("1f8b0800000000000003cb48cdc9c9070086a6103605000000")
+    gsize[21] = gsize[21] ^ u8(0xff)
+    badWrapper("gzip bad size", gsize, false)
+    badWrapper("gzip bad hcrc", fromHex("1f8b08020000000000035877cb48cdc9c9070086a6103605000000"), false)
+    var one_byte = bytesOf("x")
+    var one_view = one_byte[0 .. one_byte.Len()]
+    var sink = new Buf(0)
+    report("deflate level 10", compress.DeflateEncode(sink, one_view, 10))
+    report("deflate level -1", compress.DeflateEncode(sink, one_view,- 1))
+    report("zlib level 10", compress.ZlibEncode(sink, one_view, 10))
+    // A buffer is left where it was when the stream is refused.
+    var keep = new Buf(0)
+    keep.WriteStr("keep")
+    var broken = fromHex("1f8b0800000000000003cb48cdc9c9070086a6103605000000")
+    broken[17] = broken[17] ^ u8(0xff)
+    report("keep on refuse", compress.GzipDecode(keep, broken[0 .. broken.Len()]))
+    fmt.Print("kept ")
+    fmt.Print(keep.Str())
+    fmt.PrintNl()
+}

@@ -1,0 +1,131 @@
+package main
+
+import "std/fmt"
+import "std/test"
+
+// The assertions that stop a case reach their runner by raising the failure,
+// and the only way a library can raise one is a panic. This program is a
+// runner written by hand for those cases: each runs in a coroutine of its own,
+// the way a runner runs every case, so the stop ends the case and not the
+// program. The panic a stop raises is what the coroutine's stack shows, and
+// that report is on standard error; what the package reported on its own sink
+// is on standard output.
+
+struct LineSink {
+    impl test.Sink {
+        func WriteLine(s: str) {
+            fmt.Println(s)
+        }
+    }
+}
+
+func main() {
+    var sink = LineSink { }
+    run_fatal(sink)
+    run_skip(sink)
+    run_ok_fails(sink)
+    run_err_fails(sink)
+}
+
+// case_fatal stops in the middle, so the assertion after it never runs.
+func case_fatal(t: test.T) {
+    test.True(t, true)
+    test.Fatal(t, "cannot go on")
+    test.True(t, false)
+}
+
+// case_skip stops the case and records that it was skipped.
+func case_skip(t: test.T) {
+    test.True(t, true)
+    test.Skip(t, "not today")
+}
+
+// case_ok_fails asks for a value from a result that failed, which stops the
+// case.
+func case_ok_fails(t: test.T) {
+    var r: Result<i64, str> = Result.Err("no value here")
+    var v = test.Ok(t, r)
+    test.Equal(t, v, 0)
+}
+
+// case_err_fails asks for a failure from a result that succeeded, which stops
+// the case.
+func case_err_fails(t: test.T) {
+    var r: Result<i64, str> = Result.Ok(1)
+    var e = test.Err(t, r)
+    test.Equal(t, e, "")
+}
+
+// The runner of each stopping case. A coroutine is started by a call to a
+// named function, so each case gets its own small runner here.
+func run_fatal(sink: test.Sink) {
+    var t = new test.T(sink, "suite.zyx:60:5", false)
+    region {
+        var h = spawn_watched case_fatal(t), func on_panic
+        match h.Join() {
+            Ok(_) => {}
+            Err(e) => {}
+        }
+    }
+    note(sink, "case_fatal", t)
+}
+
+func run_skip(sink: test.Sink) {
+    var t = new test.T(sink, "suite.zyx:70:5", false)
+    region {
+        var h = spawn_watched case_skip(t), func on_panic
+        match h.Join() {
+            Ok(_) => {}
+            Err(e) => {}
+        }
+    }
+    note(sink, "case_skip", t)
+}
+
+func run_ok_fails(sink: test.Sink) {
+    var t = new test.T(sink, "suite.zyx:80:5", false)
+    region {
+        var h = spawn_watched case_ok_fails(t), func on_panic
+        match h.Join() {
+            Ok(_) => {}
+            Err(e) => {}
+        }
+    }
+    note(sink, "case_ok_fails", t)
+}
+
+func run_err_fails(sink: test.Sink) {
+    var t = new test.T(sink, "suite.zyx:90:5", false)
+    region {
+        var h = spawn_watched case_err_fails(t), func on_panic
+        match h.Join() {
+            Ok(_) => {}
+            Err(e) => {}
+        }
+    }
+    note(sink, "case_err_fails", t)
+}
+
+// on_panic is the watcher of a case that ran away, where a runner would record
+// a failure the case did not ask for.
+func on_panic(e: PanicError) {
+}
+
+// note writes what a case ended as, which a runner keeps for its tally.
+func note(sink: test.Sink, name: str, t: test.T) {
+    var line = new Buf(0)
+    line.WriteStr(name)
+    line.WriteStr(": failed=")
+    line.WriteStr(bool_text(t.Failed()))
+    line.WriteStr(" skipped=")
+    line.WriteStr(bool_text(t.Skipped()))
+    sink.WriteLine(line.Str())
+}
+
+// bool_text answers true or false as text.
+func bool_text(v: bool) -> str {
+    if v {
+        return "true"
+    }
+    return "false"
+}

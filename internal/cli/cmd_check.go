@@ -3,13 +3,11 @@
 package cli
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 
 	"zyx/internal/build"
 	"zyx/internal/diag"
-	zyxfmt "zyx/internal/fmt"
 )
 
 // check analyzes every target package and reports the diagnostics.
@@ -29,9 +27,8 @@ func (s *Session) check(args []string) int {
 	if err != nil {
 		return s.usageError(err)
 	}
-	session := &build.Session{Loader: s.loader(m, o)}
+	session := s.session(m, o)
 	reported := map[string]bool{}
-	formatted := map[string]bool{}
 	failed := false
 	for _, path := range paths {
 		results, err := session.FrontEnd(path)
@@ -42,9 +39,6 @@ func (s *Session) check(args []string) int {
 		if s.reportOnce(results, reported) {
 			failed = true
 		}
-		if s.reportUnformatted(results, paths, formatted) {
-			failed = true
-		}
 	}
 	if failed {
 		return exitError
@@ -52,35 +46,11 @@ func (s *Session) check(args []string) int {
 	return exitOK
 }
 
-// reportUnformatted reports every file of a target package that is not in
-// the canonical form `zyx fmt` writes, so a check refuses text a formatting
-// run would change. A dependency's text is not the target's to change.
-func (s *Session) reportUnformatted(results []*build.Result, paths []string, reported map[string]bool) bool {
-	targets := map[string]bool{}
-	for _, path := range paths {
-		targets[path] = true
-	}
-	failed := false
-	for _, res := range results {
-		if !targets[res.Package.ImportPath] || reported[res.Package.ImportPath] {
-			continue
-		}
-		reported[res.Package.ImportPath] = true
-		for _, file := range res.Package.Files {
-			if bytes.Equal(zyxfmt.Source(file), file.Data()) {
-				continue
-			}
-			failed = true
-			fmt.Fprintf(s.Stderr, "%s:1:1: %s\n    help: run zyx fmt\n",
-				file.Name(), diag.CodeUnformatted)
-		}
-	}
-	return failed
-}
-
 // reportOnce prints the diagnostics of the packages that have not been
 // reported yet, so that a run over several targets reports a shared
-// dependency once. It reports whether any diagnostic is an error.
+// dependency once. It reports whether any diagnostic is an error. The text
+// comes from the result, so a cached package reports what the run that built
+// it reported.
 func (s *Session) reportOnce(results []*build.Result, reported map[string]bool) bool {
 	failed := false
 	for _, res := range results {
@@ -88,8 +58,9 @@ func (s *Session) reportOnce(results []*build.Result, reported map[string]bool) 
 			continue
 		}
 		reported[res.Package.ImportPath] = true
-		if s.report(res.Diags) {
+		if len(res.Report) != 0 {
 			failed = true
+			fmt.Fprint(s.Stderr, string(res.Report))
 		}
 	}
 	return failed

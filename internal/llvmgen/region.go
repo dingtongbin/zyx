@@ -34,6 +34,11 @@ func (g *generator) closeRegion(slot string) {
 // every object created inside it is released when it leaves. The order is the
 // one the language fixes: wait for the coroutines the block started, run its
 // deferred calls, then release the memory.
+//
+// A body that ends without reaching the end of the block, which a panic does,
+// leaves this code unreachable: the panic runs the deferred calls and releases
+// the region as it leaves the coroutine, so the epilogue is emitted only where
+// control actually arrives.
 func (g *generator) regionStmt(module string, n *zyxc.Node) {
 	body := g.wrapped(n, "body")
 	region := g.newReg()
@@ -52,6 +57,9 @@ func (g *generator) regionStmt(module string, n *zyxc.Node) {
 		deferSlot = g.openRegion()
 	}
 	g.stmt(module, body)
+	if g.fn.terminated {
+		return
+	}
 
 	g.declareRuntime("zyxrt_region_wait", "void", "ptr")
 	g.emit("  call void @zyxrt_region_wait(ptr %s)", region)
@@ -164,9 +172,9 @@ func (g *generator) deferStmt(module string, n *zyxc.Node) {
 		return
 	}
 
-	// The argument block is laid out as the tuple of the parameter types,
-	// which gives the same offsets the thunk reads back.
-	block := types.TupleOf(ptypes...)
+	// The block holds one slot per parameter, in the representation the callee
+	// receives, which is what the thunk reads back.
+	block := g.blockType(ptypes)
 	blockLL := g.llType(block)
 	if len(ptypes) == 0 {
 		blockLL = "{}"
@@ -177,9 +185,7 @@ func (g *generator) deferStmt(module string, n *zyxc.Node) {
 		if v == nil {
 			return
 		}
-		slot := g.newReg()
-		g.emit("  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d", slot, blockLL, base, i)
-		g.storeInto(slot, ptypes[i], v, true)
+		g.storeArgument(base, blockLL, i, ptypes[i], v)
 	}
 	thunk := g.deferThunk(sym, ptypes, blockLL)
 	g.declareRuntime("zyxrt_defer_push", "void", "ptr", "ptr")
@@ -200,9 +206,7 @@ func (g *generator) deferThunk(sym string, ptypes []*types.Type, blockLL string)
 	for i, typ := range ptypes {
 		slot := g.newReg()
 		g.emit("  %s = getelementptr inbounds %s, ptr %%arg, i32 0, i32 %d", slot, blockLL, i)
-		reg := g.newReg()
-		g.emit("  %s = load %s, ptr %s", reg, g.llPass(typ), slot)
-		parts = append(parts, g.llPass(typ)+" "+reg)
+		parts = append(parts, g.argumentPart(typ, slot))
 	}
 	g.emit("  call void @%s(%s)", llvmName(sym), strings.Join(parts, ", "))
 	g.terminator("  ret void")

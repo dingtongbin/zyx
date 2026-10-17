@@ -1,0 +1,33 @@
+package main
+
+// A whole number carried as a number of its own. A float cannot hold every 64-bit
+// integer, so the value a program reads out of a file, a database or a request is
+// carried as an integer and written back exactly.
+
+import "std/fmt"
+import "std/json"
+
+func main() {
+    var wide = new Buf(0)
+    json.Encode(wide, Value.Int(9007199254740993))
+    fmt.Println(wide.Str())
+
+    var small = new Buf(0)
+    json.Encode(small, Value.Int(-9223372036854775807))
+    fmt.Println(small.Str())
+
+    // A float stays a float, and a whole float keeps the shape it had.
+    var whole = new Buf(0)
+    json.Encode(whole, Value.Float(3.0))
+    fmt.Println(whole.Str())
+
+    var zero = new Buf(0)
+    json.Encode(zero, Value.Int(0))
+    fmt.Println(zero.Str())
+
+    var held = new Buf(0)
+    var members = new Map<str, Value>()
+    members.Insert("big", Value.Int(9007199254740993))
+    json.Encode(held, Value.Map(members))
+    fmt.Println(held.Str())
+}

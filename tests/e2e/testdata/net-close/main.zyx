@@ -1,0 +1,62 @@
+package main
+
+// A handle closed from two places. The design promises that a close is
+// idempotent and that a closed handle refuses every call, so closing a handle
+// twice leaves it closed rather than faulting, and a call on it reports a
+// closed handle.
+//
+// The port belongs to the machine and the moment, so it never enters what the
+// program prints: every line below is the same wherever the program runs.
+
+import "std/fmt"
+import "std/net"
+
+// closer closes the handle it was handed, which is the handle its caller closed
+// as well. It runs on a coroutine of its own, so the handle crosses a boundary.
+func closer(listener: net.Listener) {
+    listener.Close()
+}
+
+// say answers whether a label checks out, and stops the program on the line
+// that failed otherwise.
+func say(label: str, answer: bool) {
+    if !answer {
+        panic(f"net close test: {label}")
+    }
+    fmt.Print(label)
+    fmt.PrintNl()
+}
+
+func run() -> Result<bool, net.Error> {
+    var listener = try net.Listen("tcp", "127.0.0.1:0")
+
+    // One close on this thread, then one inside a coroutine that was handed the
+    // same handle.
+    listener.Close()
+    region {
+        var closed = spawn closer(listener)
+        closed.Join()
+    }
+    say("listener closed twice", true)
+
+    match listener.Accept() {
+        Ok(_) => { say("accept after close refused", false) }
+        Err(e) => {
+            match e.Kind {
+                Closed => { say("accept after close refused", true) }
+                _ => { say("accept after close refused", false) }
+            }
+        }
+    }
+    return Result.Ok(true)
+}
+
+func main() {
+    match run() {
+        Ok(_) => { }
+        Err(e) => {
+            var message = f"net close test: {e.Msg}"
+            panic(message)
+        }
+    }
+}

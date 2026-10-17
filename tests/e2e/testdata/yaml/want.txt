@@ -1,0 +1,41 @@
+block: {count=3,name="example",ports=[80,443],server={host="localhost",port=8080}}
+sequence: ["one","two","three"]
+sequence-of-mappings: [{count=1,name="a"},{count=2,name="b"}]
+mapping-of-sequences: {a=[1,2],b=[3]}
+scalars: {a=null,b=null,c=true,d=false,e=12,f=-7,g=31,h=15,i=10,j=1000,k=2.5,l=-0.25,m=1000,n=inf,o=-inf,p=nan,q="text",r="quoted",s="double"}
+empty-value: {a=null,b=1}
+empty-sequence-item: [null,"one"]
+quoted-key: {a b=1,c:d=2}
+colon-in-value: {a="b:c",url="http://x/y"}
+flow: {a=[1,2,3],b={x=1,y="two"},c=[{k="v"},[1,[2]]],d=[],e={}}
+literal: {a="first\nsecond\n",b="kept",c="kept\n\n"}
+folded: {a="one two\n",b="one two",c="one\ntwo\n"}
+literal-blank: {a="one\n\nthree\n"}
+comments: {a=1,b=2}
+markers: {a=1}
+empty: null
+only-comment: null
+refuse-tab-indent: refused at 5: a tab cannot stand where the indentation does
+refuse-key-twice: refused at 10: the key is defined twice
+refuse-bad-indent: refused at 7: the line stands at an indentation no block holds
+refuse-anchor: refused at 8: an anchor or an alias is not taken
+refuse-alias: refused at 6: an anchor or an alias is not taken
+refuse-tag: refused at 11: a tag is not taken
+refuse-directive: refused at 0: a directive is not taken
+refuse-two-documents: refused at 9: the line stands at an indentation no block holds
+refuse-unclosed-flow: refused at 9: the flow sequence is never closed
+flow-plain-holds-space: {a=["1 2"]}
+refuse-flow-no-value: refused at 9: an entry of the flow mapping has no value
+refuse-bad-escape: refused at 9: the escape is not one a string holds
+refuse-unterminated: refused at 8: the string is never closed
+refuse-block-header: refused at 8: the header of a block scalar holds a byte it cannot
+refuse-key-no-value: refused at 5: the line stands at an indentation no block holds
+yaml: the flow sequence is never closed at 6
+write: a: 1\nb: 2\nlist:\n  - 1\n  - 2\nmap:\n  x: 1\ns: text\n
+round: {a=1,b=2,list=[1,2],map={x=1},s="text"}
+round-strings: {a="line\nbreak",b="quote's",c="A"}
+round-empty: {a=[],b={},c=null}
+round-numbers: {a=1,b=-2.5,c=1e+30,d=0.5}
+round-nested: {a=[{x=1,y=2},[1,2]]}
+round-keys: {1=2,a b=1,true=3}
+round-block: {a="one\ntwo\n"}

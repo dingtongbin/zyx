@@ -1,0 +1,11 @@
+4 0 -1
+false false
+6 4
+intersect: 3 2
+difference: 1 0
+22 6
+0
+1 0 -1
+2 5
+1 3 0 -1
+4 2 1 3

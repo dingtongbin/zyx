@@ -1,0 +1,52 @@
+package main
+
+import "std/fmt"
+
+// A fixed-size array is indexed with a value the loop computes, and the loop
+// is the only place the array is read. The object behind the binding must
+// outlive the loop: a release inside it writes the region's free-list link
+// over the first element, so a round that reads that element afterwards
+// answers 0 or an address instead of what was stored.
+
+func ascending() -> i64 {
+    var table: [i64; 4] = [10, 20, 30, 40]
+    var total: i64 = 0
+    for i in 0 .. 4 {
+        total += table[usize(i)]
+    }
+    return total
+}
+
+func descending() -> i64 {
+    var table: [i64; 4] = [10, 20, 30, 40]
+    var total: i64 = 0
+    for i in 0 .. 4 {
+        total += table[usize(3 - i)]
+    }
+    return total
+}
+
+func main() {
+    fmt.PrintI64(ascending())
+    fmt.PrintNl()
+    fmt.PrintI64(descending())
+    fmt.PrintNl()
+
+    // An array written in one loop and read in another keeps what the first
+    // loop stored.
+    var filled: [i64; 4] = [0] * 4
+    for i in 0 .. 4 {
+        filled[usize(i)] = i * i
+    }
+    var seen: i64 = 0
+    for i in 0 .. 4 {
+        seen += filled[usize(i)]
+    }
+    fmt.PrintI64(seen)
+    fmt.PrintNl()
+
+    // An index the loop did not compute reaches the same elements.
+    var at: i64 = 1
+    fmt.PrintI64(filled[usize(at)])
+    fmt.PrintNl()
+}

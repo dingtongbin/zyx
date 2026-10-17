@@ -1,0 +1,39 @@
+package main
+
+import "std/fmt"
+
+import c "zyxrt.h" {
+    fast zyxrt_stack_committed
+}
+
+// Keeps a smaller crowd of coroutines alive at once, so a quick run answers the
+// same question the acceptance run asks with a million: what one of them costs.
+// Every coroutine parks on a receive, so what the runtime has committed for their
+// stacks is what a program of that many coroutines pays before any of them does
+// any work. The cost is linear in the count, so the answer holds at either size.
+
+func idle(go: chan<i64>) {
+    var v, ok = go.Recv()
+    if ok {
+        fmt.PrintI64(v)
+    }
+}
+
+func main() {
+    var count: i64 = 50000
+    var go = new chan<i64>(0)
+    region {
+        for i in 0..count {
+            spawn idle(go)
+        }
+        fmt.Print("coroutines=")
+        fmt.PrintI64(count)
+        fmt.PrintNl()
+        fmt.Print("committed=")
+        fmt.PrintI64(i64(c.zyxrt_stack_committed()))
+        fmt.PrintNl()
+        // Closing the channel lets every coroutine return, which is what the
+        // region waits for before it ends.
+        go.Close()
+    }
+}

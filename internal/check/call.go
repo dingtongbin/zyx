@@ -28,6 +28,12 @@ func (c *checker) checkCall(v *ast.CallExpr, want *types.Type) *types.Type {
 	if t := c.calleeType(v.Fn); t != nil {
 		return c.checkConvert(t, firstArg(v), v.Sp)
 	}
+	// The language's own panic is predeclared rather than declared, so nothing
+	// else gives its argument a type, and an argument the checker leaves untyped
+	// reaches the emitter with no type at all.
+	if c.isPanicCall(v) {
+		return c.checkPanicCall(v)
+	}
 	if sel, ok := v.Fn.(*ast.SelectorExpr); ok {
 		return c.checkSelectorCall(sel, v, want)
 	}
@@ -39,11 +45,11 @@ func (c *checker) checkCall(v *ast.CallExpr, want *types.Type) *types.Type {
 func (c *checker) calleeType(fn ast.Expr) *types.Type {
 	switch v := fn.(type) {
 	case *ast.Ident:
-		if !isNamespaceName(v.Name) && isTypeSymbol(c.symOf(v)) {
+		if !isNamespaceName(v.Name) && IsTypeSymbol(c.symOf(v)) {
 			return c.buildType(typeExprOf(v))
 		}
 	case *ast.SelectorExpr:
-		if id, ok := v.X.(*ast.Ident); ok && !isNamespaceName(id.Name) && isTypeSymbol(c.symOf(id)) {
+		if id, ok := v.X.(*ast.Ident); ok && !isNamespaceName(id.Name) && IsTypeSymbol(c.symOf(id)) {
 			return c.buildType(typeExprOf(v))
 		}
 	}
@@ -60,6 +66,31 @@ func firstArg(v *ast.CallExpr) ast.Expr {
 		return nil
 	}
 	return v.Args[0]
+}
+
+// checkPanicCall checks the language's own panic, whose message is a string.
+// Nothing else types it: panic is predeclared rather than declared, so it has no
+// signature, and an argument the checker leaves untyped reaches the emitter with
+// no type of its own. A selector written inside an interpolated message is then
+// unreadable there, which is what the type of the argument decides.
+func (c *checker) checkPanicCall(v *ast.CallExpr) *types.Type {
+	if len(v.Args) != 1 {
+		c.errorHelp(diag.CodeArgCount, v.Sp,
+			"pass the message panic reports",
+			"panic takes one message, got %d", len(v.Args))
+		c.checkExprs(v.Args)
+		return void
+	}
+	got := c.checkExpr(v.Args[0], types.Str)
+	if got == nil || got.Kind == types.Invalid {
+		return void
+	}
+	if !c.accepts(types.Str, v.Args[0], got) {
+		c.errorHelp(diag.CodeTypeMismatch, v.Args[0].Span(),
+			"pass a str message, and interpolate the values into it",
+			"panic takes a str message, got %s", got)
+	}
+	return void
 }
 
 // checkValueCall checks a call through a function value.
@@ -119,7 +150,7 @@ func (c *checker) checkSelectorCall(sel *ast.SelectorExpr, v *ast.CallExpr, want
 		switch sym := c.symOf(id); {
 		case sym != nil && sym.Kind == resolve.KindPackage:
 			return c.checkQualifiedCall(sel, v, sym)
-		case isTypeSymbol(sym):
+		case IsTypeSymbol(sym):
 			return c.checkVariantCall(sel, v, sym, want)
 		}
 	}
@@ -127,6 +158,7 @@ func (c *checker) checkSelectorCall(sel *ast.SelectorExpr, v *ast.CallExpr, want
 	if recv == nil || recv.Kind == types.Invalid {
 		return nil
 	}
+	c.cFuncMethod(recv, sel.Name)
 	if sel.Name.Name == "clone" {
 		return c.checkClone(recv, sel.Name.Sp)
 	}
@@ -190,6 +222,7 @@ func (c *checker) checkQualifiedCall(sel *ast.SelectorExpr, v *ast.CallExpr, pkg
 // declaration and the call answers with the declaration's result.
 func (c *checker) checkCCall(sel *ast.SelectorExpr, v *ast.CallExpr) *types.Type {
 	name := sel.Name.Name
+	c.cFuncIO(sel)
 	fn, ok := c.cFunction(name)
 	if !ok {
 		c.errorHelp(diag.CodeUndefinedName, sel.Name.Sp,
@@ -278,6 +311,14 @@ func cArgFits(t *types.Type, params []*types.Type) bool {
 	if types.Identical(t, p) {
 		return true
 	}
+	// A runtime handle is an opaque pointer on the C side, so a container or a
+	// channel crosses where the header declares void*. The language owns those
+	// types and never exposes their representation, so a C parameter is the
+	// only place the two meet; what the callee does with the handle is the
+	// unsafe face the boundary already declares.
+	if types.Identical(p, types.Raw) && handlesAsPointer(t) {
+		return true
+	}
 	if t.IsNumeric() && p.IsNumeric() {
 		return cWidth(t) == cWidth(p)
 	}
@@ -286,6 +327,16 @@ func cArgFits(t *types.Type, params []*types.Type) bool {
 		return cWidth(p) == 1
 	case types.KindChar:
 		return cWidth(p) == 4
+	}
+	return false
+}
+
+// handlesAsPointer reports whether a value of the type is an opaque handle the
+// runtime owns, which is a pointer on the C side.
+func handlesAsPointer(t *types.Type) bool {
+	switch t.Kind {
+	case types.KindContainer, types.KindChan:
+		return true
 	}
 	return false
 }
@@ -348,6 +399,7 @@ func (c *checker) checkVariantCall(sel *ast.SelectorExpr, v *ast.CallExpr, sym *
 		return nil
 	}
 	c.out.Nodes[sel.Name] = enum
+	c.out.VariantCalls[v] = true
 
 	argTypes := make([]*types.Type, len(v.Args))
 	for i, a := range v.Args {
@@ -625,7 +677,8 @@ var containerMethods = map[string]map[string]func(*types.Type) *types.Type{
 		},
 	},
 	"Map": {
-		"Len": func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Len":   func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Clear": func(*types.Type) *types.Type { return types.FuncOf(void) },
 		"Get": func(recv *types.Type) *types.Type {
 			return types.FuncOf(types.Option.Instantiate(arg(recv, 1)), arg(recv, 0))
 		},
@@ -649,7 +702,11 @@ var containerMethods = map[string]map[string]func(*types.Type) *types.Type{
 		},
 	},
 	"Set": {
-		"Len": func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Len":   func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Clear": func(*types.Type) *types.Type { return types.FuncOf(void) },
+		"IsSubset": func(recv *types.Type) *types.Type {
+			return types.FuncOf(types.Bool, recv)
+		},
 		"Add": func(recv *types.Type) *types.Type {
 			return types.FuncOf(void, arg(recv, 0))
 		},
@@ -673,19 +730,27 @@ var containerMethods = map[string]map[string]func(*types.Type) *types.Type{
 		},
 	},
 	"PriorityQueue": {
-		"Len": func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Len":   func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Clear": func(*types.Type) *types.Type { return types.FuncOf(void) },
 		"Push": func(recv *types.Type) *types.Type {
 			return types.FuncOf(void, arg(recv, 0))
 		},
 		"Pop": func(recv *types.Type) *types.Type {
 			return types.FuncOf(types.Option.Instantiate(arg(recv, 0)))
 		},
+		"Peek": func(recv *types.Type) *types.Type {
+			return types.FuncOf(types.Option.Instantiate(arg(recv, 0)))
+		},
 	},
 	"Ring": {
-		"Len":  func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
-		"Cap":  func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
-		"Push": func(recv *types.Type) *types.Type { return types.FuncOf(void, arg(recv, 0)) },
+		"Len":   func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Cap":   func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Clear": func(*types.Type) *types.Type { return types.FuncOf(void) },
+		"Push":  func(recv *types.Type) *types.Type { return types.FuncOf(void, arg(recv, 0)) },
 		"Pop": func(recv *types.Type) *types.Type {
+			return types.FuncOf(types.Option.Instantiate(arg(recv, 0)))
+		},
+		"Peek": func(recv *types.Type) *types.Type {
 			return types.FuncOf(types.Option.Instantiate(arg(recv, 0)))
 		},
 	},
@@ -705,6 +770,7 @@ var containerMethods = map[string]map[string]func(*types.Type) *types.Type{
 	},
 	"BlockingQueue": {
 		"Len": func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
+		"Cap": func(*types.Type) *types.Type { return types.FuncOf(types.Usize) },
 		"Push": func(recv *types.Type) *types.Type {
 			return types.FuncOf(void, arg(recv, 0))
 		},
@@ -893,7 +959,80 @@ func (c *checker) bindParams(sig *types.Type, args []ast.Expr, argTypes []*types
 			"cannot infer the type arguments of %s", sig)
 		break
 	}
+	c.checkTypeArguments(sig, bindings, argsSpan(args))
 	return types.Substitute(sig, bindings)
+}
+
+// checkTypeArguments reports a type argument that does not implement what its
+// type parameter requires. A generic body reaches the methods its constraints
+// name, because the constraints are what the author was promised; a caller that
+// binds the parameter to a type implementing nothing would otherwise be told
+// only when the backend cannot find the method. A binding that is itself a type
+// parameter of the calling declaration stands for whatever the caller of that
+// declaration chose, so the constraint has to be one its own constraints
+// already require.
+func (c *checker) checkTypeArguments(sig *types.Type, bindings map[string]*types.Type, at source.Span) {
+	for _, tp := range typeParams(sig) {
+		bound, ok := bindings[tp.ID]
+		if !ok || bound == nil || bound.Kind == types.Invalid {
+			continue
+		}
+		for _, iface := range tp.Constraints {
+			if iface == nil || iface.Kind != types.KindInterface {
+				continue
+			}
+			if bound.Kind == types.KindTypeParam {
+				if hasConstraint(bound, iface) {
+					continue
+				}
+			} else if c.implements(bound, iface) {
+				continue
+			}
+			c.errorHelp(diag.CodeTypeArgument, at,
+				"implement the interface for the type, or pass a type that does",
+				"%s does not implement %s", bound, iface)
+		}
+	}
+}
+
+// typeParams returns every type parameter a type mentions, in first appearance
+// order and once each, which carries the constraints the parameter requires.
+func typeParams(t *types.Type) []*types.Type {
+	var out []*types.Type
+	seen := map[string]bool{}
+	var walk func(*types.Type)
+	walk = func(t *types.Type) {
+		if t == nil {
+			return
+		}
+		switch t.Kind {
+		case types.KindTypeParam:
+			if !seen[t.ID] {
+				seen[t.ID] = true
+				out = append(out, t)
+			}
+			return
+		case types.KindSlice, types.KindArray, types.KindChan:
+			walk(t.Elem)
+			return
+		case types.KindTuple:
+			for _, e := range t.Elems {
+				walk(e)
+			}
+			return
+		case types.KindFunc:
+			for _, e := range t.Elems {
+				walk(e)
+			}
+			walk(t.Result)
+			return
+		}
+		for _, a := range t.Args {
+			walk(a)
+		}
+	}
+	walk(t)
+	return out
 }
 
 // argsSpan returns the span of the first argument, or a zero span.

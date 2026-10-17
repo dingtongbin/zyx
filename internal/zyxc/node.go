@@ -14,8 +14,13 @@ type Node struct {
 	Kind string
 	// Payload holds the space-separated tokens after the kind.
 	Payload []string
-	// Pos is the source position, empty for a node the compiler generated.
+	// Pos is the source position. The builder writes it where the node came
+	// from source; the writer fills it for a node the compiler generated, from
+	// the node that generated it.
 	Pos string
+	// From names the node a generated node was derived from, so a reader can
+	// walk back to the source in one step. It is empty for a source node.
+	From string
 	// Marks holds the marks of the node, sorted by name and argument.
 	Marks []Mark
 	// Children holds the child nodes in order.
@@ -40,7 +45,7 @@ func (m Mark) String() string {
 	if m.Arg == "" {
 		return m.Name
 	}
-	return m.Name + " " + quoteToken(m.Arg)
+	return m.Name + " " + quoteMarkArg(m.Arg)
 }
 
 // New returns a node of a kind with a payload.
@@ -138,6 +143,9 @@ func (n *Node) String() string {
 	if n.Pos != "" {
 		line += " pos " + n.Pos
 	}
+	if n.From != "" {
+		line += " from " + n.From
+	}
 	if len(n.Marks) > 0 {
 		parts := make([]string, 0, len(n.Marks))
 		for _, m := range n.Marks {
@@ -148,13 +156,23 @@ func (n *Node) String() string {
 	return line
 }
 
-// quoteToken renders a payload token, quoting it when it holds a space or a
-// character the format reserves.
-func quoteToken(token string) string {
+// quoteToken renders a payload token, quoting it when it holds a space, a
+// control byte, or a character the format reserves. Tokens are separated by
+// spaces, so a comma is left alone: a type text is one token.
+func quoteToken(token string) string { return quote(token, "") }
+
+// quoteMarkArg renders a mark argument. Inside a marks section a comma
+// separates one mark from the next, so an argument that holds one is quoted
+// even though a payload token with the same text would not be.
+func quoteMarkArg(token string) string { return quote(token, ",{}") }
+
+// quote renders a token, quoting it when it is empty or holds a reserved
+// character.
+func quote(token, reserved string) string {
 	if token == "" {
 		return `""`
 	}
-	if !strings.ContainsAny(token, " \t\"\\\n") {
+	if !needsQuoting(token, reserved) {
 		return token
 	}
 	var b strings.Builder
@@ -171,12 +189,42 @@ func quoteToken(token string) string {
 			b.WriteString(`\r`)
 		case '\t':
 			b.WriteString(`\t`)
+		case 0:
+			b.WriteString(`\0`)
 		default:
+			if c < 0x20 {
+				// A control byte has no escape of its own, so it is written
+				// as the code point it is; a reader that does not know the
+				// escape would otherwise keep a byte that breaks the line.
+				fmt.Fprintf(&b, `\u{%x}`, c)
+				continue
+			}
 			b.WriteByte(c)
 		}
 	}
 	b.WriteByte('"')
 	return b.String()
+}
+
+// needsQuoting reports whether a token is not a bare word: an empty token, a
+// byte the format reserves, a control byte, a character that separates one token
+// from another in the section the token stands in, or a word the reader takes for
+// structure. A name a program wrote may be any word at all, and a parameter
+// named `from` is a parameter, so a token that reads as a section marker is
+// quoted, and the reader then reads it as a payload token rather than as
+// structure.
+func needsQuoting(token, reserved string) bool {
+	switch token {
+	case "pos", "from", "marks":
+		return true
+	}
+	for i := 0; i < len(token); i++ {
+		c := token[i]
+		if c <= ' ' || c == '"' || c == '\\' || c == 0x7f || strings.IndexByte(reserved, c) >= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // checkKind reports a kind that is not a lowercase ASCII word, which the

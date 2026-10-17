@@ -51,8 +51,8 @@ func TestTypeArgumentOfAnotherPackage(t *testing.T) {
 	b := &builder{pkg: &resolve.Package{Path: "example.com/app/server"}}
 	entry := types.Named(types.KindStruct, "example.com/app/store", "", "Entry", 0)
 	got := b.typeText(types.Result.Instantiate(types.Void, entry))
-	if got != "Result<void, store.Entry>" {
-		t.Errorf("type = %q, want Result<void, store.Entry>", got)
+	if got != "Result<void,store.Entry>" {
+		t.Errorf("type = %q, want Result<void,store.Entry>", got)
 	}
 }
 
@@ -62,8 +62,8 @@ func TestFormatHeader(t *testing.T) {
 const MaxConn = 64
 `)
 	lines := strings.Split(string(Format(f)), "\n")
-	if lines[0] != "zyx 1" {
-		t.Errorf("first line = %q, want zyx 1", lines[0])
+	if lines[0] != "zyxc 1" {
+		t.Errorf("first line = %q, want zyxc 1", lines[0])
 	}
 	if !strings.HasPrefix(lines[1], "target ") {
 		t.Errorf("second line = %q, want a target", lines[1])
@@ -220,8 +220,62 @@ struct Conn {
 			t.Errorf("line has trailing space: %q", line)
 		}
 	}
-	if !strings.Contains(text, "\n  field-decl host ") {
-		t.Errorf("a child must be indented two spaces:\n%s", text)
+	if !strings.Contains(text, "\n  n") {
+		t.Errorf("a child must be indented two spaces and numbered:\n%s", text)
+	}
+	if !strings.Contains(text, "field-decl host ") {
+		t.Errorf("the field must be written:\n%s", text)
+	}
+}
+
+// TestSectionsAndNumbers checks the shape of a file: the counts in the header,
+// the summary, the tree, and a number on every node in the order the format
+// writes them.
+func TestSectionsAndNumbers(t *testing.T) {
+	f := buildSource(t, `package server
+
+struct Conn {
+	host: str
+	func Close() {
+	}
+}
+`)
+	text := string(Format(f))
+	lines := strings.Split(text, "\n")
+	if !strings.HasPrefix(lines[4], "node ") {
+		t.Errorf("the header must carry the node count, got %q", lines[4])
+	}
+	if lines[5] != "summary" {
+		t.Errorf("the summary must follow the header, got %q", lines[5])
+	}
+	tree := -1
+	for i, line := range lines {
+		if line == "tree" {
+			tree = i
+		}
+	}
+	if tree < 0 {
+		t.Fatalf("the file has no tree section:\n%s", text)
+	}
+	want := 1
+	for _, line := range lines[tree+1:] {
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimLeft(line, " "), "n"+fmt.Sprint(want)+" ") {
+			t.Errorf("node %d is %q", want, line)
+		}
+		want++
+	}
+	back, err := Parse([]byte(text))
+	if err != nil {
+		t.Fatalf("parse: %v\n%s", err, text)
+	}
+	if len(back.Decls) != 1 {
+		t.Fatalf("declarations = %d, want 1", len(back.Decls))
+	}
+	if len(back.Decls[0].Children) != 2 {
+		t.Errorf("children = %d, want 2", len(back.Decls[0].Children))
 	}
 }
 
@@ -268,17 +322,144 @@ const MaxConn = 1
 
 func TestQuoteToken(t *testing.T) {
 	cases := map[string]string{
-		"plain": "plain",
-		"a b":   `"a b"`,
-		`a"b`:   `"a\"b"`,
-		"":      `""`,
-		"a\tb":  `"a\tb"`,
+		"plain":     "plain",
+		"a b":       `"a b"`,
+		`a"b`:       `"a\"b"`,
+		"":          `""`,
+		"a\tb":      `"a\tb"`,
+		"a\rb":      `"a\rb"`,
+		"a\nb":      `"a\nb"`,
+		"a\x00b":    `"a\0b"`,
+		"a\x01b":    `"a\u{1}b"`,
+		"a\\b":      `"a\\b"`,
+		"a\x7fb":    "\"a\x7fb\"",
+		"(i64,i64)": "(i64,i64)",
+		"caf\xe9":   "caf\xe9",
 	}
 	for in, want := range cases {
 		if got := quoteToken(in); got != want {
 			t.Errorf("quoteToken(%q) = %q, want %q", in, got, want)
 		}
 	}
+	if got := quoteMarkArg("Array<i64>, i64"); got != `"Array<i64>, i64"` {
+		t.Errorf("quoteMarkArg = %q, want the argument quoted", got)
+	}
+}
+
+// TestTokensSurviveARoundTrip checks that a payload token that holds the text
+// of a section marker or of an escape comes back unchanged: the reader finds
+// a section outside the quoted tokens, and it reads back the escapes the
+// writer writes.
+func TestTokensSurviveARoundTrip(t *testing.T) {
+	tokens := []string{
+		"a pos b",
+		"a from n1 b",
+		"a marks { b",
+		"marks {",
+		"}",
+		"a,b",
+		"line\nbreak",
+		"tab\there",
+		"nul\x00byte",
+		"control\x01byte",
+		"quote\"inside",
+		"back\\slash",
+		"",
+	}
+	for _, token := range tokens {
+		file := &File{Target: "t", Module: "m"}
+		file.Decls = []*Node{New("lit", "str", token).Mark("home", token)}
+		data := Format(file)
+		back, err := Parse(data)
+		if err != nil {
+			t.Errorf("token %q does not read back: %v\n%s", token, err, data)
+			continue
+		}
+		if len(back.Decls) != 1 {
+			t.Errorf("token %q: declarations = %d, want 1", token, len(back.Decls))
+			continue
+		}
+		if got := back.Decls[0].Payload[1]; got != token {
+			t.Errorf("payload %q = %q, want the same token", token, got)
+		}
+		if len(back.Decls[0].Marks) != 1 || back.Decls[0].Marks[0].Arg != token {
+			t.Errorf("mark argument %q = %+v, want the same token", token, back.Decls[0].Marks)
+		}
+	}
+}
+
+// TestTypeTextCarriesNoSpaceAfterAComma checks the spelling the format
+// settles for a type: a comma separates without a space, so a type is one
+// token and needs no quoting.
+func TestTypeTextCarriesNoSpaceAfterAComma(t *testing.T) {
+	f := buildSource(t, `package server
+
+enum Shape {
+	Dot
+	Rect(i64, i64)
+}
+
+func First(xs: Array<i64>) -> (i64, i64) {
+	return (xs[0], xs[0])
+}
+`)
+	text := string(Format(f))
+	if !strings.Contains(text, "type (i64,i64)") {
+		t.Errorf("a variant payload is not spelled with no space:\n%s", text)
+	}
+	if strings.Contains(text, "(i64, i64)") {
+		t.Errorf("a type text carries a space after a comma:\n%s", text)
+	}
+	back, err := Parse([]byte(text))
+	if err != nil {
+		t.Fatalf("the emitted form does not read back: %v\n%s", err, text)
+	}
+	if len(back.Decls) != 2 {
+		t.Fatalf("declarations = %d, want 2", len(back.Decls))
+	}
+}
+
+// TestSeveralReturnedValuesAreOneTuple checks the shape of a return that
+// answers several values: the statement carries one expression, and that
+// expression is the tuple the values build.
+func TestSeveralReturnedValuesAreOneTuple(t *testing.T) {
+	f := buildSource(t, `package server
+
+func Split(x: i64) -> (i64, i64) {
+	return x, x + 1
+}
+`)
+	text := string(Format(f))
+	back, err := Parse([]byte(text))
+	if err != nil {
+		t.Fatalf("the emitted form does not read back: %v\n%s", err, text)
+	}
+	ret := findKind(back.Decls, "return")
+	if ret == nil {
+		t.Fatalf("no return in\n%s", text)
+	}
+	if len(ret.Children) != 1 || ret.Children[0].Kind != "tuple-lit" {
+		t.Fatalf("the return carries %d children, want one tuple-lit:\n%s", len(ret.Children), text)
+	}
+	if got := len(ret.Children[0].Children); got != 2 {
+		t.Errorf("the tuple holds %d elements, want 2", got)
+	}
+}
+
+// findKind returns the first node of a kind in a subtree.
+func findKind(nodes []*Node, kind string) *Node {
+	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
+		if n.Kind == kind {
+			return n
+		}
+		if found := findKind(n.Children, kind); found != nil {
+			return found
+		}
+	}
+	return nil
 }
 
 func TestCheckKindRejectsBadKinds(t *testing.T) {

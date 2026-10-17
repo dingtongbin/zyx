@@ -1,0 +1,161 @@
+package http
+
+// The client: it makes a request to the server a URL names and reads the
+// answer. A connection that may serve another request is kept for the next
+// request to the same server, so a sequence of requests pays for one
+// connection.
+
+import "std/net"
+
+// A target is where a URL points: the key a kept connection is filed under,
+// the address to dial, the value of the Host field, and the path that travels
+// on the wire.
+struct target {
+    key: str
+    authority: str
+    host: str
+    path: str
+}
+
+// parse_target reads the URL of a request. Only the http scheme is read here;
+// a URL that names another scheme is refused.
+func parse_target(url: str) -> Result<target, Error> {
+    if !has_prefix(url, "http://") {
+        return Result.Err(protocol_error("the URL is not an http URL"))
+    }
+    var rest = copy_str(url, 7, url.Len())
+    var authority = rest
+    var path = "/"
+    match index_byte(rest, slash) {
+        Some(at) => {
+            authority = copy_str(rest, 0, at)
+            if at < rest.Len() {
+                path = copy_str(rest, at, rest.Len())
+            }
+        }
+        None => { }
+    }
+    if authority.Len() == 0 {
+        return Result.Err(protocol_error("the URL names no host"))
+    }
+    var host = authority
+    var port: i64 = 80
+    match last_index_byte(authority, colon) {
+        Some(at) => {
+            host = copy_str(authority, 0, at)
+            port = parse_decimal(copy_str(authority, at + 1, authority.Len()))
+            if port <= 0 || port > 65535 {
+                return Result.Err(protocol_error("the URL names a port that is not a number"))
+            }
+        }
+        None => { }
+    }
+    if host.Len() == 0 {
+        return Result.Err(protocol_error("the URL names no host"))
+    }
+    var where = f"{host}:{port}"
+    return Result.Ok(target { key: where, authority: where, host: where, path: path })
+}
+
+// round_trip writes a request over a connection and reads its answer, and
+// answers the response with whether the connection may serve another request.
+func round_trip(conn: net.Conn, req: Request, t: target) -> Result<outbound, Error> {
+    try write_request(conn, req, t.host, t.path)
+    var r = new_reader(conn)
+    var head = req.Method == "HEAD"
+    return read_response(r, head)
+}
+
+// A Client makes requests to servers. A connection to a server that may serve
+// another request is kept until it is used again or the process ends.
+struct Client {
+    pool: Map<str, Array<net.Conn>>
+
+    // init builds a client with no kept connections.
+    func init() -> Self {
+        return Client { pool: new Map<str, Array<net.Conn>>() }
+    }
+
+    // Get makes a GET request for a URL.
+    func Get(url: str) -> Result<Response, Error> {
+        var h = new Header()
+        return self.Do(Request { Method: "GET", URL: url, Header: h, Body: new Buf(0) })
+    }
+
+    // Post makes a POST request with a body and the content type that goes
+    // with it.
+    func Post(url: str, body: [u8], ctype: str) -> Result<Response, Error> {
+        var h = new Header()
+        h.Set("Content-Type", ctype)
+        var b = new Buf(0)
+        b.Write(body)
+        return self.Do(Request { Method: "POST", URL: url, Header: h, Body: b })
+    }
+
+    // Do makes a request and answers its response. A kept connection is used
+    // when one is there; a request on a kept connection that fails is made
+    // once more on a fresh connection, because a server may have closed a
+    // connection it was not using.
+    func Do(req: Request) -> Result<Response, Error> {
+        var t = try parse_target(req.URL)
+        match self.take(t.key) {
+            Some(conn) => {
+                match round_trip(conn, req, t) {
+                    Ok(pair) => {
+                        self.store(t.key, conn, pair.keep)
+                        return Result.Ok(pair.resp)
+                    }
+                    Err(_) => {
+                        conn.Close()
+                    }
+                }
+            }
+            None => { }
+        }
+        var conn = try dial_conn(t.authority)
+        match round_trip(conn, req, t) {
+            Ok(pair) => {
+                self.store(t.key, conn, pair.keep)
+                return Result.Ok(pair.resp)
+            }
+            Err(e) => {
+                conn.Close()
+                return Result.Err(e)
+            }
+        }
+    }
+
+    // take answers a kept connection to a server, if one is there.
+    func take(key: str) -> Option<net.Conn> {
+        match self.pool.Get(key) {
+            Some(conns) => {
+                if conns.Len() == 0 {
+                    return Option.None
+                }
+                return Option.Some(conns.Pop().Unwrap())
+            }
+            None => {
+                return Option.None
+            }
+        }
+    }
+
+    // store keeps a connection for the next request to its server, or closes
+    // it when it may not serve another.
+    func store(key: str, conn: net.Conn, reusable: bool) {
+        if !reusable {
+            conn.Close()
+            return
+        }
+        match self.pool.Get(key) {
+            Some(conns) => {
+                conns.Push(conn)
+            }
+            None => {
+                var fresh = new Array<net.Conn>(0)
+                fresh.Push(conn)
+                self.pool.Insert(key, fresh)
+            }
+        }
+    }
+}

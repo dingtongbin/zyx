@@ -30,8 +30,6 @@ const (
 	CodeNestedFString Code = "E1009"
 	// CodeEmptyInterpolation reports an interpolation with no expression.
 	CodeEmptyInterpolation Code = "E1010"
-	// CodeUnformatted reports a file that is not in canonical form.
-	CodeUnformatted Code = "E1011"
 )
 
 // Syntax diagnostics occupy the E2001-E2099 range.
@@ -230,9 +228,12 @@ const (
 	// CodeKeyType reports a map or set key type that implements no equality
 	// and hash, which the container reaches through.
 	CodeKeyType Code = "E4039"
-	// CodeLiteralRange reports an integer literal whose value does not fit
-	// the type it is written with.
+	// A literal whose value does not fit the type it is written with is a
+	// mistake no later stage can undo.
 	CodeLiteralRange Code = "E4040"
+	// CodeTypeArgument reports a type argument that does not implement the
+	// interface its type parameter requires.
+	CodeTypeArgument Code = "E4041"
 )
 
 // Memory and region diagnostics occupy the E5001-E5099 range.
@@ -240,6 +241,20 @@ const (
 	// CodeViewLifetime reports a view stored where it outlives the
 	// container it borrows.
 	CodeViewLifetime Code = "E5001"
+	// CodeBorrowMoved reports an address taken into a container held across
+	// a call, which may move the buffer the address lies in.
+	CodeBorrowMoved Code = "E5002"
+	// CodeBorrowModified reports a structural modification of a container
+	// while a view of its buffer is live, which may leave the view naming
+	// storage the container no longer holds.
+	CodeBorrowModified Code = "E5003"
+	// CodeRegionDomination reports a value stored into an object whose
+	// region is not the one that runs the store, so the value is released
+	// before the object that holds it.
+	CodeRegionDomination Code = "E5004"
+	// CodeRegionCycle reports a reference cycle whose members belong to
+	// different regions, which no single region can release as a whole.
+	CodeRegionCycle Code = "E5005"
 )
 
 // Concurrency diagnostics occupy the E6001-E6099 range.
@@ -252,6 +267,27 @@ const (
 	// CodeSelectArms reports a select arm combination the language
 	// forbids.
 	CodeSelectArms Code = "E6003"
+	// CodeCFuncNew reports a runtime allocation in a `c func` body, which
+	// runs on a blocking-pool thread with no region to allocate from.
+	CodeCFuncNew Code = "E6004"
+	// CodeCFuncLiteral reports a literal that builds a reference type in a
+	// `c func` body, which has no region to build it in.
+	CodeCFuncLiteral Code = "E6005"
+	// CodeCFuncChan reports a channel operation that suspends in a `c func`
+	// body, which has no coroutine to park. The Try forms do not suspend.
+	CodeCFuncChan Code = "E6006"
+	// CodeCFuncSelect reports a select in a `c func` body, which has no
+	// coroutine to park.
+	CodeCFuncSelect Code = "E6007"
+	// CodeCFuncJoin reports a join in a `c func` body, which has no coroutine
+	// to park. TryJoin does not wait.
+	CodeCFuncJoin Code = "E6008"
+	// CodeCFuncMutex reports a mutex wait in a `c func` body, which has no
+	// coroutine to park. TryLock does not wait.
+	CodeCFuncMutex Code = "E6009"
+	// CodeCFuncIO reports the language's own input or output wait in a
+	// `c func` body, which has no coroutine to park.
+	CodeCFuncIO Code = "E6010"
 )
 
 // Comptime diagnostics occupy the E7001-E7099 range.
@@ -266,6 +302,31 @@ const (
 	// CodeComptimePanic reports a panic reached while evaluating a
 	// compile-time expression.
 	CodeComptimePanic Code = "E7004"
+)
+
+// Target and build diagnostics occupy the E8001-E8099 range.
+const (
+	// CodeFreestandingSpawn reports a coroutine start under a target that
+	// leaves the runtime out, which has no coroutine to start.
+	CodeFreestandingSpawn Code = "E8001"
+	// CodeFreestandingSpawnWatched reports a supervised coroutine start under
+	// a target that leaves the runtime out, which has no supervisor to run.
+	CodeFreestandingSpawnWatched Code = "E8002"
+	// CodeFreestandingChan reports a channel under a target that leaves the
+	// runtime out, which has no runtime to carry one.
+	CodeFreestandingChan Code = "E8003"
+	// CodeFreestandingSelect reports a select under a target that leaves the
+	// runtime out, which has no coroutine or channel to wait on.
+	CodeFreestandingSelect Code = "E8004"
+	// CodeFreestandingRegion reports a region block under a target that
+	// leaves the runtime out, which has no region allocator.
+	CodeFreestandingRegion Code = "E8005"
+	// CodeFreestandingNew reports a runtime allocation under a target that
+	// leaves the runtime out.
+	CodeFreestandingNew Code = "E8006"
+	// CodeFreestandingLiteral reports a literal that builds a reference type
+	// under a target that leaves the runtime out.
+	CodeFreestandingLiteral Code = "E8007"
 )
 
 // Backend and link diagnostics occupy the E9001-E9099 range.

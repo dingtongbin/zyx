@@ -1,0 +1,15 @@
+aGVsbG8=
+YQ== YWI= YWJj
+YT8-
+|
+5 5 97 2
+empty:ok
+good:ok
+bad length:length
+bad char:char 33
+bad padding:length
+padding inside:padding
+abc
+0102c3be 0102C3BE
+254 254 length 122
+191

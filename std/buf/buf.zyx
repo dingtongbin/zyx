@@ -1,1 +1,7 @@
 package buf
+
+// A buffer of bytes and a ring are predeclared by the language, so every
+// program already reaches them without an import and this package carries no
+// API of its own. The methods they offer are the ones the design fixes under
+// the container section, and the corpus under tests/e2e/testdata/buf walks
+// them.

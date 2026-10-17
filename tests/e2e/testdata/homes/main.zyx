@@ -15,7 +15,51 @@ func pick() -> i64 {
     return kept.v
 }
 
+// A value created inside a region and used after it leaves belongs to the
+// outer region, so the region that made it does not release it while the outer
+// code still reads it. A block the region returned goes back to the system,
+// and the next allocation of that size takes it: reading 41 rather than 999
+// is what proves the value was not created in the region that left.
+struct Big {
+    pad: [i64; 20000]
+}
+
+func moved() -> i64 {
+    var held = Big { pad: [1] * 20000 }
+    region {
+        held = Big { pad: [41] * 20000 }
+    }
+    var noise = Big { pad: [999] * 20000 }
+    return held.pad[0] + noise.pad[0] - 999
+}
+
+// A value stored into a container that outlives the region belongs to the
+// container's region for the same reason.
+struct Holder {
+    xs: Array<i64>
+}
+
+func fill(h: Holder) {
+    region {
+        var xs = new Array<i64>(4096)
+        for i in 0 .. 4096 {
+            xs.Push(i)
+        }
+        h.xs = xs
+    }
+}
+
+func stored() -> i64 {
+    var h = Holder { xs: new Array<i64>(0) }
+    fill(h)
+    return i64(h.xs.Len()) + h.xs[4095]
+}
+
 func main() {
     fmt.PrintI64(pick())
+    fmt.PrintNl()
+    fmt.PrintI64(moved())
+    fmt.PrintNl()
+    fmt.PrintI64(stored())
     fmt.PrintNl()
 }

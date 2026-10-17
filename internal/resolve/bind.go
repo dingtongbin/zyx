@@ -606,6 +606,12 @@ func (r *resolver) resolvePattern(p ast.Pattern, shared map[string]*Symbol) {
 		if v.Name == nil || v.Name.Name == "_" {
 			return
 		}
+		if r.enumVariants[v.Name.Name] {
+			// The name is a variant of an enum, so it names a variant
+			// rather than binding a name. The checker reads it against the
+			// matched type; resolution only knows the name.
+			return
+		}
 		if sym := shared[v.Name.Name]; sym != nil {
 			r.info.Defs[v.Name] = sym
 			return
@@ -635,9 +641,9 @@ func (r *resolver) resolveOr(v *ast.OrPattern) {
 	if len(v.Patterns) == 0 {
 		return
 	}
-	names, first := patternBindings(v.Patterns[0])
+	names, first := r.patternBindings(v.Patterns[0])
 	for _, alt := range v.Patterns[1:] {
-		got, _ := patternBindings(alt)
+		got, _ := r.patternBindings(alt)
 		if !sameNameSet(names, got) {
 			r.diags = append(r.diags, diag.New(diag.CodeDuplicateName, alt.Span(),
 				"every alternative of an or-pattern must bind the same names").
@@ -655,8 +661,9 @@ func (r *resolver) resolveOr(v *ast.OrPattern) {
 }
 
 // patternBindings returns the names a pattern binds, in source order, with
-// the identifier that first declares each.
-func patternBindings(p ast.Pattern) ([]string, map[string]*ast.Ident) {
+// the identifier that first declares each. A name that is a variant of an
+// enum binds nothing.
+func (r *resolver) patternBindings(p ast.Pattern) ([]string, map[string]*ast.Ident) {
 	var names []string
 	first := map[string]*ast.Ident{}
 	var visit func(ast.Pattern)
@@ -664,6 +671,9 @@ func patternBindings(p ast.Pattern) ([]string, map[string]*ast.Ident) {
 		switch v := p.(type) {
 		case *ast.BindPattern:
 			if v.Name == nil || v.Name.Name == "_" {
+				return
+			}
+			if r.enumVariants[v.Name.Name] {
 				return
 			}
 			if _, ok := first[v.Name.Name]; !ok {

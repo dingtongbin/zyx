@@ -1,0 +1,184 @@
+package main
+
+import "std/fmt"
+
+// The buffer and the ring are predeclared by the language, so no package is
+// imported for them. This program walks every method the design fixes and the
+// edge of each: an empty buffer, a buffer that grows past its start, a view
+// read before the next change, and a ring that fills up.
+// count counts the bytes of a view.
+
+func count(b: [u8]) -> usize {
+    var n: usize = 0
+    for _ in b {
+        n += 1
+    }
+    return n
+}
+
+// bytesOf builds the bytes of a text.
+
+func bytesOf(src: str) -> Array<u8> {
+    var out = new Array<u8>(0)
+    for i in 0 .. src.Len() {
+        out.Push(src[i])
+    }
+    return out
+}
+
+func main() {
+    // An empty buffer holds nothing, and its view is empty too.
+    var empty = new Buf()
+    fmt.PrintI64(i64(empty.Len()))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(count(empty.Bytes())))
+    fmt.Print(" [")
+    fmt.Print(empty.Str())
+    fmt.Print("]")
+    fmt.PrintNl()
+    // A starting capacity is guaranteed and holds no bytes yet.
+    var grown = new Buf(4)
+    fmt.PrintBool(grown.Cap() >= 4)
+    fmt.Print(" ")
+    fmt.PrintI64(i64(grown.Len()))
+    fmt.PrintNl()
+    // Bytes and a text, and the length follows each.
+    var b = new Buf(2)
+    b.WriteByte(u8(104))
+    b.WriteByte(u8(105))
+    b.WriteStr("!")
+    fmt.PrintI64(i64(b.Len()))
+    fmt.Print(" ")
+    fmt.Print(b.Str())
+    fmt.PrintNl()
+    // A view of an array writes its bytes.
+    var more = bytesOf(" there")
+    b.Write(more[0 .. more.Len()])
+    fmt.Print(b.Str())
+    fmt.PrintNl()
+    // An empty view changes nothing.
+    b.Write(more[0 .. 0])
+    fmt.PrintI64(i64(b.Len()))
+    fmt.PrintNl()
+    // The view sees every byte that is there.
+    fmt.PrintI64(i64(count(b.Bytes())))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(b.Bytes()[0]))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(b.Bytes()[b.Len() - 1]))
+    fmt.PrintNl()
+    // Consuming nothing changes nothing, and consuming from the front drops
+    // that many bytes.
+    b.Consume(0)
+    fmt.PrintI64(i64(b.Len()))
+    fmt.Print(" ")
+    b.Consume(2)
+    fmt.Print(b.Str())
+    fmt.Print(" ")
+    fmt.PrintI64(i64(b.Len()))
+    fmt.PrintNl()
+    // Growing well past the starting capacity keeps every byte in order.
+    var big = new Buf(1)
+    var i: usize = 0
+    for i < 100 {
+        big.WriteByte(u8(i))
+        i += 1
+    }
+    fmt.PrintI64(i64(big.Len()))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(big.Bytes()[0]))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(big.Bytes()[99]))
+    fmt.PrintNl()
+    // Reserve makes room ahead without touching the bytes that are there.
+    big.Reserve(64)
+    fmt.PrintI64(i64(big.Len()))
+    fmt.Print(" ")
+    fmt.PrintBool(big.Cap() >= 164)
+    fmt.PrintNl()
+    // Clear and Reset drop the bytes and keep the room.
+    var room = big.Cap()
+    big.Clear()
+    fmt.PrintI64(i64(big.Len()))
+    fmt.Print(" ")
+    fmt.PrintBool(big.Cap() == room)
+    fmt.PrintNl()
+    big.WriteStr("x")
+    big.Reset()
+    fmt.PrintI64(i64(big.Len()))
+    fmt.Print(" ")
+    fmt.PrintBool(big.Cap() == room)
+    fmt.PrintNl()
+    // Take hands the bytes over and leaves the buffer empty.
+    var t = new Buf(0)
+    t.WriteStr("take me")
+    var taken = t.Take()
+    fmt.PrintI64(i64(taken.Len()))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(t.Len()))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(taken[0]))
+    fmt.PrintNl()
+    // Whatever byte is written comes back, including a zero and one above
+    // ASCII. The escape is utf8 handling test data: U+4F60 is three bytes.
+    var blob = new Buf(0)
+    blob.WriteByte(u8(0))
+    blob.WriteByte(u8(255))
+    blob.WriteStr("\u{4F60}")
+    fmt.PrintI64(i64(blob.Len()))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(blob.Bytes()[1]))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(blob.Bytes()[2]))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(blob.Bytes()[blob.Len() - 1]))
+    fmt.PrintNl()
+    // A ring starts empty and answers nothing.
+    var r = new Ring<i64>(3)
+    fmt.PrintI64(i64(r.Len()))
+    fmt.Print(" ")
+    fmt.PrintI64(i64(r.Cap()))
+    fmt.Print(" ")
+    match r.Pop() {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.Print("-")
+    }
+    fmt.Print(" ")
+    match r.Peek() {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.Print("-")
+    }
+    fmt.PrintNl()
+    // Peek answers the oldest without taking it.
+    r.Push(1)
+    r.Push(2)
+    r.Push(3)
+    fmt.PrintI64(i64(r.Len()))
+    fmt.Print(" ")
+    match r.Peek() {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.Print("-")
+    }
+    fmt.PrintNl()
+    // A push into a full ring drops the oldest.
+    r.Push(4)
+    fmt.PrintI64(i64(r.Len()))
+    fmt.Print(" ")
+    match r.Peek() {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.Print("-")
+    }
+    fmt.Print(" ")
+    match r.Pop() {
+        Some(v) => fmt.PrintI64(v)
+        None => fmt.Print("-")
+    }
+    fmt.PrintNl()
+    // Clear drops every element and keeps the capacity.
+    var rcap = r.Cap()
+    r.Clear()
+    fmt.PrintI64(i64(r.Len()))
+    fmt.Print(" ")
+    fmt.PrintBool(r.Cap() == rcap)
+    fmt.PrintNl()
+}

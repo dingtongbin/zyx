@@ -1,0 +1,32 @@
+package main
+
+import "std/fmt"
+
+// A duration takes part in the built-in ordering the language promises it, so
+// two durations compare by the nanoseconds they count. The comparison used to
+// be refused for a duration, which left a standard library of timers unable to
+// say which of two deadlines comes first.
+
+const short: Duration = dur.ms(1)
+const long: Duration = dur.sec(2)
+
+func main() {
+    if short < long {
+        fmt.PrintI64(1)
+    } else {
+        fmt.PrintI64(0)
+    }
+    fmt.PrintNl()
+    if long > short {
+        fmt.PrintI64(1)
+    } else {
+        fmt.PrintI64(0)
+    }
+    fmt.PrintNl()
+    if short == short {
+        fmt.PrintI64(1)
+    } else {
+        fmt.PrintI64(0)
+    }
+    fmt.PrintNl()
+}

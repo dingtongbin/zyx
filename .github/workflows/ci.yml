@@ -1,0 +1,59 @@
+# The checks the project asks for before anything is called done, on the one
+# platform the language is verified on. The tests that drive the toolchain skip
+# themselves when it is not there, so this file is useful even where the setup
+# step below does not land; where it does, the whole gate runs.
+
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The compiler needs clang, llc, opt and the LLVM tools. This step is
+      # allowed to fail: without it the suites that need the toolchain skip
+      # themselves and the rest of the gate still stands.
+      - name: install the toolchain
+        continue-on-error: true
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: clang64
+          install: >-
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-llvm
+
+      - name: put the toolchain on the path
+        shell: pwsh
+        run: |
+          foreach ($dir in @("C:\msys64\clang64\bin", "C:\msys64\usr\bin")) {
+            if (Test-Path $dir) { Add-Content $env:GITHUB_PATH $dir }
+          }
+
+      - name: formatting, vet, and the project's own checker
+        shell: pwsh
+        run: |
+          $unformatted = gofmt -l .
+          if ($unformatted) {
+            Write-Output "these files are not formatted:"
+            $unformatted
+            exit 1
+          }
+          go vet ./...
+          go run ./tools/codecheck .
+
+      - name: build
+        run: go build -o build/ ./...
+
+      - name: tests
+        env:
+          ZYX_BLOCKPOOL: "8"
+        run: go test -count=1 -parallel 2 -timeout 90m ./...

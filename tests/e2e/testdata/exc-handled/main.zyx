@@ -1,0 +1,26 @@
+package main
+
+// An exception a library raises and takes back inside itself. The trap runs before
+// the dispatch that looks for a handler, so claiming an exception there takes it
+// away from the library: the program dies where the library would have carried on,
+// and a C++ library that throws internally, or the debugger's thread-naming
+// exception, is enough to trigger it.
+//
+// What the trap reports by itself is a fault of the program. An exception the
+// language does not name is left to the dispatch: whatever handler the library
+// installed is reached, and an exception that reaches the top with no handler at
+// all is still reported, by the filter the C runtime calls.
+
+import "std/fmt"
+
+import c "probe.h" {
+    fast probe_caught
+}
+
+func main() {
+    fmt.Println("before")
+    var seen = c.probe_caught()
+    fmt.Print("after ")
+    fmt.PrintI64(i64(seen))
+    fmt.PrintNl()
+}

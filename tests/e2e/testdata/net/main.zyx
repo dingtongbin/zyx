@@ -1,0 +1,165 @@
+package main
+
+// The net package is exercised over the loopback address only. The program
+// listens on a port it chooses, dials it, and passes bytes both ways, and it
+// covers the edges the package defines: a connection that is refused, a read
+// after the far end closed, a call on a handle that was closed, and an
+// address that names no address.
+//
+// The port belongs to the machine and the moment, so it never enters what the
+// program prints: every line below is the same wherever the program runs.
+
+import "std/fmt"
+import "std/net"
+import "std/time"
+
+// colon is the byte that separates a host from its port.
+func colon() -> u8 {
+    return 58
+}
+
+// host_of answers the host an address text names, which is what is left of it
+// before the port. The port itself is never printed.
+func host_of(text: str) -> str {
+    var out = new Buf(0)
+    var i: usize = 0
+    for i < text.Len() {
+        if text[i] == colon() {
+            break
+        }
+        out.WriteByte(text[i])
+        i += 1
+    }
+    return out.Str()
+}
+
+// say prints a label and the answer it introduces.
+func say(label: str, answer: bool) {
+    fmt.Print(label)
+    fmt.PrintBool(answer)
+    fmt.PrintNl()
+}
+
+// bound is a listener with the address it took. The two are needed together,
+// because the port belongs to the machine rather than to the program.
+struct bound {
+    listener: net.Listener
+    addr: str
+}
+
+// listen_first listens on a loopback port that is free and answers the
+// listener with the address it took. A port that is already taken is passed
+// over, because which port the program gets is not part of what it prints.
+func listen_first() -> Result<bound, net.Error> {
+    var port = 20000 + i32(time.UnixMilli() % 20000)
+    var tries: i32 = 0
+    for tries < 64 {
+        var addr = f"127.0.0.1:{i64(port)}"
+        match net.Listen("tcp", addr) {
+            Ok(listener) => { return Result.Ok(bound { listener: listener, addr: addr }) }
+            Err(_) => { port += 1 }
+        }
+        tries += 1
+    }
+    var addr = f"127.0.0.1:{i64(port)}"
+    var listener = try net.Listen("tcp", addr)
+    return Result.Ok(bound { listener: listener, addr: addr })
+}
+
+func main() {
+    match run() {
+        Ok(_) => { }
+        Err(e) => {
+            var message = f"net test: {e.Msg}"
+            panic(message)
+        }
+    }
+}
+
+// run is the test itself: what it prints is the whole answer, and a step it
+// cannot take because the machine refused it stops the program.
+func run() -> Result<(), net.Error> {
+    var first = try listen_first()
+    var listener = first.listener
+    var addr = first.addr
+    fmt.Println("listening: ok")
+
+    // A port nothing is listening on refuses a connection. The listener that
+    // held the port is closed first, and no coroutine ever waited on it.
+    var probe = try listen_first()
+    probe.listener.Close()
+    match net.Dial("tcp", probe.addr) {
+        Ok(conn) => {
+            conn.Close()
+            fmt.Println("refused: no")
+        }
+        Err(e) => { say("refused: ", i32(e.Kind) == i32(net.ErrorKind.Refused)) }
+    }
+
+    var client = try net.Dial("tcp", addr)
+    fmt.Println("dialed: ok")
+    var server = try listener.Accept()
+    fmt.Println("accepted: ok")
+
+    var wrote = try client.WriteStr("ping")
+    fmt.Print("client wrote: ")
+    fmt.PrintI64(i64(wrote))
+    fmt.PrintNl()
+
+    var request = new Buf(0)
+    try server.Read(request, 64)
+    fmt.Print("server read: ")
+    fmt.Print(request.Str())
+    fmt.PrintNl()
+
+    try server.WriteStr("pong")
+    var reply = new Buf(0)
+    try client.Read(reply, 64)
+    fmt.Print("client read: ")
+    fmt.Print(reply.Str())
+    fmt.PrintNl()
+
+    say("near end is loopback: ", host_of(server.LocalAddr()) == "127.0.0.1")
+    say("far end is loopback: ", host_of(server.RemoteAddr()) == "127.0.0.1")
+
+    // The far end stopped writing and closed, so a read answers the end of the
+    // stream rather than waiting forever or failing.
+    server.Close()
+    var end = new Buf(0)
+    var left = try client.Read(end, 64)
+    say("read after the peer closed is empty: ", left == 0)
+
+    // A handle that was closed refuses every call.
+    client.Close()
+    var after = new Buf(0)
+    match client.Read(after, 64) {
+        Ok(_) => { fmt.Println("read after close: no") }
+        Err(e) => { say("read after close: ", i32(e.Kind) == i32(net.ErrorKind.Closed)) }
+    }
+
+    // A listener that was closed refuses a call too.
+    listener.Close()
+    match listener.Accept() {
+        Ok(conn) => {
+            conn.Close()
+            fmt.Println("accept after close: no")
+        }
+        Err(e) => { say("accept after close: ", i32(e.Kind) == i32(net.ErrorKind.Closed)) }
+    }
+
+    // An address whose port is not a number names no address at all.
+    match net.Dial("tcp", "127.0.0.1:notaport") {
+        Ok(conn) => {
+            conn.Close()
+            fmt.Println("invalid address: no")
+        }
+        Err(e) => { say("invalid address: ", i32(e.Kind) == i32(net.ErrorKind.Invalid)) }
+    }
+
+    // A name that is already an address is read as one, without asking a name
+    // service, so nothing here depends on a lookup.
+    var names = try net.Resolve("127.0.0.1")
+    say("a literal address answers with a name: ", names.Len() >= 1)
+    say("the name is the literal itself: ", names[0] == "127.0.0.1")
+    return Result.Ok()
+}

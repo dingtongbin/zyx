@@ -1,0 +1,17 @@
+package main
+
+import "std/fmt"
+
+// Two million iterations of a loop that adds a checked value: the loop itself,
+// its back-edge preemption check, and the checked arithmetic, with nothing
+// else. Subtracting this from a benchmark that also switches coroutines is what
+// the switch costs.
+
+func main() {
+    var total: i64 = 0
+    for i in 0..2000000 {
+        total = total + i
+    }
+    fmt.PrintI64(total)
+    fmt.PrintNl()
+}

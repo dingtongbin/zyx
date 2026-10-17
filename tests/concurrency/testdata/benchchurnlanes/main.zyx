@@ -1,0 +1,55 @@
+package main
+
+import "std/fmt"
+
+// Many coroutines churning at the same time, so that every scheduler thread
+// starts and finishes coroutines of its own. A program that churns one
+// coroutine at a time uses the caches of one thread; a program of that many
+// busy threads is what the tables each thread keeps for its own finished
+// coroutines and stacks are for. Every churner has a channel of its own, so a
+// churn crosses threads only if the scheduler moves the churner, and the sum
+// does not depend on who received what.
+
+const Churners: i64 = 16
+const Rounds: i64 = 6250
+
+func worker(out: chan<i64>, value: i64) {
+    out.Send(value)
+}
+
+func churner(done: chan<i64>, id: i64) {
+    var out = new chan<i64>(1)
+    var total: i64 = 0
+    for i in 0..Rounds {
+        var value = i * Churners + id
+        region {
+            spawn worker(out, value)
+        }
+        var v, ok = out.Recv()
+        if ok {
+            total = total + v
+        }
+    }
+    done.Send(total)
+}
+
+func main() {
+    var done = new chan<i64>(Churners)
+    region {
+        for i in 0..Churners {
+            spawn churner(done, i)
+        }
+    }
+    var total: i64 = 0
+    for i in 0..Churners {
+        var v, ok = done.Recv()
+        if ok {
+            total = total + v
+        }
+    }
+    fmt.Print("coroutines=")
+    fmt.PrintI64(Churners * Rounds)
+    fmt.PrintNl()
+    fmt.PrintI64(total)
+    fmt.PrintNl()
+}

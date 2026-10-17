@@ -1,1 +1,402 @@
 package pg
+
+// PostgreSQL over libpq. A program connects with a data source name, runs
+// statements through the connection, and reads the rows they answer.
+//
+// The data source name is the connection string libpq reads: a set of
+// keyword=value pairs, with a value that holds a space written in single
+// quotes. A name that is not such a set is refused where it is read, rather
+// than handed to the library to fail in its own words. A parameter of a
+// statement is written as $1, $2, and so on, which is the form libpq reads.
+
+import "std/db"
+
+import c "zyxpg.h" {
+    fast zyxpg_error_kind, zyxpg_error_number, zyxpg_error_message
+    fast zyxpg_rows_next, zyxpg_rows_columns, zyxpg_rows_column_name
+    fast zyxpg_rows_null, zyxpg_rows_int, zyxpg_rows_float, zyxpg_rows_text
+}
+
+// Driver answers the PostgreSQL driver, which db.Open and a db.Pool ask to
+// open a connection.
+func Driver() -> db.Driver {
+    return driver { }
+}
+
+// driver is the value the db.Driver interface names.
+struct driver {
+    impl db.Driver {
+        func Open(dsn: str) -> Result<db.Conn, db.Error> {
+            return Open(dsn)
+        }
+    }
+}
+
+// Open connects to the server a data source name names.
+func Open(dsn: str) -> Result<db.Conn, db.Error> {
+    var checked = check_dsn(dsn)
+    if checked.IsErr() {
+        return Result.Err(checked.Err().Unwrap())
+    }
+    var handle = c.zyxpg_connect(dsn)
+    if c.zyxpg_error_kind() != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok(conn_of(handle))
+}
+
+// conn_of builds the connection a connection call just made.
+func conn_of(handle: raw) -> db.Conn {
+    return conn { Handle: handle, Closed: false }
+}
+
+// rows_of builds the rows a statement call just made.
+func rows_of(handle: raw) -> db.Rows {
+    return rows { Handle: handle, Closed: false, Current: false, Done: false }
+}
+
+// error_of builds the failure the last call reported.
+func error_of() -> db.Error {
+    return db.Error {
+        Kind: error_kind(c.zyxpg_error_kind())
+        Errno: c.zyxpg_error_number()
+        Msg: message_of()
+    }
+}
+
+// message_of answers the text of the failure the last call reported.
+func message_of() -> str {
+    var text = new Buf(0)
+    c.zyxpg_error_message(text)
+    return text.Str()
+}
+
+// error_kind maps the number a C call reports onto the kind of failure it is.
+// The numbers are the ones the package's own header defines.
+func error_kind(code: i32) -> db.ErrorKind {
+    match code {
+        1 => { return db.ErrorKind.NotFound }
+        2 => { return db.ErrorKind.Permission }
+        3 => { return db.ErrorKind.Exists }
+        4 => { return db.ErrorKind.NotDir }
+        5 => { return db.ErrorKind.IsDir }
+        6 => { return db.ErrorKind.Invalid }
+        7 => { return db.ErrorKind.Closed }
+        8 => { return db.ErrorKind.Timeout }
+        9 => { return db.ErrorKind.Interrupted }
+        10 => { return db.ErrorKind.WouldBlock }
+        11 => { return db.ErrorKind.Eof }
+        12 => { return db.ErrorKind.AddrInUse }
+        13 => { return db.ErrorKind.AddrNotAvailable }
+        14 => { return db.ErrorKind.Refused }
+        15 => { return db.ErrorKind.Reset }
+        16 => { return db.ErrorKind.Unreachable }
+        _ => { return db.ErrorKind.Other }
+    }
+}
+
+// closed_error is the failure of a call on a connection that was closed.
+func closed_error() -> db.Error {
+    return db.Error { Kind: db.ErrorKind.Closed, Errno: 0, Msg: "the connection is closed" }
+}
+
+// unbindable is the failure of a parameter that has no value a column can hold.
+func unbindable(at: i32) -> db.Error {
+    return db.Error {
+        Kind: db.ErrorKind.Invalid
+        Errno: 0
+        Msg: f"parameter {i64(at) + 1} is an array or a map, which a column cannot hold"
+    }
+}
+
+// A conn is a connection to a PostgreSQL server. It is a reference, and a
+// program closes what it opened.
+struct conn {
+    Handle: raw
+    Closed: bool
+
+    impl db.Conn {
+        // Query runs one statement and answers the rows it reads.
+        func Query(sql: str, params: Array<Value>) -> Result<db.Rows, db.Error> {
+            if self.Closed {
+                return Result.Err(closed_error())
+            }
+            var built = build_params(params)
+            if built.IsErr() {
+                return Result.Err(built.Err().Unwrap())
+            }
+            var handle = built.Ok().Unwrap()
+            var result = c.zyxpg_query(self.Handle, sql, handle)
+            c.zyxpg_params_free(handle)
+            if c.zyxpg_error_kind() != 0 {
+                return Result.Err(error_of())
+            }
+            return Result.Ok(rows_of(result))
+        }
+
+        // Exec runs one statement and answers how many rows it changed.
+        func Exec(sql: str, params: Array<Value>) -> Result<i64, db.Error> {
+            if self.Closed {
+                return Result.Err(closed_error())
+            }
+            var built = build_params(params)
+            if built.IsErr() {
+                return Result.Err(built.Err().Unwrap())
+            }
+            var handle = built.Ok().Unwrap()
+            var changed = c.zyxpg_exec(self.Handle, sql, handle)
+            c.zyxpg_params_free(handle)
+            if c.zyxpg_error_kind() != 0 {
+                return Result.Err(error_of())
+            }
+            return Result.Ok(changed)
+        }
+
+        // Close gives the connection up. It is idempotent, and a call on a
+        // connection that was closed is refused.
+        func Close() {
+            if self.Closed {
+                return
+            }
+            c.zyxpg_close(self.Handle)
+            self.Closed = true
+        }
+    }
+}
+
+// A rows reads the rows one statement answers. It is a reference, a copy names
+// the same rows, and the result is released when Close is called.
+struct rows {
+    Handle: raw
+    Closed: bool
+    Current: bool
+    Done: bool
+
+    impl db.Rows {
+        // Next moves to the next row and answers whether there is one.
+        func Next() -> bool {
+            if self.Closed || self.Done {
+                return false
+            }
+            if c.zyxpg_rows_next(self.Handle) == 0 {
+                self.Done = true
+                self.Current = false
+                return false
+            }
+            self.Current = true
+            return true
+        }
+
+        // Columns answers the names of the result columns, in the order the
+        // statement writes them.
+        func Columns() -> Array<str> {
+            var out = new Array<str>(0)
+            if self.Closed {
+                return out
+            }
+            var count = c.zyxpg_rows_columns(self.Handle)
+            var at: i32 = 0
+            for at < count {
+                var text = new Buf(0)
+                c.zyxpg_rows_column_name(self.Handle, at, text)
+                out.Push(text.Str())
+                at += 1
+            }
+            return out
+        }
+
+        // Int answers a result column as a signed integer. A column that holds
+        // no value answers zero, which Null tells apart from a value of zero.
+        func Int(i: usize) -> i64 {
+            readable(self.Closed, self.Current, self.Handle, i)
+            return c.zyxpg_rows_int(self.Handle, i32(i))
+        }
+
+        // Float answers a result column as a floating-point number. A column
+        // that holds no value answers zero.
+        func Float(i: usize) -> f64 {
+            readable(self.Closed, self.Current, self.Handle, i)
+            return c.zyxpg_rows_float(self.Handle, i32(i))
+        }
+
+        // Text answers a result column as text. A column that holds no value
+        // answers the empty text.
+        func Text(i: usize) -> str {
+            readable(self.Closed, self.Current, self.Handle, i)
+            var text = new Buf(0)
+            c.zyxpg_rows_text(self.Handle, i32(i), text)
+            return text.Str()
+        }
+
+        // Null reports whether a result column holds no value.
+        func Null(i: usize) -> bool {
+            readable(self.Closed, self.Current, self.Handle, i)
+            return c.zyxpg_rows_null(self.Handle, i32(i)) != 0
+        }
+
+        // Close releases the result. It is idempotent.
+        func Close() {
+            if self.Closed {
+                return
+            }
+            c.zyxpg_rows_close(self.Handle)
+            self.Closed = true
+            self.Current = false
+            self.Done = true
+        }
+    }
+}
+
+// readable refuses a read of a column that is not there, and of rows that have
+// no current row, because neither has a value to answer with.
+func readable(closed: bool, current: bool, handle: raw, i: usize) {
+    if closed {
+        panic("pg: the rows are closed")
+    }
+    if !current {
+        panic("pg: no row is current")
+    }
+    if i >= usize(c.zyxpg_rows_columns(handle)) {
+        panic("pg: the column is not there")
+    }
+}
+
+// build_params gives a run the values of a call. A parameter is counted from
+// one, in the order the statement writes its placeholders. The object is freed
+// when the run that took it is over, and here when a value cannot be one.
+func build_params(params: Array<Value>) -> Result<raw, db.Error> {
+    var handle = c.zyxpg_params_new()
+    var at: i32 = 0
+    for v in params {
+        var added = add_param(handle, at, v)
+        if added.IsErr() {
+            c.zyxpg_params_free(handle)
+            return Result.Err(added.Err().Unwrap())
+        }
+        at += 1
+    }
+    return Result.Ok(handle)
+}
+
+// add_param gives one parameter a value. A value of a kind that is a
+// collection has no column to stand for it, so it is refused rather than
+// encoded.
+func add_param(handle: raw, at: i32, v: Value) -> Result<(), db.Error> {
+    match v {
+        Null => { return param_result(c.zyxpg_params_null(handle)) }
+        Bool(b) => {
+            if b {
+                return param_result(c.zyxpg_params_bool(handle, 1))
+            }
+            return param_result(c.zyxpg_params_bool(handle, 0))
+        }
+        Int(v) => { return param_result(c.zyxpg_params_int(handle, v)) }
+        Float(x) => { return param_result(c.zyxpg_params_float(handle, x)) }
+        Str(s) => { return param_result(c.zyxpg_params_text(handle, s)) }
+        Array(_) => { return Result.Err(unbindable(at)) }
+        Map(_) => { return Result.Err(unbindable(at)) }
+    }
+}
+
+// param_result reads the answer of one parameter call.
+func param_result(code: i32) -> Result<(), db.Error> {
+    if code != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok()
+}
+
+// check_dsn refuses a data source name that is not the set of keyword=value
+// pairs libpq reads. A name that begins with postgresql:// or postgres:// is
+// the other form libpq reads and is left to it.
+func check_dsn(s: str) -> Result<(), db.Error> {
+    if s.Len() == 0 {
+        return Result.Err(dsn_invalid("the data source name is empty"))
+    }
+    if has_prefix(s, "postgresql://") || has_prefix(s, "postgres://") {
+        return Result.Ok()
+    }
+    var i: usize = 0
+    var n = s.Len()
+    for i < n {
+        for i < n && is_space_byte(s[i]) {
+            i += 1
+        }
+        if i >= n {
+            break
+        }
+        var start = i
+        for i < n && s[i] != equal_byte() && !is_space_byte(s[i]) {
+            i += 1
+        }
+        if i == start {
+            return Result.Err(dsn_invalid("the data source name has an empty keyword"))
+        }
+        for i < n && is_space_byte(s[i]) {
+            i += 1
+        }
+        if i >= n || s[i] != equal_byte() {
+            return Result.Err(dsn_invalid("the data source name is not a set of keyword=value pairs"))
+        }
+        i += 1
+        for i < n && is_space_byte(s[i]) {
+            i += 1
+        }
+        if i < n && s[i] == quote_byte() {
+            i += 1
+            var closed = false
+            for i < n {
+                if s[i] == backslash_byte() {
+                    i += 2
+                    continue
+                }
+                if s[i] == quote_byte() {
+                    i += 1
+                    closed = true
+                    break
+                }
+                i += 1
+            }
+            if !closed {
+                return Result.Err(dsn_invalid("the data source name has an unclosed quote"))
+            }
+        } else {
+            for i < n && !is_space_byte(s[i]) {
+                i += 1
+            }
+        }
+    }
+    return Result.Ok()
+}
+
+// dsn_invalid is the failure of a data source name that does not read.
+func dsn_invalid(msg: str) -> db.Error {
+    return db.Error { Kind: db.ErrorKind.Invalid, Errno: 0, Msg: msg }
+}
+
+// is_space_byte reports whether a byte is one libpq leaves between the parts
+// of a connection string.
+func is_space_byte(b: u8) -> bool {
+    return b == 32 || (b >= 9 && b <= 13)
+}
+
+// has_prefix reports whether a string begins with a prefix.
+func has_prefix(s: str, prefix: str) -> bool {
+    if prefix.Len() > s.Len() {
+        return false
+    }
+    var i: usize = 0
+    for i < prefix.Len() {
+        if s[i] != prefix[i] {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+func equal_byte() -> u8 { return 61 }
+
+func quote_byte() -> u8 { return 39 }
+
+func backslash_byte() -> u8 { return 92 }

@@ -1,0 +1,18 @@
+package main
+
+import "std/fmt"
+
+import c "stdlib.h"
+
+// A raw address becomes an integer of the same width. A pointer is not an
+// integer, so the conversion is ptrtoint rather than an extension, which a
+// backend would reject as invalid IR.
+
+func main() {
+    var block: raw = c.malloc(usize(16))
+    fmt.PrintBool(usize(block) > 0)
+    fmt.PrintNl()
+    fmt.PrintBool(usize(block) == usize(block))
+    fmt.PrintNl()
+    c.free(block)
+}

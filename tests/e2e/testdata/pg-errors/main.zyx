@@ -1,0 +1,98 @@
+package main
+
+// The failures of std/pg that do not need a server: a data source name that is
+// not the set of keyword=value pairs libpq reads, and a connection to a port
+// this program chose and knows is closed. The port belongs to the machine and
+// the moment, so it never enters what is printed.
+//
+// The messages of a name this package refused are its own and are the same
+// wherever it runs. A connection that failed is reported as a failure alone,
+// because what libpq says about a socket belongs to the system that refused
+// it, not to this package.
+
+import "std/db"
+import "std/fmt"
+import "std/net"
+import "std/pg"
+import "std/time"
+
+// kind_name names a failure kind, because an f-string writes a primitive type
+// or a text and the package's kind is an enumeration of its own.
+func kind_name(k: db.ErrorKind) -> str {
+    match k {
+        NotFound => { return "NotFound" }
+        Permission => { return "Permission" }
+        Exists => { return "Exists" }
+        NotDir => { return "NotDir" }
+        IsDir => { return "IsDir" }
+        Invalid => { return "Invalid" }
+        Closed => { return "Closed" }
+        Timeout => { return "Timeout" }
+        Interrupted => { return "Interrupted" }
+        WouldBlock => { return "WouldBlock" }
+        Eof => { return "Eof" }
+        AddrInUse => { return "AddrInUse" }
+        AddrNotAvailable => { return "AddrNotAvailable" }
+        Refused => { return "Refused" }
+        Reset => { return "Reset" }
+        Unreachable => { return "Unreachable" }
+        Other => { return "Other" }
+    }
+}
+
+// pick_port answers a loopback port that is free at the moment. A port already
+// taken is passed over, because which port the program gets is not part of
+// what it prints.
+func pick_port() -> i32 {
+    var port = 20000 + i32(time.UnixMilli() % 20000)
+    var tries: i32 = 0
+    for tries < 64 {
+        match net.Listen("tcp", f"127.0.0.1:{i64(port)}") {
+            Ok(listener) => {
+                listener.Close()
+                return port
+            }
+            Err(_) => {
+                port += 1
+            }
+        }
+        tries += 1
+    }
+    return port
+}
+
+func main() {
+    var empty = ""
+    match pg.Open(empty) {
+        Ok(conn) => { fmt.Println("empty: opened") }
+        Err(e) => { fmt.Println(f"empty: {kind_name(e.Kind)} {e.Msg}") }
+    }
+
+    match pg.Open("garbage") {
+        Ok(conn) => { fmt.Println("not a set: opened") }
+        Err(e) => { fmt.Println(f"not a set: {kind_name(e.Kind)} {e.Msg}") }
+    }
+
+    match pg.Open("=value") {
+        Ok(conn) => { fmt.Println("empty keyword: opened") }
+        Err(e) => { fmt.Println(f"empty keyword: {kind_name(e.Kind)} {e.Msg}") }
+    }
+
+    match pg.Open("host='x") {
+        Ok(conn) => { fmt.Println("unclosed quote: opened") }
+        Err(e) => { fmt.Println(f"unclosed quote: {kind_name(e.Kind)} {e.Msg}") }
+    }
+
+    // The layer reaches the same refusal through the driver a program passes.
+    match db.Open(pg.Driver(), "=value") {
+        Ok(conn) => { fmt.Println("driver: opened") }
+        Err(e) => { fmt.Println(f"driver: {kind_name(e.Kind)} {e.Msg}") }
+    }
+
+    var port = pick_port()
+    var dsn = f"host=127.0.0.1 port={i64(port)} connect_timeout=2"
+    match pg.Open(dsn) {
+        Ok(conn) => { fmt.Println("refused: opened") }
+        Err(e) => { fmt.Println("refused: failed") }
+    }
+}

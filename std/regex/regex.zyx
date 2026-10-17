@@ -1,1 +1,1224 @@
 package regex
+
+// Regular expressions over the bytes of a string, with the syntax of PCRE2 as
+// far as this engine implements it: literal bytes, `.`, character classes,
+// groups, alternation, the greedy and the lazy quantifiers, and the anchors.
+// A pattern is compiled once, and what the engine answers afterwards is where
+// a string matches. A match is a half-open byte range, because a string of the
+// language is bytes and nothing here decodes them.
+//
+// The parts of PCRE2 this engine does not implement are refused when a pattern
+// is compiled rather than matched as if they meant something else:
+// backreferences, lookaround, inline flags, named groups, Unicode properties,
+// POSIX classes, and the escapes that go with them. A refusal is an Error that
+// names the offset in the pattern at which the fault stands.
+//
+// A match is found the way PCRE2 finds one: the earliest start wins, an
+// alternation takes its branches in the order they are written, and a
+// quantifier is greedy unless it carries `?`.
+
+// Error says why a pattern was refused. Pos is the byte offset in the pattern
+// at which the fault stands and Msg names the fault.
+struct Error {
+    Pos: usize
+    Msg: str
+
+    impl Show {
+        func Show(w: Buf) {
+            w.WriteStr(f"regex: {self.Msg} at {self.Pos}")
+        }
+    }
+}
+
+// Inst is one step of a compiled pattern.
+enum Inst {
+    Byte(u8)
+    Any
+    Cls(usize)
+    Split(usize, usize)
+    Jmp(usize)
+    Save(usize)
+    Progress(usize)
+    Start
+    End
+    TextStart
+    TextEnd
+    Word
+    NotWord
+    Accept
+}
+
+// Kind names what a parsed node of a pattern is.
+enum Kind {
+    Byte
+    Any
+    Cls
+    Start
+    End
+    TextStart
+    TextEnd
+    Word
+    NotWord
+    Concat
+    Alt
+    Repeat
+    Group
+}
+
+// The escapes that stand for a set of bytes rather than one byte.
+const class_d: i32 = 0
+const class_w: i32 = 1
+const class_s: i32 = 2
+
+// no_limit is the high end of a quantifier that has none, and also the value
+// of a slot that holds no position.
+const no_limit: usize = ~usize(0)
+
+// max_repeat is the largest count a repetition may carry. A count beyond it
+// would make the compiled program larger than any use of it.
+const max_repeat: usize = 65535
+
+const lf: u8 = 10
+
+// Node is one parsed piece of a pattern. Concat and Alt hold their parts in
+// kids, Repeat holds its body in kids[0], and Group holds its body in kids[0].
+// A group of zero is a group that captures nothing.
+struct Node {
+    kind: Kind
+    kids: Array<Node>
+    byte: u8
+    cls: usize
+    group: usize
+    min: usize
+    max: usize
+    greedy: bool
+}
+
+// leaf builds a node that has no parts.
+func leaf(kind: Kind) -> Node {
+    return Node {
+        kind: kind
+        kids: new Array<Node>(0)
+        byte: 0
+        cls: 0
+        group: 0
+        min: 0
+        max: 0
+        greedy: true
+    }
+}
+
+// byte_node builds a node that matches one byte.
+func byte_node(b: u8) -> Node {
+    var n = leaf(Kind.Byte)
+    n.byte = b
+    return n
+}
+
+// class_node builds a node that matches one byte of a class.
+func class_node(idx: usize) -> Node {
+    var n = leaf(Kind.Cls)
+    n.cls = idx
+    return n
+}
+
+// kids_node builds a node that holds parts.
+func kids_node(kind: Kind, kids: Array<Node>) -> Node {
+    var n = leaf(kind)
+    n.kids = kids
+    return n
+}
+
+// group_node builds a capturing or a non-capturing group.
+func group_node(g: usize, body: Node) -> Node {
+    var n = leaf(Kind.Group)
+    n.group = g
+    n.kids.Push(body)
+    return n
+}
+
+// repeat_node builds a quantifier around a body. A high end of no_limit is a
+// quantifier that has none.
+func repeat_node(body: Node, min: usize, max: usize, greedy: bool) -> Node {
+    var n = leaf(Kind.Repeat)
+    n.min = min
+    n.max = max
+    n.greedy = greedy
+    n.kids.Push(body)
+    return n
+}
+
+// code is the byte a character stands for. A pattern is bytes, and the
+// metacharacters are the ASCII ones.
+func code(ch: char) -> u8 {
+    return u8(u32(ch))
+}
+
+// is_digit, is_upper, is_lower and is_letter read ASCII. A pattern is not text
+// in any encoding here, so the letters are the ASCII ones.
+func is_digit(b: u8) -> bool {
+    return b >= code('0') && b <= code('9')
+}
+
+func is_upper(b: u8) -> bool {
+    return b >= code('A') && b <= code('Z')
+}
+
+func is_lower(b: u8) -> bool {
+    return b >= code('a') && b <= code('z')
+}
+
+func is_letter(b: u8) -> bool {
+    return is_upper(b) || is_lower(b)
+}
+
+func is_word_byte(b: u8) -> bool {
+    return is_digit(b) || is_letter(b) || b == code('_')
+}
+
+func is_space_byte(b: u8) -> bool {
+    return b == code(' ') || (b >= 9 && b <= 13)
+}
+
+func is_hex_digit(b: u8) -> bool {
+    return is_digit(b) || (b >= code('a') && b <= code('f')) || (b >= code('A') && b <= code('F'))
+}
+
+// hex_value is the value of a hexadecimal digit. The caller has checked that
+// the byte is one.
+func hex_value(b: u8) -> u32 {
+    if is_digit(b) {
+        return u32(b - code('0'))
+    }
+    if is_upper(b) {
+        return u32(b - code('A')) + 10
+    }
+    return u32(b - code('a')) + 10
+}
+
+// class_has reports whether a byte belongs to one of the classes an escape
+// names.
+func class_has(kind: i32, b: u8) -> bool {
+    if kind == class_d {
+        return is_digit(b)
+    }
+    if kind == class_w {
+        return is_word_byte(b)
+    }
+    return is_space_byte(b)
+}
+
+// word_edge reports whether a position stands between a word byte and a byte
+// that is not one, or at either end of the subject.
+func word_edge(s: str, at: usize) -> bool {
+    var n = s.Len()
+    var before = at > 0 && is_word_byte(s[at - 1])
+    var after = at < n && is_word_byte(s[at])
+    return before != after
+}
+
+// copy_bytes appends the bytes of a string between two positions to a buffer.
+func copy_bytes(out: Buf, s: str, lo: usize, hi: usize) {
+    var i = lo
+    for i < hi {
+        out.WriteByte(s[i])
+        i += 1
+    }
+}
+
+// Parser reads a pattern into a tree and collects the byte classes it names.
+struct Parser {
+    src: str
+    pos: usize
+    classes: Array<bool>
+    ngroups: usize
+
+    // error builds the refusal of the pattern at one offset.
+    func error(at: usize, msg: str) -> Error {
+        return Error { Pos: at, Msg: msg }
+    }
+
+    func at_end() -> bool {
+        return self.pos >= self.src.Len()
+    }
+
+    func peek() -> u8 {
+        return self.src[self.pos]
+    }
+
+    // is_at reports whether the next byte is one, without consuming it.
+    func is_at(ch: u8) -> bool {
+        return !self.at_end() && self.peek() == ch
+    }
+
+    // parse_alt reads the branches of an alternation, which is the whole of a
+    // pattern as well as one arm of one. An empty branch is allowed and
+    // matches nothing.
+    func parse_alt() -> Result<Node, Error> {
+        var branches = new Array<Node>(0)
+        var first = try self.parse_concat()
+        branches.Push(first)
+        for self.is_at(code('|')) {
+            self.pos += 1
+            var next = try self.parse_concat()
+            branches.Push(next)
+        }
+        if branches.Len() == 1 {
+            return Result.Ok(branches[0])
+        }
+        return Result.Ok(kids_node(Kind.Alt, branches))
+    }
+
+    // parse_concat reads the pieces of a branch up to the next '|', the next
+    // ')' or the end.
+    func parse_concat() -> Result<Node, Error> {
+        var kids = new Array<Node>(0)
+        for !self.at_end() && !self.is_at(code('|')) && !self.is_at(code(')')) {
+            var item = try self.parse_repeat()
+            kids.Push(item)
+        }
+        return Result.Ok(kids_node(Kind.Concat, kids))
+    }
+
+    // parse_repeat reads one piece and the quantifier that may follow it.
+    func parse_repeat() -> Result<Node, Error> {
+        var atom = try self.parse_atom()
+        if !self.starts_quantifier() {
+            return Result.Ok(atom)
+        }
+        var q = try self.take_quantifier()
+        return Result.Ok(repeat_node(atom, q.0, q.1, q.2))
+    }
+
+    // starts_quantifier reports whether a quantifier follows. A '{' that does
+    // not open a well formed count stands for itself, the way PCRE2 reads it.
+    func starts_quantifier() -> bool {
+        if self.at_end() {
+            return false
+        }
+        var ch = self.peek()
+        if ch == code('*') || ch == code('+') || ch == code('?') {
+            return true
+        }
+        if ch == code('{') {
+            return self.brace_counts()
+        }
+        return false
+    }
+
+    // brace_counts reports whether the brace at the current position opens a
+    // count: some digits, an optional comma and some digits, and a closing
+    // brace. It reads ahead without consuming.
+    func brace_counts() -> bool {
+        var n = self.src.Len()
+        var i = self.pos + 1
+        var digits: usize = 0
+        for i < n && is_digit(self.src[i]) {
+            digits += 1
+            i += 1
+        }
+        if digits == 0 || i >= n {
+            return false
+        }
+        if self.src[i] == code('}') {
+            return true
+        }
+        if self.src[i] != code(',') {
+            return false
+        }
+        i += 1
+        for i < n && is_digit(self.src[i]) {
+            i += 1
+        }
+        return i < n && self.src[i] == code('}')
+    }
+
+    // read_count reads the digits of a count. A count beyond max_repeat is a
+    // fault, because compiling it would build a program no use could justify.
+    func read_count(at: usize) -> Result<usize, Error> {
+        var v: usize = 0
+        var digits: usize = 0
+        for !self.at_end() && is_digit(self.peek()) {
+            v = v * 10 + usize(self.peek() - code('0'))
+            if v > max_repeat {
+                return Result.Err(self.error(at, "repetition count is too large"))
+            }
+            digits += 1
+            self.pos += 1
+        }
+        if digits == 0 {
+            return Result.Err(self.error(at, "missing repetition count"))
+        }
+        return Result.Ok(v)
+    }
+
+    // take_quantifier reads the quantifier whose first byte is at the current
+    // position and answers its bounds and whether it is greedy.
+    func take_quantifier() -> Result<(usize, usize, bool), Error> {
+        var at = self.pos
+        var ch = self.peek()
+        var lo: usize = 0
+        var hi: usize = 0
+        if ch == code('*') {
+            self.pos += 1
+            hi = no_limit
+        } else if ch == code('+') {
+            self.pos += 1
+            lo = 1
+            hi = no_limit
+        } else if ch == code('?') {
+            self.pos += 1
+            hi = 1
+        } else {
+            self.pos += 1
+            lo = try self.read_count(at)
+            hi = lo
+            if self.is_at(code(',')) {
+                self.pos += 1
+                if self.is_at(code('}')) {
+                    hi = no_limit
+                } else {
+                    hi = try self.read_count(at)
+                }
+            }
+            if !self.is_at(code('}')) {
+                return Result.Err(self.error(at, "unterminated repetition"))
+            }
+            self.pos += 1
+            if hi != no_limit && lo > hi {
+                return Result.Err(self.error(at, "numbers out of order in repetition"))
+            }
+        }
+        var greedy = true
+        if self.is_at(code('?')) {
+            self.pos += 1
+            greedy = false
+        }
+        return Result.Ok((lo, hi, greedy))
+    }
+
+    // parse_atom reads one piece that is not a quantifier.
+    func parse_atom() -> Result<Node, Error> {
+        var at = self.pos
+        var ch = self.peek()
+        if ch == code('(') {
+            return self.parse_group()
+        }
+        if ch == code('[') {
+            return self.parse_class()
+        }
+        if ch == code('\\') {
+            return self.parse_escape()
+        }
+        if ch == code('.') {
+            self.pos += 1
+            return Result.Ok(leaf(Kind.Any))
+        }
+        if ch == code('^') {
+            self.pos += 1
+            return Result.Ok(leaf(Kind.Start))
+        }
+        if ch == code('$') {
+            self.pos += 1
+            return Result.Ok(leaf(Kind.End))
+        }
+        if ch == code('*') || ch == code('+') || ch == code('?') {
+            return Result.Err(self.error(at, "quantifier does not follow a repeatable item"))
+        }
+        if ch == code('{') && self.brace_counts() {
+            return Result.Err(self.error(at, "quantifier does not follow a repeatable item"))
+        }
+        // ']' and '}' stand for themselves where nothing else claims them.
+        self.pos += 1
+        return Result.Ok(byte_node(ch))
+    }
+
+    // parse_group reads a capturing group, or the '(?:' form that captures
+    // nothing.
+    func parse_group() -> Result<Node, Error> {
+        var at = self.pos
+        self.pos += 1
+        var capturing = true
+        if self.is_at(code('?')) {
+            self.pos += 1
+            if !self.is_at(code(':')) {
+                return Result.Err(self.error(at, "unsupported group"))
+            }
+            self.pos += 1
+            capturing = false
+        }
+        var g: usize = 0
+        if capturing {
+            self.ngroups += 1
+            g = self.ngroups
+        }
+        var body = try self.parse_alt()
+        if !self.is_at(code(')')) {
+            return Result.Err(self.error(at, "group is missing its )"))
+        }
+        self.pos += 1
+        return Result.Ok(group_node(g, body))
+    }
+
+    // parse_class reads a character class into a class of the parser and
+    // answers a node that matches one byte of it.
+    func parse_class() -> Result<Node, Error> {
+        var at = self.pos
+        self.pos += 1
+        var negated = false
+        if self.is_at(code('^')) {
+            negated = true
+            self.pos += 1
+        }
+        var num = self.new_class()
+        var first = true
+        var closed = false
+        for !closed {
+            if self.at_end() {
+                return Result.Err(self.error(at, "character class is missing its ]"))
+            }
+            if self.is_at(code(']')) && !first {
+                self.pos += 1
+                closed = true
+            } else {
+                first = false
+                try self.class_item(num)
+            }
+        }
+        if negated {
+            var b: usize = 0
+            for b < 256 {
+                self.classes[num * 256 + b] = !self.classes[num * 256 + b]
+                b += 1
+            }
+        }
+        return Result.Ok(class_node(num))
+    }
+
+    // new_class appends one class of bytes to the class table and answers the
+    // number the class is known by from then on.
+    func new_class() -> usize {
+        var num = self.classes.Len() / 256
+        var b: usize = 0
+        for b < 256 {
+            self.classes.Push(false)
+            b += 1
+        }
+        return num
+    }
+
+    // class_item reads one member of a class: an escape, a byte, or a range of
+    // two bytes.
+    func class_item(num: usize) -> Result<(), Error> {
+        if self.is_at(code('\\')) {
+            if self.class_escape_follows() {
+                return self.class_escape(num)
+            }
+            var lo = try self.class_byte()
+            return self.class_range(num, lo)
+        }
+        var first = self.peek()
+        self.pos += 1
+        return self.class_range(num, first)
+    }
+
+    // class_range adds one byte to a class, or the range of bytes that starts
+    // with it. A lone '-' stands for itself, which is what a '-' after the last
+    // member of a class is.
+    func class_range(num: usize, lo: u8) -> Result<(), Error> {
+        if self.range_follows() {
+            var dash = self.pos
+            self.pos += 1
+            var hi = try self.class_byte()
+            if hi < lo {
+                return Result.Err(self.error(dash, "range out of order in character class"))
+            }
+            var b = usize(lo)
+            for b <= usize(hi) {
+                self.classes[num * 256 + b] = true
+                b += 1
+            }
+            return Result.Ok()
+        }
+        self.classes[num * 256 + usize(lo)] = true
+        return Result.Ok()
+    }
+
+    // class_escape_follows reports whether the escape at the current position
+    // stands for a class of bytes rather than for one byte.
+    func class_escape_follows() -> bool {
+        var at = self.pos + 1
+        if at >= self.src.Len() {
+            return false
+        }
+        var ch = self.src[at]
+        if ch == code('d') || ch == code('D') || ch == code('w') {
+            return true
+        }
+        return ch == code('W') || ch == code('s') || ch == code('S')
+    }
+
+    // class_byte reads one byte of a class, which is a member or the high end
+    // of a range. A class escape stands for many bytes and cannot be either.
+    func class_byte() -> Result<u8, Error> {
+        if self.is_at(code('\\')) {
+            var at = self.pos
+            self.pos += 1
+            if self.at_end() {
+                return Result.Err(self.error(at, "pattern ends with a backslash"))
+            }
+            var ch = self.peek()
+            if ch == code('d') || ch == code('D') || ch == code('w') {
+                return Result.Err(self.error(at, "invalid range in character class"))
+            }
+            if ch == code('W') || ch == code('s') || ch == code('S') {
+                return Result.Err(self.error(at, "invalid range in character class"))
+            }
+            return self.read_escape_body(at)
+        }
+        var b = self.peek()
+        self.pos += 1
+        return Result.Ok(b)
+    }
+
+    // range_follows reports whether a range is being asked for at the current
+    // position. A '-' that closes a class is a member, not the start of one.
+    func range_follows() -> bool {
+        return self.is_at(code('-')) && self.pos + 1 < self.src.Len() && self.src[self.pos + 1] != code(']')
+    }
+
+    // class_escape reads one member of a class that stands for a class of
+    // bytes. A range cannot begin or end with one.
+    func class_escape(num: usize) -> Result<(), Error> {
+        var at = self.pos
+        self.pos += 1
+        if self.at_end() {
+            return Result.Err(self.error(at, "pattern ends with a backslash"))
+        }
+        var ch = self.peek()
+        self.pos += 1
+        if self.range_follows() {
+            return Result.Err(self.error(at, "invalid range in character class"))
+        }
+        if ch == code('d') || ch == code('D') {
+            self.or_class(num, class_d, ch == code('D'))
+            return Result.Ok()
+        }
+        if ch == code('w') || ch == code('W') {
+            self.or_class(num, class_w, ch == code('W'))
+            return Result.Ok()
+        }
+        self.or_class(num, class_s, ch == code('S'))
+        return Result.Ok()
+    }
+
+    // or_class adds the bytes of one class to a class of the parser.
+    func or_class(num: usize, kind: i32, negated: bool) {
+        var b: usize = 0
+        for b < 256 {
+            var on = class_has(kind, u8(b))
+            if negated {
+                on = !on
+            }
+            if on {
+                self.classes[num * 256 + b] = true
+            }
+            b += 1
+        }
+    }
+
+    // make_class builds a class of the parser for an escape that stands for a
+    // set of bytes, and answers the number of the class.
+    func make_class(kind: i32, negated: bool) -> usize {
+        var num = self.new_class()
+        self.or_class(num, kind, negated)
+        return num
+    }
+
+    // read_escape_body reads the escape whose backslash stands at at, after
+    // the caller has dealt with the escapes that are not single bytes. The
+    // only escapes that stand for one byte are the control characters, a
+    // hexadecimal one, and a metacharacter written as itself.
+    func read_escape_body(at: usize) -> Result<u8, Error> {
+        if self.at_end() {
+            return Result.Err(self.error(at, "pattern ends with a backslash"))
+        }
+        var ch = self.peek()
+        self.pos += 1
+        if ch == code('n') {
+            return Result.Ok(u8(10))
+        }
+        if ch == code('r') {
+            return Result.Ok(u8(13))
+        }
+        if ch == code('t') {
+            return Result.Ok(u8(9))
+        }
+        if ch == code('f') {
+            return Result.Ok(u8(12))
+        }
+        if ch == code('v') {
+            return Result.Ok(u8(11))
+        }
+        if ch == code('a') {
+            return Result.Ok(u8(7))
+        }
+        if ch == code('e') {
+            return Result.Ok(u8(27))
+        }
+        if ch == code('0') {
+            return Result.Ok(u8(0))
+        }
+        if ch == code('b') {
+            // Inside a class this is the backspace; outside one it was dealt
+            // with before this call.
+            return Result.Ok(u8(8))
+        }
+        if ch == code('x') {
+            return self.read_hex(at)
+        }
+        if is_letter(ch) {
+            return Result.Err(self.error(at, "unsupported escape"))
+        }
+        return Result.Ok(ch)
+    }
+
+    // read_hex reads the one or two hexadecimal digits of an \x escape.
+    func read_hex(at: usize) -> Result<u8, Error> {
+        var v: u32 = 0
+        var digits: usize = 0
+        for digits < 2 && !self.at_end() && is_hex_digit(self.peek()) {
+            v = v * 16 + hex_value(self.peek())
+            digits += 1
+            self.pos += 1
+        }
+        if digits == 0 {
+            return Result.Err(self.error(at, "missing hexadecimal digits"))
+        }
+        return Result.Ok(u8(v))
+    }
+
+    // parse_escape reads an escape outside a class.
+    func parse_escape() -> Result<Node, Error> {
+        var at = self.pos
+        self.pos += 1
+        if self.at_end() {
+            return Result.Err(self.error(at, "pattern ends with a backslash"))
+        }
+        var ch = self.peek()
+        if ch == code('d') || ch == code('D') {
+            self.pos += 1
+            return Result.Ok(class_node(self.make_class(class_d, ch == code('D'))))
+        }
+        if ch == code('w') || ch == code('W') {
+            self.pos += 1
+            return Result.Ok(class_node(self.make_class(class_w, ch == code('W'))))
+        }
+        if ch == code('s') || ch == code('S') {
+            self.pos += 1
+            return Result.Ok(class_node(self.make_class(class_s, ch == code('S'))))
+        }
+        if ch == code('b') {
+            self.pos += 1
+            return Result.Ok(leaf(Kind.Word))
+        }
+        if ch == code('B') {
+            self.pos += 1
+            return Result.Ok(leaf(Kind.NotWord))
+        }
+        if ch == code('A') {
+            self.pos += 1
+            return Result.Ok(leaf(Kind.TextStart))
+        }
+        if ch == code('z') {
+            self.pos += 1
+            return Result.Ok(leaf(Kind.TextEnd))
+        }
+        if ch == code('Z') {
+            self.pos += 1
+            return Result.Ok(leaf(Kind.End))
+        }
+        if is_digit(ch) {
+            return Result.Err(self.error(at, "backreferences are not supported"))
+        }
+        var b = try self.read_escape_body(at)
+        return Result.Ok(byte_node(b))
+    }
+}
+
+// Emitter turns a parsed pattern into a program. next_slot is the slot the
+// next loop takes for the position it was entered at.
+struct Emitter {
+    prog: Array<Inst>
+    next_slot: usize
+
+    // take_slot answers the next free slot.
+    func take_slot() -> usize {
+        var s = self.next_slot
+        self.next_slot += 1
+        return s
+    }
+
+    // emit writes the program of a node.
+    func emit(node: Node) {
+        match node.kind {
+            Byte => {
+                self.prog.Push(Inst.Byte(node.byte))
+            }
+            Any => {
+                self.prog.Push(Inst.Any)
+            }
+            Cls => {
+                self.prog.Push(Inst.Cls(node.cls))
+            }
+            Start => {
+                self.prog.Push(Inst.Start)
+            }
+            End => {
+                self.prog.Push(Inst.End)
+            }
+            TextStart => {
+                self.prog.Push(Inst.TextStart)
+            }
+            TextEnd => {
+                self.prog.Push(Inst.TextEnd)
+            }
+            Word => {
+                self.prog.Push(Inst.Word)
+            }
+            NotWord => {
+                self.prog.Push(Inst.NotWord)
+            }
+            Concat => {
+                for kid in node.kids {
+                    self.emit(kid)
+                }
+            }
+            Alt => {
+                self.emit_alt(node)
+            }
+            Repeat => {
+                self.emit_repeat(node)
+            }
+            Group => {
+                if node.group == 0 {
+                    self.emit(node.kids[0])
+                } else {
+                    self.prog.Push(Inst.Save(2 * node.group))
+                    self.emit(node.kids[0])
+                    self.prog.Push(Inst.Save(2 * node.group + 1))
+                }
+            }
+        }
+    }
+
+    // emit_alt writes the branches of an alternation. Each branch but the last
+    // is entered through a split whose other target is the branch after it,
+    // and the last is entered by a jump.
+    func emit_alt(node: Node) {
+        var ends = new Array<usize>(0)
+        var branches = node.kids
+        var count = branches.Len()
+        var i: usize = 0
+        for i < count {
+            var split_at = self.prog.Len()
+            self.prog.Push(Inst.Jmp(0))
+            self.emit(branches[i])
+            if i + 1 < count {
+                var after = self.prog.Len()
+                self.prog.Push(Inst.Jmp(0))
+                ends.Push(after)
+                var next = self.prog.Len()
+                self.prog[split_at] = Inst.Split(split_at + 1, next)
+            } else {
+                self.prog[split_at] = Inst.Jmp(split_at + 1)
+            }
+            i += 1
+        }
+        var finish = self.prog.Len()
+        for j in ends {
+            self.prog[j] = Inst.Jmp(finish)
+        }
+    }
+
+    // emit_repeat writes a quantifier: the copies it demands followed by a loop
+    // or by as many optional copies as it allows.
+    func emit_repeat(node: Node) {
+        var body = node.kids[0]
+        var i: usize = 0
+        for i < node.min {
+            self.emit(body)
+            i += 1
+        }
+        if node.max == no_limit {
+            self.emit_loop(body, node.greedy)
+            return
+        }
+        var extra = node.max - node.min
+        i = 0
+        for i < extra {
+            self.emit_optional(body, node.greedy)
+            i += 1
+        }
+    }
+
+    // emit_loop writes a body that repeats without a bound. The body is
+    // preceded by the position the loop was entered at, so a pass that matched
+    // nothing ends the loop instead of repeating it forever.
+    func emit_loop(body: Node, greedy: bool) {
+        var mark = self.take_slot()
+        var head = self.prog.Len()
+        self.prog.Push(Inst.Jmp(0))
+        self.prog.Push(Inst.Progress(mark))
+        self.emit(body)
+        self.prog.Push(Inst.Jmp(head))
+        var exit = self.prog.Len()
+        if greedy {
+            self.prog[head] = Inst.Split(head + 1, exit)
+        } else {
+            self.prog[head] = Inst.Split(exit, head + 1)
+        }
+    }
+
+    // emit_optional writes a body that may be there or not.
+    func emit_optional(body: Node, greedy: bool) {
+        var head = self.prog.Len()
+        self.prog.Push(Inst.Jmp(0))
+        var start = self.prog.Len()
+        self.emit(body)
+        var after = self.prog.Len()
+        if greedy {
+            self.prog[head] = Inst.Split(start, after)
+        } else {
+            self.prog[head] = Inst.Split(after, start)
+        }
+    }
+}
+
+// A Regex is a compiled pattern. It is a reference: a copy names the same
+// program.
+struct Regex {
+    prog: Array<Inst>
+    classes: Array<bool>
+    ngroups: usize
+    nslots: usize
+
+    // new_slots answers a slot table with every slot holding no position.
+    func new_slots() -> Array<usize> {
+        var out = new Array<usize>(self.nslots)
+        var i: usize = 0
+        for i < self.nslots {
+            out.Push(no_limit)
+            i += 1
+        }
+        return out
+    }
+
+    // search finds the first match that starts at or after from and answers
+    // its byte range, leaving the group slots of the match in slots. The
+    // earliest start wins, and the engine tries the starts in order.
+    func search(s: str, from: usize, slots: Array<usize>) -> Option<(usize, usize)> {
+        var n = s.Len()
+        var start = from
+        for start <= n {
+            var i: usize = 0
+            for i < self.nslots {
+                slots[i] = no_limit
+                i += 1
+            }
+            var end = self.run_at(s, start, slots)
+            if end != no_limit {
+                slots[0] = start
+                slots[1] = end
+                return Option.Some((start, end))
+            }
+            start += 1
+        }
+        return Option.None
+    }
+
+    // run_at walks the program over the subject from one start position. It
+    // answers where the match ended, or no_limit when no way through the
+    // program matches there.
+    func run_at(s: str, start: usize, slots: Array<usize>) -> usize {
+        var n = s.Len()
+        var stack = new Array<(usize, usize, usize)>(0)
+        var log = new Array<(usize, usize)>(0)
+        var pc: usize = 0
+        var sp = start
+        var matched = false
+        var end: usize = 0
+        for !matched {
+            var failed = false
+            var inst = self.prog[pc]
+            match inst {
+                Byte(b) => {
+                    if sp < n && s[sp] == b {
+                        sp += 1
+                        pc += 1
+                    } else {
+                        failed = true
+                    }
+                }
+                Any => {
+                    if sp < n && s[sp] != lf {
+                        sp += 1
+                        pc += 1
+                    } else {
+                        failed = true
+                    }
+                }
+                Cls(num) => {
+                    if sp < n && self.classes[num * 256 + usize(s[sp])] {
+                        sp += 1
+                        pc += 1
+                    } else {
+                        failed = true
+                    }
+                }
+                Split(a, b) => {
+                    stack.Push((b, sp, log.Len()))
+                    pc = a
+                }
+                Jmp(t) => {
+                    pc = t
+                }
+                Save(slot) => {
+                    log.Push((slot, slots[slot]))
+                    slots[slot] = sp
+                    pc += 1
+                }
+                Progress(slot) => {
+                    if slots[slot] == sp {
+                        failed = true
+                    } else {
+                        log.Push((slot, slots[slot]))
+                        slots[slot] = sp
+                        pc += 1
+                    }
+                }
+                Start => {
+                    if sp == 0 {
+                        pc += 1
+                    } else {
+                        failed = true
+                    }
+                }
+                End => {
+                    if sp == n || (sp + 1 == n && s[sp] == lf) {
+                        pc += 1
+                    } else {
+                        failed = true
+                    }
+                }
+                TextStart => {
+                    if sp == 0 {
+                        pc += 1
+                    } else {
+                        failed = true
+                    }
+                }
+                TextEnd => {
+                    if sp == n {
+                        pc += 1
+                    } else {
+                        failed = true
+                    }
+                }
+                Word => {
+                    if word_edge(s, sp) {
+                        pc += 1
+                    } else {
+                        failed = true
+                    }
+                }
+                NotWord => {
+                    if word_edge(s, sp) {
+                        failed = true
+                    } else {
+                        pc += 1
+                    }
+                }
+                Accept => {
+                    matched = true
+                    end = sp
+                }
+            }
+            if failed {
+                if stack.Len() == 0 {
+                    return no_limit
+                }
+                var entry = stack.Pop().Unwrap()
+                pc = entry.0
+                sp = entry.1
+                for log.Len() > entry.2 {
+                    var undo = log.Pop().Unwrap()
+                    slots[undo.0] = undo.1
+                }
+            }
+        }
+        return end
+    }
+
+    // IsMatch reports whether the pattern matches anywhere in s.
+    func IsMatch(s: str) -> bool {
+        var slots = self.new_slots()
+        match self.search(s, 0, slots) {
+            Some(_) => {
+                return true
+            }
+            None => { }
+        }
+        return false
+    }
+
+    // Find answers the byte range of the first match in s, or nothing. An
+    // empty match is a range whose ends are equal.
+    func Find(s: str) -> Option<(usize, usize)> {
+        var slots = self.new_slots()
+        return self.search(s, 0, slots)
+    }
+
+    // FindAll answers the byte ranges of the non-overlapping matches in s, in
+    // the order they appear. An empty match is taken once at a position, so a
+    // pattern that matches nothing still answers every position rather than
+    // the same one forever.
+    func FindAll(s: str) -> Array<(usize, usize)> {
+        var out = new Array<(usize, usize)>(0)
+        var slots = self.new_slots()
+        var n = s.Len()
+        var pos: usize = 0
+        var last_end = no_limit
+        for pos <= n {
+            match self.search(s, pos, slots) {
+                Some(span) => {
+                    var b = span.0
+                    var e = span.1
+                    if b == e && e == last_end {
+                        pos = e + 1
+                    } else {
+                        out.Push(span)
+                        last_end = e
+                        if b == e {
+                            pos = e + 1
+                        } else {
+                            pos = e
+                        }
+                    }
+                }
+                None => {
+                    break
+                }
+            }
+        }
+        return out
+    }
+
+    // Groups answers the byte range of each group of the first match in s.
+    // Slot zero is the whole match; a group the match did not take holds
+    // nothing.
+    func Groups(s: str) -> Option<Array<Option<(usize, usize)>>> {
+        var slots = self.new_slots()
+        match self.search(s, 0, slots) {
+            Some(span) => {
+                var out = new Array<Option<(usize, usize)>>(0)
+                out.Push(Option.Some(span))
+                var g: usize = 1
+                for g <= self.ngroups {
+                    if slots[2 * g] == no_limit {
+                        out.Push(Option.None)
+                    } else {
+                        out.Push(Option.Some((slots[2 * g], slots[2 * g + 1])))
+                    }
+                    g += 1
+                }
+                return Option.Some(out)
+            }
+            None => { }
+        }
+        return Option.None
+    }
+
+    // Replace answers s with every match written as repl. In repl a '$' and
+    // the digits after it name a group of the match: '$0' is the whole match,
+    // '$1' the first group, and so on through '$9' and beyond. A group the
+    // match did not take is written as nothing, and a '$' that no digits
+    // follow stands for itself.
+    func Replace(s: str, repl: str) -> str {
+        var out = new Buf(0)
+        var slots = self.new_slots()
+        var n = s.Len()
+        var pos: usize = 0
+        var copied: usize = 0
+        var last_end = no_limit
+        for pos <= n {
+            match self.search(s, pos, slots) {
+                Some(span) => {
+                    var b = span.0
+                    var e = span.1
+                    if b == e && e == last_end {
+                        pos = e + 1
+                    } else {
+                        copy_bytes(out, s, copied, b)
+                        self.expand(out, s, repl, slots)
+                        copied = e
+                        last_end = e
+                        if b == e {
+                            pos = e + 1
+                        } else {
+                            pos = e
+                        }
+                    }
+                }
+                None => {
+                    break
+                }
+            }
+        }
+        copy_bytes(out, s, copied, n)
+        return out.Str()
+    }
+
+    // expand writes the replacement text of one match into a buffer.
+    func expand(out: Buf, s: str, repl: str, slots: Array<usize>) {
+        var n = repl.Len()
+        var i: usize = 0
+        for i < n {
+            var lead = repl[i]
+            if lead == code('$') && i + 1 < n && is_digit(repl[i + 1]) {
+                var g: usize = 0
+                var j = i + 1
+                for j < n && is_digit(repl[j]) {
+                    g = g * 10 + usize(repl[j] - code('0'))
+                    j += 1
+                }
+                if g <= self.ngroups && slots[2 * g] != no_limit {
+                    copy_bytes(out, s, slots[2 * g], slots[2 * g + 1])
+                }
+                i = j
+            } else {
+                out.WriteByte(lead)
+                i += 1
+            }
+        }
+    }
+}
+
+// Compile turns a pattern into a Regex, or answers the fault that keeps it
+// from being one.
+func Compile(pattern: str) -> Result<Regex, Error> {
+    var p = Parser { src: pattern, pos: 0, classes: new Array<bool>(0), ngroups: 0 }
+    var root = try p.parse_alt()
+    if p.pos < pattern.Len() {
+        return Result.Err(p.error(p.pos, "unmatched ) in pattern"))
+    }
+    var e = Emitter { prog: new Array<Inst>(0), next_slot: 2 * (p.ngroups + 1) }
+    e.emit(root)
+    e.prog.Push(Inst.Accept)
+    return Result.Ok(Regex {
+        prog: e.prog
+        classes: p.classes
+        ngroups: p.ngroups
+        nslots: e.next_slot
+    })
+}

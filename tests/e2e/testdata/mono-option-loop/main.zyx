@@ -1,0 +1,37 @@
+package main
+
+import "std/fmt"
+import "example.com/mono-option-loop/reader"
+
+// errName is what a fault is called.
+func errName(e: reader.Error) -> str {
+    match e {
+        Truncated => return "truncated"
+        Corrupt => return "corrupt"
+        Checksum => return "checksum"
+    }
+}
+
+// main reads every record of a text and prints what each one answered.
+func main() {
+    var r = new reader.Reader("ab!")
+    var rounds: i64 = 0
+    var done = false
+    for !done {
+        match r.Read() {
+            Some(x) => match x {
+                Ok(row) => fmt.PrintI64(i64(row.Len()))
+                Err(e) => {
+                    fmt.Print("err ")
+                    fmt.Print(errName(e))
+                }
+            }
+            None => done = true
+        }
+        fmt.PrintNl()
+        rounds += 1
+        if rounds > 8 {
+            done = true
+        }
+    }
+}
