@@ -65,9 +65,7 @@ static void monitor(void *arg) {
     zyxrt_note_wait(&monitor_note, ZYXXRT_MONITOR_NS);
     uint64_t now = zyxrt_now();
     atomic_store_explicit(&monitor_clock, now, memory_order_relaxed);
-    /* A lane that is inside a C call runs no coroutine, and the pass is where
-       the scheduler hears about lanes that are all inside one. */
-    zyxrt_sched_poll();
+    size_t held = 0;
     for (size_t i = 0; i < ZYXXRT_PREEMPT_SLOTS; i++) {
       zyxrt_coro *c = atomic_load_explicit(&running[i], memory_order_acquire);
       if (c == NULL) {
@@ -77,8 +75,14 @@ static void monitor(void *arg) {
       if (now - since < ZYXXRT_QUANTUM_NS) {
         continue;
       }
+      held++;
       atomic_store_explicit(&c->preempt, 1, memory_order_release);
     }
+    /* A lane whose coroutine has held it for a whole quantum is one the
+       scheduler cannot take work from, whether it is computing or inside a C
+       call that has not returned. When that is every lane, this pass is where
+       the work that waits for them gets a thread of its own. */
+    zyxrt_sched_poll(held);
   }
 }
 

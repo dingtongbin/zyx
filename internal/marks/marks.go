@@ -487,7 +487,11 @@ func (b *builder) expr(e ast.Expr) {
 	}
 }
 
-// call walks a call and marks a C call with its blocking classification.
+// call walks a call and marks a C call with its blocking classification. The
+// classification is what the analyses read: a call that may block is a point
+// where the rest of the program can run, so a value a coroutine holds across it
+// is one another coroutine may have used. The code generator makes every C call
+// the same way, so the mark carries no calling convention of its own.
 func (b *builder) call(v *ast.CallExpr) {
 	if b.isCCall(v) {
 		if b.cFast(v) {

@@ -219,11 +219,12 @@ void zyxrt_sched_ready(zyxrt_coro *c);
    or the number of them when the caller is not one. */
 size_t zyxrt_sched_thread_index(void);
 /* zyxrt_sched_poll is what a periodic pass over the scheduler does about the
-   lanes that are inside C calls: a lane inside one runs no coroutine, so when
-   every lane is inside one and work is waiting, one more thread takes that work
-   up. The preemption monitor calls it, which is why it is not on the path a C
-   call takes. */
-void zyxrt_sched_poll(void);
+   lanes that are holding a coroutine and not letting go, of which it is told how
+   many there are: when every lane is one of them and work is waiting, one more
+   thread takes that work up. A lane inside a C call that has not returned is
+   such a lane, which is why nothing on the path a C call takes has to say so.
+   The preemption monitor calls it. */
+void zyxrt_sched_poll(size_t held);
 /* zyxrt_sched_thread_none records that the calling thread is not a scheduler
    thread, which a thread the runtime starts for something else says of itself
    before it runs. */
@@ -269,14 +270,6 @@ void zyxrt_preempt_stop(void);
 /* zyxrt_panic_code answers the exit code the process reports: 101 when the root
    coroutine panicked, and nothing otherwise. */
 int zyxrt_panic_code(void);
-
-/* A C call that may block is made on the calling thread, which is what keeps it
-   cheap: the arguments are passed as they are and no coroutine moves. The
-   compiler tells the runtime when a thread is inside such a call, so that a
-   thread with nothing of its own to run takes over the rest of the program
-   while the call is in it. */
-void zyxrt_entersyscall(void);
-void zyxrt_exitsyscall(void);
 
 /* The event loop. A coroutine that waits on a pollable descriptor parks, and
    a poller thread watches the descriptors and readies the coroutines that wait

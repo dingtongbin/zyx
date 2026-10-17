@@ -35,11 +35,6 @@ typedef struct zyxrt_thread {
      process ends. The program's own thread is the one that waits, so its own
      slot carries none. */
   zyxrt_thread_handle handle;
-  /* in_c marks a lane that is inside a C call, which is a thread the scheduler
-     cannot run a coroutine on for as long as the call lasts. It is the lane's
-     own, written only by the lane and read by whoever asks whether every lane
-     is inside one. */
-  _Atomic int in_c;
 } zyxrt_thread;
 
 /* self is the thread state of the scheduler thread the caller runs on, or
@@ -164,7 +159,6 @@ static zyxrt_coro *queue_pop(zyxrt_coro **head, zyxrt_coro **tail, zyxrt_lock *l
 }
 
 static void thread_main(void *arg);
-static int lanes_in_call(void);
 
 /* sched_start_lane starts one more scheduler thread, up to limit, when there is
    work for it and no thread is free to run that work. */
@@ -210,12 +204,9 @@ static void sched_push(zyxrt_coro *c) {
        waiting, and that one may have nothing to do and go back to sleep. */
     if (target == self) return;
     zyxrt_note_signal_all(&sched_note, thread_cap);
-    /* A free lane takes this. When none is free, another is started, and when
-       every lane is inside a C call that one runs no coroutine either, so a
-       thread beyond the ones the program asked for takes the work up. */
+    /* A free lane takes this; when none is free, another is started. */
     if (atomic_load_explicit(&idle_threads, memory_order_relaxed) == 0) {
       sched_start_lane(thread_count);
-      if (lanes_in_call()) sched_start_lane(thread_cap);
     }
     return;
   }
@@ -231,7 +222,6 @@ static void sched_push(zyxrt_coro *c) {
   zyxrt_note_signal(&sched_note);
   if (atomic_load_explicit(&idle_threads, memory_order_relaxed) == 0) {
     sched_start_lane(thread_count);
-    if (lanes_in_call()) sched_start_lane(thread_cap);
   }
 }
 
@@ -681,43 +671,17 @@ static void thread_main(void *arg) {
   zyxrt_sched_run();
 }
 
-void zyxrt_entersyscall(void) {
-  /* Telling the runtime about a C call costs what the call costs: the flag is
-     the lane's own, written with a store rather than a read-modify-write on
-     something every lane shares, and the decision it feeds is made by a path
-     that is already rare. */
-  zyxrt_thread *t = self_thread();
-  if (t == NULL) return;
-  atomic_store_explicit(&t->in_c, 1, memory_order_relaxed);
-}
-
-void zyxrt_exitsyscall(void) {
-  zyxrt_thread *t = self_thread();
-  if (t == NULL) return;
-  atomic_store_explicit(&t->in_c, 0, memory_order_relaxed);
-}
-
-/* lanes_in_call answers whether every lane is inside a C call, which is what a
-   path that has already found no thread free asks before it starts another. */
-static int lanes_in_call(void) {
-  size_t live = atomic_load_explicit(&lanes_live, memory_order_acquire);
-  for (size_t i = 0; i < live; i++) {
-    if (atomic_load_explicit(&threads[i].in_c, memory_order_relaxed) == 0) return 0;
-  }
-  return live > 0;
-}
-
 /* zyxrt_sched_poll is what a periodic pass over the scheduler does about the
-   lanes that are inside C calls. A lane inside one runs no coroutine, so when
-   every lane is inside one and work is waiting, one more thread takes that work
-   up: a program whose lanes are all inside long calls would otherwise stand
-   still. Nothing here is on the path a C call takes, which is why the flag a
-   lane sets is its own. */
-void zyxrt_sched_poll(void) {
+   lanes that are holding a coroutine and not letting go. The pass that calls it
+   counts the lanes whose coroutine has held its thread for longer than the
+   quantum, which is what a lane inside a C call that has not returned looks like
+   from outside; when that is every lane and work is waiting, one more thread
+   takes that work up, because a program whose lanes are all inside long calls
+   would otherwise stand still. Nothing here is on the path a C call takes. */
+void zyxrt_sched_poll(size_t held) {
   if (thread_count < 2) return;
   if (atomic_load_explicit(&stopping, memory_order_acquire)) return;
-  if (atomic_load_explicit(&idle_threads, memory_order_relaxed) > 0) return;
-  if (!lanes_in_call()) return;
+  if (held < atomic_load_explicit(&lanes_live, memory_order_relaxed)) return;
   if (!incoming_ready() && queues_empty()) return;
   sched_start_lane(thread_cap);
 }

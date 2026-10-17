@@ -275,30 +275,6 @@ func (g *generator) directCall(module string, n *zyxc.Node, sym string, recv *va
 	return &value{text: reg, ll: retLL, typ: result}
 }
 
-// blockingCall lowers a C call that may block. The call is made on the calling
-// thread, which is what keeps it cheap: the arguments are passed as they are,
-// no coroutine moves, and nothing is marshalled. The runtime is told when a
-// thread is inside such a call, because the call may not return for a while
-// and the rest of the program has to keep running while it is in it.
-func (g *generator) blockingCall(symbol string, args []*value, result *types.Type, retLL string) *value {
-	var parts []string
-	for _, v := range args {
-		parts = append(parts, g.cArguments(v)...)
-	}
-	g.declareRuntime("zyxrt_entersyscall", "void")
-	g.emit("  call void @zyxrt_entersyscall()")
-	g.declareRuntime("zyxrt_exitsyscall", "void")
-	if result == nil {
-		g.emit("  call void @%s(%s)", llvmName(symbol), strings.Join(parts, ", "))
-		g.emit("  call void @zyxrt_exitsyscall()")
-		return &value{ll: "void"}
-	}
-	reg := g.newReg()
-	g.emit("  %s = call %s @%s(%s)", reg, retLL, llvmName(symbol), strings.Join(parts, ", "))
-	g.emit("  call void @zyxrt_exitsyscall()")
-	return &value{text: reg, ll: retLL, typ: result}
-}
-
 // cArgValue is one value a C call passes for an argument, in ABI order.
 type cArgValue struct {
 	ll   string
@@ -375,11 +351,6 @@ func (g *generator) cCall(module string, n *zyxc.Node) *value {
 		// signature, so the calls agree on the shape.
 		g.m.declared[symbol] = true
 		fmt.Fprintf(&g.m.funcs, "declare %s @%s(%s)\n", ret, llvmName(symbol), strings.Join(types, ", "))
-	}
-	if hasMark(n, "c-blocking") {
-		// The call may block, so it runs on a pool thread and the calling
-		// coroutine parks until it is done.
-		return g.blockingCall(symbol, args, result, ret)
 	}
 	var parts []string
 	for _, v := range args {
