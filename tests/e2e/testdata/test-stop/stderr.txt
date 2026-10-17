@@ -1,0 +1,20 @@
+panic: test: fatal: cannot go on
+  at test/test.zyx:164:1-168:2 std/test.Fatal
+  at main.zyx:31:1-35:2 example.com/teststop.case_fatal
+  at main.zyx:53:1-57:2 example.com/teststop.case_err_fails
+  at main.zyx:126:1-131:2 example.com/teststop.bool_text
+panic: test: skip: not today
+  at test/test.zyx:171:1-176:2 std/test.Skip
+  at main.zyx:38:1-41:2 example.com/teststop.case_skip
+  at main.zyx:61:1-71:2 example.com/teststop.run_fatal
+  at main.zyx:126:1-131:2 example.com/teststop.bool_text
+panic: test: fatal: got an error, want a value: no value here
+  at test/test.zyx:135:1-148:2 std/test.Ok$$3865a98dec5ac019
+  at main.zyx:45:1-49:2 example.com/teststop.case_ok_fails
+  at main.zyx:73:1-83:2 example.com/teststop.run_skip
+  at main.zyx:126:1-131:2 example.com/teststop.bool_text
+panic: test: fatal: got a value, want an error
+  at test/test.zyx:152:1-161:2 std/test.Err$$3865a98dec5ac019
+  at main.zyx:53:1-57:2 example.com/teststop.case_err_fails
+  at main.zyx:85:1-95:2 example.com/teststop.run_ok_fails
+  at main.zyx:126:1-131:2 example.com/teststop.bool_text

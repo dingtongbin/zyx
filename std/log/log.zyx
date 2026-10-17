@@ -1,1 +1,198 @@
 package log
+
+// Structured logging: a level, a message, and named fields, written to a sink.
+//
+// A line is built once, in the one fixed shape below, and handed to the sink
+// as a finished string. The sink decides where the line goes, so a program
+// that wants a file, a network connection, or a buffer of its own writes one
+// implementation of Sink and nothing else.
+//
+// The shape is fixed: the wall clock in RFC 3339, a space, the level, a space,
+// the message, and then each field as a space, its key, an equal sign, and its
+// value in double quotes. A double quote or a backslash inside a value is
+// escaped with a backslash, because the quoted value must read back as the
+// value it was given.
+//
+// A Logger is built from a sink and the least severe level it writes. Value
+// means the logger and its fixed fields are its own: With answers a new logger
+// that shares nothing a caller could change under it.
+
+import "std/os"
+import "std/time"
+
+// Level is how severe a line is, from the least to the most. The levels are
+// compared here by their order, so a logger's least severe level decides which
+// of them it writes.
+
+enum Level {
+    Debug
+    Info
+    Warn
+    Error
+
+    impl Show {
+        func Show(w: Buf) {
+            match self {
+                Debug => w.WriteStr("DEBUG")
+                Info => w.WriteStr("INFO")
+                Warn => w.WriteStr("WARN")
+                Error => w.WriteStr("ERROR")
+            }
+        }
+    }
+}
+
+// severity answers where a level stands in the order, which is what a logger
+// compares when it decides whether to write one.
+func severity(level: Level) -> i64 {
+    match level {
+        Debug => { return 0 }
+        Info => { return 1 }
+        Warn => { return 2 }
+        Error => { return 3 }
+    }
+}
+
+// A Sink is where a finished line goes.
+interface Sink {
+    func WriteLine(s: str)
+}
+
+// A Field is one named value a line carries, in the order the caller gave it.
+struct Field {
+    Key: str
+    Value: str
+}
+
+// A Logger writes lines that are at least as severe as its own least severe
+// level, each followed by the fields it was built with and then the fields the
+// call carries.
+struct Logger {
+    sink: Sink
+    min: Level
+    fields: Array<Field>
+
+    // init builds a logger that writes to a sink and ignores levels less
+    // severe than min.
+    func init(sink: Sink, min: Level) -> Self {
+        return Logger { sink: sink, min: min, fields: new Array<Field>(0) }
+    }
+
+    // Log writes one line at a level with the fields of the call.
+    func Log(level: Level, msg: str, fields: Array<Field>) {
+        if severity(level) < severity(self.min) {
+            return
+        }
+        var line = new Buf(64 + msg.Len())
+        line.WriteStr(time.Now().Format("2006-01-02T15:04:05Z07:00"))
+        line.WriteByte(space())
+        var text = new Buf(0)
+        level.Show(text)
+        line.WriteStr(text.Str())
+        line.WriteByte(space())
+        line.WriteStr(msg)
+        for f in self.fields {
+            write_field(line, f)
+        }
+        for f in fields {
+            write_field(line, f)
+        }
+        self.sink.WriteLine(line.Str())
+    }
+
+    // Debug writes a line at Debug.
+    func Debug(msg: str) {
+        self.Log(Level.Debug, msg, new Array<Field>(0))
+    }
+
+    // Info writes a line at Info.
+    func Info(msg: str) {
+        self.Log(Level.Info, msg, new Array<Field>(0))
+    }
+
+    // Warn writes a line at Warn.
+    func Warn(msg: str) {
+        self.Log(Level.Warn, msg, new Array<Field>(0))
+    }
+
+    // Error writes a line at Error.
+    func Error(msg: str) {
+        self.Log(Level.Error, msg, new Array<Field>(0))
+    }
+
+    // With answers a logger that writes the same lines with the given fields
+    // after the ones this logger already fixes. The new logger has a list of
+    // its own, so changing either one leaves the other alone.
+    func With(fields: Array<Field>) -> Logger {
+        var merged = new Array<Field>(0)
+        for f in self.fields {
+            merged.Push(f)
+        }
+        for f in fields {
+            merged.Push(f)
+        }
+        return Logger { sink: self.sink, min: self.min, fields: merged }
+    }
+}
+
+// space is the byte that separates the parts of a line.
+func space() -> u8 {
+    return 32
+}
+
+// quote is the byte that surrounds a field value.
+func quote() -> u8 {
+    return 34
+}
+
+// backslash is the byte that escapes a quote or another backslash.
+func backslash() -> u8 {
+    return 92
+}
+
+// write_field adds one field to a line: a space, its key, an equal sign, and
+// its value quoted, with the quote and the backslash escaped.
+func write_field(out: Buf, f: Field) {
+    out.WriteByte(space())
+    out.WriteStr(f.Key)
+    out.WriteByte(61)
+    out.WriteByte(quote())
+    write_escaped(out, f.Value)
+    out.WriteByte(quote())
+}
+
+// write_escaped adds the bytes of a value, with a backslash before every
+// double quote and every backslash so the quoted value reads back as itself.
+func write_escaped(out: Buf, s: str) {
+    var i: usize = 0
+    for i < s.Len() {
+        var b = s[i]
+        if b == quote() || b == backslash() {
+            out.WriteByte(backslash())
+        }
+        out.WriteByte(b)
+        i += 1
+    }
+}
+
+// stderrSink writes every line to standard error, which is where a program's
+// diagnostics belong.
+struct stderrSink {
+    impl Sink {
+        func WriteLine(s: str) {
+            var line = new Buf(s.Len() + 1)
+            line.WriteStr(s)
+            line.WriteByte(10)
+            var out = os.Stderr()
+            match out.WriteStr(line.Str()) {
+                Ok(_) => {}
+                Err(e) => panic("log: standard error cannot be written")
+            }
+        }
+    }
+}
+
+// StderrSink answers a sink that writes every line to standard error.
+func StderrSink() -> Sink {
+    return stderrSink { }
+}

@@ -1,0 +1,144 @@
+package main
+
+import "std/fmt"
+import "std/log"
+import "std/time"
+
+// A logger stamps every line with the wall clock, and a reading of the wall
+// clock is a different value each run. This program never prints that reading:
+// it logs to a sink of its own, and then prints each line with the timestamp
+// cut off, so what it compares is only the part of a line that is fixed. It
+// does check that the timestamp it dropped is a moment in the shape the
+// line format names, which is what a reader of a log depends on.
+
+struct MemSink {
+    lines: Array<str>
+
+    impl log.Sink {
+        func WriteLine(s: str) {
+            self.lines.Push(s)
+        }
+    }
+}
+
+func main() {
+    var sink = MemSink { lines: new Array<str>(0) }
+    var base = new log.Logger(sink, log.Level.Info)
+    // A level less severe than the logger's own is dropped whole.
+    base.Debug("dropped")
+    base.Info("hello")
+    base.Warn("careful")
+    base.Error("broken")
+    // Fields are written in the order the call gives them.
+    base.Log(log.Level.Info, "fields", two("one", "1", "two", "2"))
+    // A quote and a backslash inside a value are escaped.
+    base.Log(log.Level.Warn, "escaped", two("path", "a\\b\"c", "empty", ""))
+    // With answers a logger of its own that carries fixed fields.
+    var child = base.With(two("service", "api", "zone", "eu"))
+    child.Info("child")
+    child.Log(log.Level.Error, "both", one("extra", "x"))
+    // A logger built from a low level writes the least severe line too.
+    var noisy = new log.Logger(sink, log.Level.Debug)
+    noisy.Debug("visible")
+    // Every line the sink received is shown without its timestamp, and the
+    // timestamp is checked to be the shape the format names.
+    for line in sink.lines {
+        show(line)
+    }
+    fmt.PrintI64(i64(sink.lines.Len()))
+    fmt.PrintNl()
+    // A sink to standard error is part of the package. Its lines carry the
+    // clock, so this program builds one and composes a logger over it but
+    // writes nothing through it; what is compared is that the two meet at the
+    // interface and that a logger's threshold decides on its own.
+    var to_err = log.StderrSink()
+    var err_log = new log.Logger(to_err, log.Level.Error)
+    fmt.PrintBool(is_logger(err_log.With(one("where", "stderr"))))
+    fmt.Print(" ")
+    fmt.PrintBool(level_filter())
+    fmt.PrintNl()
+}
+
+// is_logger reports that a logger is a logger, which is how the sink built
+// above is held to the interface it must meet.
+func is_logger(l: log.Logger) -> bool {
+    return true
+}
+
+// show prints one line with its timestamp removed and the timestamp checked.
+func show(line: str) {
+    var at = first_space(line)
+    fmt.PrintBool(rfc3339(cut(line, 0, at)))
+    fmt.Print(" ")
+    print_from(line, at + 1)
+    fmt.PrintNl()
+}
+
+// rfc3339 reports whether a text is a moment in the shape the line format
+// names.
+func rfc3339(s: str) -> bool {
+    match time.TimeFromUnixNano(0).Parse("2006-01-02T15:04:05Z07:00", s) {
+        Ok(v) => { return true }
+        Err(e) => { return false }
+    }
+}
+
+// level_filter reports that a logger writes the line at its least severe level
+// and drops the ones below it.
+func level_filter() -> bool {
+    var probe = MemSink { lines: new Array<str>(0) }
+    var check = new log.Logger(probe, log.Level.Error)
+    check.Error("seen")
+    check.Warn("not seen")
+    check.Debug("not seen")
+    return probe.lines.Len() == 1
+}
+
+// one and two build the fields a call carries. The parts are pushed one at a
+// time rather than written as a literal, because an array literal of a
+// reference type does not read back everywhere yet.
+func one(k: str, v: str) -> Array<log.Field> {
+    var out = new Array<log.Field>(0)
+    out.Push(log.Field { Key: k, Value: v })
+    return out
+}
+
+func two(k1: str, v1: str, k2: str, v2: str) -> Array<log.Field> {
+    var out = new Array<log.Field>(0)
+    out.Push(log.Field { Key: k1, Value: v1 })
+    out.Push(log.Field { Key: k2, Value: v2 })
+    return out
+}
+
+// first_space answers where the first space of a text stands, or its length
+// when it has none.
+func first_space(s: str) -> usize {
+    var i: usize = 0
+    for i < s.Len() {
+        if s[i] == 32 {
+            return i
+        }
+        i += 1
+    }
+    return s.Len()
+}
+
+// cut answers the bytes of a text between two offsets as a text of its own.
+func cut(s: str, from: usize, to: usize) -> str {
+    var out = new Buf(to - from)
+    var i = from
+    for i < to {
+        out.WriteByte(s[i])
+        i += 1
+    }
+    return out.Str()
+}
+
+// print_from writes the bytes of a text from an offset to its end.
+func print_from(s: str, from: usize) {
+    var i = from
+    for i < s.Len() {
+        fmt.PrintChar(char(u32(s[i])))
+        i += 1
+    }
+}

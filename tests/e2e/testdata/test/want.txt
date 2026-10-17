@@ -1,0 +1,20 @@
+suite.zyx:10:5: run: inner holds
+case_pass: failed=false skipped=false
+suite.zyx:20:5: fail: condition is false
+suite.zyx:20:5: fail: condition is true
+suite.zyx:20:5: fail: got 1, want 2
+suite.zyx:20:5: fail: got 3, want a different value
+suite.zyx:20:5: fail: got 1, want 2 within 0.1
+suite.zyx:20:5: fail: abc does not hold z
+suite.zyx:20:5: log: shown because the case has failed
+case_fail: failed=true skipped=false
+case_results: failed=false skipped=false
+suite.zyx:40:5: run: inner fails
+suite.zyx:40:5: fail: condition is false
+case_sub_fail: failed=true skipped=false
+suite.zyx:45:5: run: parallel holds
+case_parallel: failed=false skipped=false
+suite.zyx:50:5: log: shown by a verbose run
+case_log: failed=false skipped=false
+4 passed, 2 failed, 0 skipped, 5000000
+true true
