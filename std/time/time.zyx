@@ -1,1 +1,1061 @@
 package time
+
+// The clocks a program reads. The monotonic clock measures an interval and
+// never goes backwards, so it is the one to time with; the wall clock names a
+// moment, so it is the one to say when something happened. Both are read
+// through the language's own Duration, which is what the difference between
+// two readings of the monotonic clock is.
+//
+// A Time is a count of nanoseconds from 1970-01-01T00:00:00Z. It is read as a
+// civil date in UTC, and the conversion between the two is the era-based
+// arithmetic of the civil calendar: it comes from whole days, so no table and
+// no time zone enters the answer.
+
+import c "zyxtime.h" {
+    fast zyxtime_wall_nanos
+}
+
+// zyxtime_duration_ns and zyxtime_duration_of move between a Duration and the
+// count of nanoseconds it is. The language converts neither to nor from an
+// integer, and the C side of the boundary treats the two as the same
+// eight-byte integer, so a package that must cross between them asks here.
+// Both are identities.
+
+extern func zyxtime_duration_ns(nanos: Duration) -> i64
+
+extern func zyxtime_duration_of(nanos: i64) -> Duration
+
+// zyxrt_now answers the runtime's monotonic clock in nanoseconds, and
+// zyxrt_sched_sleep suspends the calling coroutine until that many
+// nanoseconds have passed. A Duration is exactly that count, so the timer
+// takes one where the runtime's own declaration takes the count.
+
+fast extern func zyxrt_now() -> u64
+
+fast extern func zyxrt_sched_sleep(nanos: Duration)
+
+// Error is what Parse refuses: a layout this package does not read, or a text
+// that does not match the layout it was given.
+
+enum Error {
+    InvalidLayout
+    InvalidValue
+}
+
+// Monotonic answers the monotonic clock. The origin is the start of the
+// process, so only the difference between two readings means anything.
+
+func Monotonic() -> Instant {
+    return Instant { ns: i64(zyxrt_now()) }
+}
+
+// Sleep suspends the calling coroutine for d. The wait is the runtime's timer
+// wheel, so the scheduler's thread is free while the time passes.
+
+func Sleep(d: Duration) {
+    zyxrt_sched_sleep(d)
+}
+
+// An Instant is a reading of the monotonic clock. It is a value type: a copy
+// is a reading of its own, and the only thing it is for is the interval
+// between two readings.
+
+extern struct Instant {
+    ns: i64
+    // Since answers the interval from j to the moment, which is negative when
+    // j is later.
+    func Since(j: Instant) -> Duration {
+        return zyxtime_duration_of(self.ns - j.ns)
+    }
+    // Add answers the moment d after the reading.
+    func Add(d: Duration) -> Instant {
+        return Instant { ns: self.ns + zyxtime_duration_ns(d) }
+    }
+    // UnixNano answers the reading as a count of nanoseconds.
+    func UnixNano() -> i64 {
+        return self.ns
+    }
+}
+
+// Now answers the wall clock.
+
+func Now() -> Time {
+    return Time { ns: c.zyxtime_wall_nanos() }
+}
+
+// TimeFromUnixNano answers the moment n nanoseconds after the epoch.
+
+func TimeFromUnixNano(n: i64) -> Time {
+    return Time { ns: n }
+}
+
+// UnixNano answers the wall clock now as a count of nanoseconds since the
+// epoch.
+
+func UnixNano() -> i64 {
+    return c.zyxtime_wall_nanos()
+}
+
+// UnixMilli answers the wall clock now as a count of milliseconds since the
+// epoch.
+
+func UnixMilli() -> i64 {
+    return c.zyxtime_wall_nanos() / 1000000
+}
+
+// A Time is a reading of the wall clock. It is a value type, and it is read
+// as a civil date in UTC.
+
+extern struct Time {
+    ns: i64
+    // UnixNano answers the moment as a count of nanoseconds since the epoch.
+    func UnixNano() -> i64 {
+        return self.ns
+    }
+    // Year answers the year of the moment.
+    func Year() -> i64 {
+        return parts(self.ns).0
+    }
+    // Month answers the month of the moment, from 1 to 12.
+    func Month() -> i64 {
+        return parts(self.ns).1
+    }
+    // Day answers the day of the month of the moment.
+    func Day() -> i64 {
+        return parts(self.ns).2
+    }
+    // Hour answers the hour of the moment, from 0 to 23.
+    func Hour() -> i64 {
+        return parts(self.ns).3
+    }
+    // Minute answers the minute of the moment, from 0 to 59.
+    func Minute() -> i64 {
+        return parts(self.ns).4
+    }
+    // Second answers the second of the moment, from 0 to 59.
+    func Second() -> i64 {
+        return parts(self.ns).5
+    }
+    // Nanosecond answers the nanoseconds of the moment that follow its
+    // second.
+    func Nanosecond() -> i64 {
+        return parts(self.ns).6
+    }
+    // Format writes the moment in the form the layout names, which is the
+    // reference time's own spelling: 2006-01-02T15:04:05.999999999Z07:00 is
+    // the form of a moment, so a layout is written with those digits and
+    // words. A byte that names no element is written as it stands.
+    func Format(layout: str) -> str {
+        return format(self.ns, layout)
+    }
+    // Parse reads a moment from the text, which must be written in the form
+    // the layout names. The layout takes the same elements Format writes.
+    func Parse(layout: str, s: str) -> Result<Time, Error> {
+        return parse(layout, s)
+    }
+}
+
+// The counts the calendar divides by. A second, a day, and a day of
+// nanoseconds are fixed, so they are constants rather than a table.
+
+const nsec_per_sec: i64 = 1000000000
+
+const sec_per_day: i64 = 86400
+
+const nsec_per_day: i64 = 86400000000000
+
+// floor_div divides toward negative infinity, and floor_mod is the remainder
+// that goes with it. A moment before the epoch must land in the day it is
+// really in, which is what the floor gives and a truncation does not.
+
+func floor_div(a: i64, b: i64) -> i64 {
+    var q = a / b
+    if a % b != 0 && (a < 0) != (b < 0) {
+        q -= 1
+    }
+    return q
+}
+
+// floor_mod answers the remainder of a floor division, which is never
+// negative when the divisor is positive.
+
+func floor_mod(a: i64, b: i64) -> i64 {
+    return a - floor_div(a, b) * b
+}
+
+// civil_from_days answers the year, month, and day of the civil calendar for
+// a count of days since 1970-01-01. The arithmetic is the standard one over
+// four-hundred-year eras, which needs no table.
+
+func civil_from_days(days: i64) -> (i64, i64, i64) {
+    var z = days + 719468
+    var era = floor_div(z, 146097)
+    var doe = z - era * 146097
+    var yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    var doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    var mp = (5 * doy + 2) / 153
+    var day = doy - (153 * mp + 2) / 5 + 1
+    var month = mp + 3
+    if mp >= 10 {
+        month = mp - 9
+    }
+    var year = yoe + era * 400
+    if month <= 2 {
+        year += 1
+    }
+    return (year, month, day)
+}
+
+// days_from_civil is the inverse of civil_from_days.
+
+func days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    var y = year
+    if month <= 2 {
+        y -= 1
+    }
+    var era = floor_div(y, 400)
+    var yoe = y - era * 400
+    var mp = month - 3
+    if month <= 2 {
+        mp = month + 9
+    }
+    var doy = (153 * mp + 2) / 5 + day - 1
+    var doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    return era * 146097 + doe - 719468
+}
+
+// parts answers the year, month, day, hour, minute, and second of a moment
+// and the nanoseconds that follow its second.
+
+func parts(ns: i64) -> (i64, i64, i64, i64, i64, i64, i64) {
+    var secs = floor_div(ns, nsec_per_sec)
+    var sub = ns - secs * nsec_per_sec
+    var days = floor_div(secs, sec_per_day)
+    var rest = secs - days * sec_per_day
+    var civil = civil_from_days(days)
+    return (civil.0, civil.1, civil.2, rest / 3600, rest % 3600 / 60, rest % 60, sub)
+}
+
+// byte_of answers the byte an ASCII character is, which is what a layout's
+// own text and the digits of a count are compared against.
+
+func byte_of(ch: char) -> u8 {
+    return u8(u32(ch))
+}
+
+// is_digit reports whether a byte is a decimal digit.
+
+func is_digit(b: u8) -> bool {
+    return b >= byte_of('0') && b <= byte_of('9')
+}
+
+// is_letter reports whether a byte is an ASCII letter, which is what a name
+// in a layout is made of.
+
+func is_letter(b: u8) -> bool {
+    return b >= byte_of('A') && b <= byte_of('Z') || b >= byte_of('a') && b <= byte_of('z')
+}
+
+// starts_with reports whether s holds what at the given offset.
+
+func starts_with(s: str, at: usize, what: str) -> bool {
+    if s.Len() < at + what.Len() {
+        return false
+    }
+    var i: usize = 0
+    for i < what.Len() {
+        if s[at + i] != what[i] {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+// month_name answers the name of a month, in its full form or in the three
+// letters Go spells a layout with.
+
+func month_name(month: i64, full: bool) -> str {
+    if full {
+        match month {
+            1 => {
+                return "January"}
+            2 => {
+                return "February"}
+            3 => {
+                return "March"}
+            4 => {
+                return "April"}
+            5 => {
+                return "May"}
+            6 => {
+                return "June"}
+            7 => {
+                return "July"}
+            8 => {
+                return "August"}
+            9 => {
+                return "September"}
+            10 => {
+                return "October"}
+            11 => {
+                return "November"}
+            _ => {
+                return "December"}
+        }
+    }
+    match month {
+        1 => {
+            return "Jan"}
+        2 => {
+            return "Feb"}
+        3 => {
+            return "Mar"}
+        4 => {
+            return "Apr"}
+        5 => {
+            return "May"}
+        6 => {
+            return "Jun"}
+        7 => {
+            return "Jul"}
+        8 => {
+            return "Aug"}
+        9 => {
+            return "Sep"}
+        10 => {
+            return "Oct"}
+        11 => {
+            return "Nov"}
+        _ => {
+            return "Dec"}
+    }
+}
+
+// weekday_of answers the day of the week of a count of days since the epoch,
+// counted from Sunday, which is the day the calendar names first.
+
+func weekday_of(days: i64) -> i64 {
+    return floor_mod(days + 4, 7)
+}
+
+// weekday_name answers the name of a day of the week, in its full form or in
+// its three letters.
+
+func weekday_name(weekday: i64, full: bool) -> str {
+    if full {
+        match weekday {
+            0 => {
+                return "Sunday"}
+            1 => {
+                return "Monday"}
+            2 => {
+                return "Tuesday"}
+            3 => {
+                return "Wednesday"}
+            4 => {
+                return "Thursday"}
+            5 => {
+                return "Friday"}
+            _ => {
+                return "Saturday"}
+        }
+    }
+    match weekday {
+        0 => {
+            return "Sun"}
+        1 => {
+            return "Mon"}
+        2 => {
+            return "Tue"}
+        3 => {
+            return "Wed"}
+        4 => {
+            return "Thu"}
+        5 => {
+            return "Fri"}
+        _ => {
+            return "Sat"}
+    }
+}
+
+// write_padded writes v in decimal, padded with zeroes to at least width
+// digits.
+
+func write_padded(out: Buf, v: i64, width: i64) {
+    var digits: i64 = 1
+    var rest = v
+    for rest >= 10 {
+        rest = rest / 10
+        digits += 1
+    }
+    var pad = width - digits
+    var i: i64 = 0
+    for i < pad {
+        out.WriteByte(byte_of('0'))
+        i += 1
+    }
+    out.WriteStr(f"{v}")
+}
+
+// write_nanos writes the sub-second part of a moment as nine digits.
+
+func write_nanos(out: Buf, nanos: i64) {
+    write_padded(out, nanos, 9)
+}
+
+// write_fraction writes the fractional part of a second with its trailing
+// zeros removed, which is what a layout spelled with nines asks for. A
+// fraction of zero writes nothing at all.
+
+func write_fraction(out: Buf, nanos: i64, width: i64) {
+    var v = nanos
+    var w = width
+    for w > 0 && v % 10 == 0 {
+        v = v / 10
+        w -= 1
+    }
+    if w == 0 {
+        return
+    }
+    write_padded(out, v, w)
+}
+
+// scale_of answers the count a fraction of the given number of digits is
+// scaled by, so that nine digits are the whole of a second.
+
+func scale_of(digits: usize) -> i64 {
+    var scale: i64 = 1
+    var k: usize = digits
+    for k < 9 {
+        scale = scale * 10
+        k += 1
+    }
+    return scale
+}
+
+// format writes a moment in the form the layout names. An element is matched
+// by its own spelling, longest first so that 2006 is a year rather than a
+// month and a year; a byte that begins no element is written as it stands.
+
+func format(ns: i64, layout: str) -> str {
+    var p = parts(ns)
+    var out = new Buf(layout.Len() + 32)
+    var at: usize = 0
+    for at < layout.Len() {
+        var used = format_element(out, layout, at, ns, p)
+        if used == 0 {
+            out.WriteByte(layout[at])
+            at += 1
+        }  else {
+            at += used
+        }
+    }
+    return out.Str()
+}
+
+// format_element writes the element the layout names at an offset, and
+// answers its length, or zero when the offset names no element.
+
+func format_element(out: Buf, layout: str, at: usize, ns: i64, p: (i64, i64, i64, i64, i64, i64, i64)) -> usize {
+    if starts_with(layout, at, "January") {
+        out.WriteStr(month_name(p.1, true))
+        return 7
+    }
+    if starts_with(layout, at, "Monday") {
+        out.WriteStr(weekday_name(weekday_of(floor_div(ns, nsec_per_day)), true))
+        return 6
+    }
+    if starts_with(layout, at, "Jan") {
+        out.WriteStr(month_name(p.1, false))
+        return 3
+    }
+    if starts_with(layout, at, "Mon") {
+        out.WriteStr(weekday_name(weekday_of(floor_div(ns, nsec_per_day)), false))
+        return 3
+    }
+    if starts_with(layout, at, "2006") {
+        write_padded(out, p.0, 4)
+        return 4
+    }
+    if starts_with(layout, at, "000000000") {
+        write_nanos(out, p.6)
+        return 9
+    }
+    if starts_with(layout, at, "999999999") {
+        write_fraction(out, p.6, 9)
+        return 9
+    }
+    if starts_with(layout, at, "999999") {
+        write_fraction(out, p.6, 6)
+        return 6
+    }
+    if starts_with(layout, at, "999") {
+        write_fraction(out, p.6, 3)
+        return 3
+    }
+    if starts_with(layout, at, "000000") {
+        write_padded(out, p.6 / 1000, 6)
+        return 6
+    }
+    if starts_with(layout, at, "000") {
+        write_padded(out, p.6 / 1000000, 3)
+        return 3
+    }
+    // The moment is read in UTC, so the zone an offset element names is
+    // always the one that stands for UTC.
+    if starts_with(layout, at, "Z07:00") {
+        out.WriteStr("Z")
+        return 6
+    }
+    if starts_with(layout, at, "Z0700") {
+        out.WriteStr("Z")
+        return 5
+    }
+    if starts_with(layout, at, "-07:00") {
+        out.WriteStr("+00:00")
+        return 6
+    }
+    if starts_with(layout, at, "-0700") {
+        out.WriteStr("+0000")
+        return 5
+    }
+    if starts_with(layout, at, "15") {
+        write_padded(out, p.3, 2)
+        return 2
+    }
+    if starts_with(layout, at, "06") {
+        write_padded(out, floor_mod(p.0, 100), 2)
+        return 2
+    }
+    if starts_with(layout, at, "01") {
+        write_padded(out, p.1, 2)
+        return 2
+    }
+    if starts_with(layout, at, "02") {
+        write_padded(out, p.2, 2)
+        return 2
+    }
+    if starts_with(layout, at, "04") {
+        write_padded(out, p.4, 2)
+        return 2
+    }
+    if starts_with(layout, at, "05") {
+        write_padded(out, p.5, 2)
+        return 2
+    }
+    if starts_with(layout, at, "03") {
+        write_padded(out, hour12(p.3), 2)
+        return 2
+    }
+    if starts_with(layout, at, "PM") {
+        out.WriteStr(meridiem(p.3))
+        return 2
+    }
+    if starts_with(layout, at, "pm") {
+        out.WriteStr(lower(meridiem(p.3)))
+        return 2
+    }
+    if starts_with(layout, at, "_2") {
+        write_padded(out, p.2, 2)
+        return 2
+    }
+    if starts_with(layout, at, "1") {
+        out.WriteStr(f"{p.1}")
+        return 1
+    }
+    if starts_with(layout, at, "2") {
+        out.WriteStr(f"{p.2}")
+        return 1
+    }
+    if starts_with(layout, at, "3") {
+        out.WriteStr(f"{hour12(p.3)}")
+        return 1
+    }
+    if starts_with(layout, at, "4") {
+        out.WriteStr(f"{p.4}")
+        return 1
+    }
+    if starts_with(layout, at, "5") {
+        out.WriteStr(f"{p.5}")
+        return 1
+    }
+    return 0
+}
+
+// hour12 answers the hour of a moment on a twelve-hour clock, where midnight
+// and noon are twelve.
+
+func hour12(hour: i64) -> i64 {
+    var h = hour % 12
+    if h == 0 {
+        h = 12
+    }
+    return h
+}
+
+// meridiem answers AM or PM for the hour of a moment.
+
+func meridiem(hour: i64) -> str {
+    if hour < 12 {
+        return "AM"
+    }
+    return "PM"
+}
+
+// lower answers the same letters in lowercase, which is what a layout's pm
+// element writes.
+
+func lower(s: str) -> str {
+    var out = new Buf(2)
+    var i: usize = 0
+    for i < s.Len() {
+        var b = s[i]
+        if b >= byte_of('A') && b <= byte_of('Z') {
+            b = u8(u32(b) + 32)
+        }
+        out.WriteByte(b)
+        i += 1
+    }
+    return out.Str()
+}
+
+// read_uint reads at most most decimal digits, and answers the value and the
+// digits it read. Fewer than least digits is a fault, which the zero and the
+// empty count spell.
+
+func read_uint(s: str, at: usize, least: usize, most: usize) -> (i64, usize) {
+    var n: usize = 0
+    var v: i64 = 0
+    for n < most && at + n < s.Len() && is_digit(s[at + n]) {
+        v = v * 10 + i64(s[at + n] - byte_of('0'))
+        n += 1
+    }
+    if n < least {
+        return (- 1, 0)
+    }
+    return (v, n)
+}
+
+// match_at reports whether the name stands at the offset of a text, exactly
+// as long as the run of letters there. A name and a text are compared byte by
+// byte rather than by taking a view of the text, because a view of a string
+// is not something a binding may hold.
+
+func match_at(s: str, at: usize, n: usize, name: str) -> bool {
+    if name.Len() != n || s.Len() < at + n {
+        return false
+    }
+    var i: usize = 0
+    for i < n {
+        if s[at + i] != name[i] {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+// name_run answers how many letters stand at the offset of a text, which is
+// at most the longest name a layout names.
+
+func name_run(s: str, at: usize) -> usize {
+    var n: usize = 0
+    for n < 9 && at + n < s.Len() && is_letter(s[at + n]) {
+        n += 1
+    }
+    return n
+}
+
+// month_at answers the month a run of letters spells, and zero when it spells
+// none. Three letters are the abbreviation and a longer run is the full name,
+// which is how a layout writes either one.
+
+func month_at(s: str, at: usize, n: usize) -> i64 {
+    if n == 3 {
+        if match_at(s, at, n, "Jan") {
+            return 1
+        }
+        if match_at(s, at, n, "Feb") {
+            return 2
+        }
+        if match_at(s, at, n, "Mar") {
+            return 3
+        }
+        if match_at(s, at, n, "Apr") {
+            return 4
+        }
+        if match_at(s, at, n, "May") {
+            return 5
+        }
+        if match_at(s, at, n, "Jun") {
+            return 6
+        }
+        if match_at(s, at, n, "Jul") {
+            return 7
+        }
+        if match_at(s, at, n, "Aug") {
+            return 8
+        }
+        if match_at(s, at, n, "Sep") {
+            return 9
+        }
+        if match_at(s, at, n, "Oct") {
+            return 10
+        }
+        if match_at(s, at, n, "Nov") {
+            return 11
+        }
+        if match_at(s, at, n, "Dec") {
+            return 12
+        }
+        return 0
+    }
+    if match_at(s, at, n, "January") {
+        return 1
+    }
+    if match_at(s, at, n, "February") {
+        return 2
+    }
+    if match_at(s, at, n, "March") {
+        return 3
+    }
+    if match_at(s, at, n, "April") {
+        return 4
+    }
+    if match_at(s, at, n, "May") {
+        return 5
+    }
+    if match_at(s, at, n, "June") {
+        return 6
+    }
+    if match_at(s, at, n, "July") {
+        return 7
+    }
+    if match_at(s, at, n, "August") {
+        return 8
+    }
+    if match_at(s, at, n, "September") {
+        return 9
+    }
+    if match_at(s, at, n, "October") {
+        return 10
+    }
+    if match_at(s, at, n, "November") {
+        return 11
+    }
+    if match_at(s, at, n, "December") {
+        return 12
+    }
+    return 0
+}
+
+// weekday_at reports whether a run of letters spells a day of the week. The
+// day a layout names does not enter the moment, so the name is only checked.
+
+func weekday_at(s: str, at: usize, n: usize) -> bool {
+    if match_at(s, at, n, "Sun") || match_at(s, at, n, "Sunday") {
+        return true
+    }
+    if match_at(s, at, n, "Mon") || match_at(s, at, n, "Monday") {
+        return true
+    }
+    if match_at(s, at, n, "Tue") || match_at(s, at, n, "Tuesday") {
+        return true
+    }
+    if match_at(s, at, n, "Wed") || match_at(s, at, n, "Wednesday") {
+        return true
+    }
+    if match_at(s, at, n, "Thu") || match_at(s, at, n, "Thursday") {
+        return true
+    }
+    if match_at(s, at, n, "Fri") || match_at(s, at, n, "Friday") {
+        return true
+    }
+    if match_at(s, at, n, "Sat") || match_at(s, at, n, "Saturday") {
+        return true
+    }
+    return false
+}
+
+// parse reads a moment from a text written in the form the layout names. The
+// layout is read first: an element it names that this package does not know
+// is an invalid layout, and a text that does not match it is an invalid
+// value.
+
+func parse(layout: str, s: str) -> Result<Time, Error> {
+    var year: i64 = 1970
+    var month: i64 = 1
+    var day: i64 = 1
+    var hour: i64 = 0
+    var minute: i64 = 0
+    var second: i64 = 0
+    var nanos: i64 = 0
+    var half = ""
+    var twelve = false
+    var at: usize = 0
+    var pos: usize = 0
+    for at < layout.Len() {
+        var used: usize = 0
+        var read: i64 = 0
+        if starts_with(layout, at, "January") {
+            used = 7
+            var run = name_run(s, pos)
+            read = month_at(s, pos, run)
+            if read == 0 {
+                return Result.Err(Error.InvalidValue)
+            }
+            month = read
+            pos += run
+        }  else if starts_with(layout, at, "Jan") {
+            used = 3
+            var run = name_run(s, pos)
+            read = month_at(s, pos, run)
+            if read == 0 {
+                return Result.Err(Error.InvalidValue)
+            }
+            month = read
+            pos += run
+        }  else if starts_with(layout, at, "Monday") {
+            used = 6
+            var run = name_run(s, pos)
+            if !weekday_at(s, pos, run) {
+                return Result.Err(Error.InvalidValue)
+            }
+            pos += run
+        }  else if starts_with(layout, at, "Mon") {
+            used = 3
+            var run = name_run(s, pos)
+            if !weekday_at(s, pos, run) {
+                return Result.Err(Error.InvalidValue)
+            }
+            pos += run
+        }  else if starts_with(layout, at, "2006") {
+            used = 4
+            var pair = read_uint(s, pos, 4, 4)
+            if pair.0 < 0 {
+                return Result.Err(Error.InvalidValue)
+            }
+            year = pair.0
+            pos += pair.1
+        }  else if starts_with(layout, at, "06") {
+            used = 2
+            var pair = read_uint(s, pos, 2, 2)
+            if pair.0 < 0 {
+                return Result.Err(Error.InvalidValue)
+            }
+            // The two digits name the year of a century, which the calendar
+            // reads as the one nearest the current one.
+            year = 2000 + pair.0
+            pos += pair.1
+        }  else if starts_with(layout, at, "000000000") || starts_with(layout, at, "000000") || starts_with(layout, at, "000") {
+            var width: usize = 9
+            if !starts_with(layout, at, "000000000") {
+                width = 3
+                if starts_with(layout, at, "000000") {
+                    width = 6
+                }
+            }
+            used = width
+            var pair = read_uint(s, pos, width, width)
+            if pair.0 < 0 {
+                return Result.Err(Error.InvalidValue)
+            }
+            nanos = pair.0 * scale_of(pair.1)
+            pos += pair.1
+        }  else if starts_with(layout, at, "999999999") || starts_with(layout, at, "999999") || starts_with(layout, at, "999") {
+            var width: usize = 9
+            if !starts_with(layout, at, "999999999") {
+                width = 3
+                if starts_with(layout, at, "999999") {
+                    width = 6
+                }
+            }
+            used = width
+            // A layout written with nines takes a fraction of however many
+            // digits the text holds, up to the ones it names.
+            var pair = read_uint(s, pos, 1, width)
+            if pair.0 < 0 {
+                return Result.Err(Error.InvalidValue)
+            }
+            nanos = pair.0 * scale_of(pair.1)
+            pos += pair.1
+        }  else if starts_with(layout, at, "Z07:00") || starts_with(layout, at, "Z0700") {
+            used = 6
+            if starts_with(layout, at, "Z0700") && !starts_with(layout, at, "Z07:00") {
+                used = 5
+            }
+            if pos < s.Len() && s[pos] == byte_of('Z') {
+                pos += 1
+            }  else {
+                var zone = read_zone(s, pos)
+                if zone.0 < 0 {
+                    return Result.Err(Error.InvalidValue)
+                }
+                pos += zone.1
+            }
+        }  else if starts_with(layout, at, "-07:00") || starts_with(layout, at, "-0700") {
+            used = 6
+            if starts_with(layout, at, "-0700") && !starts_with(layout, at, "-07:00") {
+                used = 5
+            }
+            var zone = read_zone(s, pos)
+            if zone.0 < 0 {
+                return Result.Err(Error.InvalidValue)
+            }
+            pos += zone.1
+        }  else if starts_with(layout, at, "15") {
+            used = 2
+            var pair = read_uint(s, pos, 2, 2)
+            if pair.0 < 0 {
+                return Result.Err(Error.InvalidValue)
+            }
+            hour = pair.0
+            pos += pair.1
+        }  else if starts_with(layout, at, "01") {
+            used = 2
+            var pair = read_uint(s, pos, 2, 2)
+            if pair.0 < 0 {
+                return Result.Err(Error.InvalidValue)
+            }
+            month = pair.0
+            pos += pair.1
+        }  else if starts_with(layout, at, "02") {
+            used = 2
+            var pair = read_uint(s, pos, 2, 2)
+            if pair.0 < 0 {
+                return Result.Err(Error.InvalidValue)
+            }
+            day = pair.0
+            pos += pair.1
+        }  else if starts_with(layout, at, "03") {
+            used = 2
+            var pair = read_uint(s, pos, 2, 2)
+            if pair.0 < 0 {
+                return Result.Err(Error.InvalidValue)
+            }
+            hour = pair.0
+            twelve = true
+            pos += pair.1
+        }  else if starts_with(layout, at, "04") {
+            used = 2
+            var pair = read_uint(s, pos, 2, 2)
+            if pair.0 < 0 {
+                return Result.Err(Error.InvalidValue)
+            }
+            minute = pair.0
+            pos += pair.1
+        }  else if starts_with(layout, at, "05") {
+            used = 2
+            var pair = read_uint(s, pos, 2, 2)
+            if pair.0 < 0 {
+                return Result.Err(Error.InvalidValue)
+            }
+            second = pair.0
+            pos += pair.1
+        }  else if starts_with(layout, at, "PM") || starts_with(layout, at, "pm") {
+            used = 2
+            if starts_with(s, pos, "PM") {
+                half = "PM"
+            }  else if starts_with(s, pos, "pm") {
+                half = "pm"
+            }  else {
+                return Result.Err(Error.InvalidValue)
+            }
+            pos += 2
+        }  else if starts_with(layout, at, "_2") {
+            used = 2
+            if pos < s.Len() && s[pos] == byte_of(' ') {
+                pos += 1
+            }
+            var pair = read_uint(s, pos, 1, 2)
+            if pair.0 < 0 {
+                return Result.Err(Error.InvalidValue)
+            }
+            day = pair.0
+            pos += pair.1
+        }  else if starts_with(layout, at, "1") || starts_with(layout, at, "2") || starts_with(layout, at, "3") || starts_with(layout, at, "4") || starts_with(layout, at, "5") {
+            used = 1
+            var pair = read_uint(s, pos, 1, 2)
+            if pair.0 < 0 {
+                return Result.Err(Error.InvalidValue)
+            }
+            if layout[at] == byte_of('1') {
+                month = pair.0
+            }  else if layout[at] == byte_of('2') {
+                day = pair.0
+            }  else if layout[at] == byte_of('3') {
+                hour = pair.0
+                twelve = true
+            }  else if layout[at] == byte_of('4') {
+                minute = pair.0
+            }  else {
+                second = pair.0
+            }
+            pos += pair.1
+        }  else {
+            // A byte that begins no element stands for itself, and the same
+            // byte must stand there in the text.
+            if is_digit(layout[at]) {
+                return Result.Err(Error.InvalidLayout)
+            }
+            if pos >= s.Len() || s[pos] != layout[at] {
+                return Result.Err(Error.InvalidValue)
+            }
+            used = 1
+            pos += 1
+        }
+        at += used
+    }
+    if pos != s.Len() {
+        return Result.Err(Error.InvalidValue)
+    }
+    if twelve {
+        if hour < 1 || hour > 12 {
+            return Result.Err(Error.InvalidValue)
+        }
+        if half == "PM" && hour != 12 {
+            hour += 12
+        }  else if half == "pm" && hour != 12 {
+            hour += 12
+        }  else if half == "" && hour == 12 {
+            hour = 0
+        }
+    }
+    if month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 60 || nanos > 999999999 {
+        return Result.Err(Error.InvalidValue)
+    }
+    var ns = (days_from_civil(year, month, day) * sec_per_day + hour * 3600 + minute * 60 + second) * nsec_per_sec + nanos
+    return Result.Ok(Time { ns: ns })
+}
+
+// read_zone reads the zone an offset element names, and answers the seconds
+// it is from UTC and the bytes it took. The moment is read in UTC, so a zone
+// other than UTC is a value this package does not read: the answer is a fault
+// and the text is refused. The shape alone is checked.
+
+func read_zone(s: str, at: usize) -> (i64, usize) {
+    if at >= s.Len() {
+        return (- 1, 0)
+    }
+    var sign = s[at]
+    if sign != byte_of('+') && sign != byte_of('-') {
+        return (- 1, 0)
+    }
+    var pair = read_uint(s, at + 1, 2, 2)
+    if pair.0 < 0 {
+        return (- 1, 0)
+    }
+    var steps: usize = 3
+    if at + 3 < s.Len() && s[at + 3] == byte_of(':') {
+        steps = 4
+    }
+    var rest = read_uint(s, at + steps, 2, 2)
+    if rest.0 < 0 {
+        return (- 1, 0)
+    }
+    if sign == byte_of('-') && (pair.0 != 0 || rest.0 != 0) {
+        return (- 1, 0)
+    }
+    return (pair.0 * 3600 + rest.0 * 60, steps + 2)
+}

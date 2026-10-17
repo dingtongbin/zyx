@@ -1,1 +1,230 @@
 package os
+
+// The process a program is: the arguments it was started with, the variables
+// it runs under, the streams it was given, and the way it ends.
+
+import "std/fs"
+
+import c "zyxos.h" {
+    fast zyxos_error_kind, zyxos_error_number, zyxos_error_message
+    fast zyxos_getpid, zyxos_os, zyxos_arch, zyxos_exit, zyxos_standard
+}
+
+// ErrorKind is what went wrong. Every system package reports failures in this
+// shape, so one program reads them the same way wherever they come from.
+
+enum ErrorKind {
+    NotFound
+    Permission
+    Exists
+    NotDir
+    IsDir
+    Invalid
+    Closed
+    Timeout
+    Interrupted
+    WouldBlock
+    Eof
+    AddrInUse
+    AddrNotAvailable
+    Refused
+    Reset
+    Unreachable
+    Other
+}
+
+// Error is one failure of a call. Errno is the number the system reported,
+// or zero when the failure is not one the system names, and Msg is the text
+// the system gave it.
+
+struct Error {
+    Kind: ErrorKind
+    Errno: i32
+    Msg: str
+    impl Show {
+        func Show(w: Buf) {
+            w.WriteStr(f"os: {self.Msg}")
+        }
+    }
+}
+
+// error_of builds the failure a C call just reported.
+
+func error_of() -> Error {
+    var text = new Buf(0)
+    c.zyxos_error_message(text)
+    return Error { Kind: error_kind(c.zyxos_error_kind()) Errno: c.zyxos_error_number() Msg: text.Str() }
+}
+
+// error_kind maps the number a C call reports onto the kind of failure it is.
+// The numbers are the ones the package's own header defines.
+
+func error_kind(code: i32) -> ErrorKind {
+    match code {
+        1 => {
+            return ErrorKind.NotFound}
+        2 => {
+            return ErrorKind.Permission}
+        3 => {
+            return ErrorKind.Exists}
+        4 => {
+            return ErrorKind.NotDir}
+        5 => {
+            return ErrorKind.IsDir}
+        6 => {
+            return ErrorKind.Invalid}
+        7 => {
+            return ErrorKind.Closed}
+        8 => {
+            return ErrorKind.Timeout}
+        9 => {
+            return ErrorKind.Interrupted}
+        10 => {
+            return ErrorKind.WouldBlock}
+        11 => {
+            return ErrorKind.Eof}
+        _ => {
+            return ErrorKind.Other}
+    }
+}
+
+// Args answers the arguments the program was started with. The name the
+// program was started under is the first of them.
+
+func Args() -> [str] {
+    var text = new Buf(0)
+    if c.zyxos_args(text) != 0 {
+        var empty = new Array<str>(0)
+        return empty[0 .. 0]
+    }
+    return split_nul(text)
+}
+
+// Env answers the value of a variable, or nothing when it is not there.
+
+func Env(name: str) -> Option<str> {
+    var text = new Buf(0)
+    if c.zyxos_env(text, name) != 0 {
+        return Option.None
+    }
+    return Option.Some(text.Str())
+}
+
+// EnvAll answers every variable the process runs under, as a name and its
+// value.
+
+func EnvAll() -> Array<(str, str)> {
+    var out = new Array<(str, str)>(0)
+    var text = new Buf(0)
+    if c.zyxos_env_all(text) != 0 {
+        return out
+    }
+    // The call wrote a name and then its value, each ended by a zero byte, so
+    // the entries are read in pairs.
+    var name = ""
+    var waiting = false
+    for entry in split_nul(text) {
+        if waiting {
+            out.Push((name, entry))
+            waiting = false
+        }  else {
+            name = entry
+            waiting = true
+        }
+    }
+    return out
+}
+
+// SetEnv gives a variable a value, making it if it was not there.
+
+func SetEnv(name: str, v: str) -> Result<(), Error> {
+    if c.zyxos_setenv(name, v) != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok()
+}
+
+// UnsetEnv takes a variable away. A variable that was not there is not a
+// failure.
+
+func UnsetEnv(name: str) -> Result<(), Error> {
+    if c.zyxos_unsetenv(name) != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok()
+}
+
+// Exit ends the process at once, with the code it is given. Nothing that was
+// waiting to run runs, and no region is released.
+
+func Exit(code: i32) {
+    c.zyxos_exit(code)
+}
+
+// Getpid answers the number the system gave this process.
+
+func Getpid() -> i32 {
+    return c.zyxos_getpid()
+}
+
+// OS answers the platform segment of the target the program was built for,
+// which is the one its triple names.
+
+func OS() -> str {
+    var text = new Buf(0)
+    c.zyxos_os(text)
+    return text.Str()
+}
+
+// Arch answers the architecture segment of the target the program was built
+// for.
+
+func Arch() -> str {
+    var text = new Buf(0)
+    c.zyxos_arch(text)
+    return text.Str()
+}
+
+// Hostname answers the name the machine calls itself.
+
+func Hostname() -> Result<str, Error> {
+    var text = new Buf(0)
+    if c.zyxos_hostname(text) != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok(text.Str())
+}
+
+// Stdin, Stdout, and Stderr answer the streams the process was given. They
+// are handles of one file each, so what reads and writes them closes them
+// only when the program asks.
+
+func Stdin() -> fs.File { return standard(0) }
+
+func Stdout() -> fs.File { return standard(1) }
+
+func Stderr() -> fs.File { return standard(2) }
+
+// standard builds the handle of one of the three streams the process begins
+// with, which is the file package's own handle.
+
+func standard(which: i32) -> fs.File { return fs.File { Handle: c.zyxos_standard(which), Closed: false } }
+
+// split_nul reads the names a call wrote into a text. Each is ended by a zero
+// byte, so the text is walked once and a text of its own is built for each
+// name. A view of a string is not something a binding may hold, so the bytes
+// are copied rather than cut.
+
+func split_nul(b: Buf) -> [str] {
+    var out = new Array<str>(0)
+    var name = new Buf(0)
+    for byte in b.Bytes() {
+        if byte == 0 {
+            out.Push(name.Str())
+            name = new Buf(0)
+        }  else {
+            name.WriteByte(byte)
+        }
+    }
+    return out[0 .. out.Len()]
+}

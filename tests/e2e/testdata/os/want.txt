@@ -1,0 +1,10 @@
+true true
+set: one
+absent
+true true
+unset: gone
+true true true
+true
+true through stdout
+wrote
+true true

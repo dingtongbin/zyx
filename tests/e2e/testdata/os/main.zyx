@@ -1,0 +1,105 @@
+package main
+
+import "std/fmt"
+import "std/os"
+
+// What this program prints is the shape of what it was given and of what it
+// set itself, never the value of anything the machine decides: an argument
+// list and an environment hold text this program did not write.
+
+func main() {
+    var args = os.Args()
+    fmt.PrintBool(arg_count(args) > 0)
+    fmt.Print(" ")
+    fmt.PrintBool(first_arg(args))
+    fmt.PrintNl()
+    match os.SetEnv("ZYX_CORPUS_OS", "one") {
+        Ok(_) => fmt.Print("set: ")
+        Err(e) => fmt.Print("could not set: ")
+    }
+    match os.Env("ZYX_CORPUS_OS") {
+        Some(v) => fmt.Println(v)
+        None => fmt.Println("missing")
+    }
+    match os.Env("ZYX_CORPUS_OS_ABSENT") {
+        Some(v) => fmt.Println("unexpected")
+        None => fmt.Println("absent")
+    }
+    var all = os.EnvAll()
+    fmt.PrintBool(all.Len() > 0)
+    fmt.Print(" ")
+    fmt.PrintBool(has_var(all, "ZYX_CORPUS_OS"))
+    fmt.PrintNl()
+    match os.UnsetEnv("ZYX_CORPUS_OS") {
+        Ok(_) => fmt.Print("unset: ")
+        Err(e) => fmt.Print("could not unset: ")
+    }
+    match os.Env("ZYX_CORPUS_OS") {
+        Some(v) => fmt.Println(v)
+        None => fmt.Println("gone")
+    }
+    fmt.PrintBool(os.Getpid() > 0)
+    fmt.Print(" ")
+    fmt.PrintBool(os.OS().Len() > 0)
+    fmt.Print(" ")
+    fmt.PrintBool(os.Arch().Len() > 0)
+    fmt.PrintNl()
+    match os.Hostname() {
+        Ok(name) => fmt.PrintBool(name.Len() > 0)
+        Err(e) => fmt.Print("no hostname")
+    }
+    fmt.PrintNl()
+    // The streams a process is given are the same handles a file is, so what
+    // a program writes to standard output goes through the file package.
+    var out = os.Stdout()
+    fmt.PrintBool(!out.Closed)
+    fmt.Print(" ")
+    match out.WriteStr("through stdout\n") {
+        Ok(n) => fmt.Print("wrote")
+        Err(e) => fmt.Print("no write")
+    }
+    fmt.PrintNl()
+    fmt.PrintBool(!os.Stdin().Closed)
+    fmt.Print(" ")
+    fmt.PrintBool(!os.Stderr().Closed)
+    fmt.PrintNl()
+    // Exit ends the process at once with the code it is given: nothing runs
+    // after it, and the code is the one the process reports.
+    os.Exit(0)
+}
+
+// has_var reports whether a list of variables holds a name.
+
+func has_var(all: Array<(str, str)>, name: str) -> bool {
+    for pair in all {
+        if pair.0 == name {
+            return true
+        }
+    }
+    return false
+}
+
+// arg_count counts the arguments, which is what a program does with a view:
+// the language counts a view by walking it.
+
+func arg_count(args: [str]) -> usize {
+    var n: usize = 0
+    for _ in args {
+        n += 1
+    }
+    return n
+}
+
+// first_arg reports whether the first argument is there and says something,
+// which is the name the program was started under.
+
+func first_arg(args: [str]) -> bool {
+    var at: usize = 0
+    for arg in args {
+        if at == 0 {
+            return arg.Len() > 0
+        }
+        at += 1
+    }
+    return false
+}

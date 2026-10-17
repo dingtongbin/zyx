@@ -1,1 +1,713 @@
 package fs
+
+// The file system: the paths that name a file, the handles that read one and
+// write one, and the directory a program keeps its own files in. A read or a
+// write of a file is a call the runtime hands to its blocking pool, so a
+// coroutine that waits for a disk waits without holding a scheduler thread.
+//
+// A path is written with the forward slash on every target. The platforms
+// this package runs on accept one in the calls below, and a rule that does
+// not depend on the target is the only one a program can write once.
+
+import "std/time"
+
+import c "zyxfs.h" {
+    fast zyxfs_error_kind, zyxfs_error_number, zyxfs_error_message
+    fast zyxfs_close, zyxfs_cwd, zyxfs_temp_dir
+    fast zyxfs_stat_path, zyxfs_remove, zyxfs_rename
+    fast zyxfs_mkdir, zyxfs_rmdir, zyxfs_chmod
+}
+
+// ErrorKind is what went wrong. Every system package reports failures in this
+// shape, so one program reads them the same way wherever they come from.
+
+enum ErrorKind {
+    NotFound
+    Permission
+    Exists
+    NotDir
+    IsDir
+    Invalid
+    Closed
+    Timeout
+    Interrupted
+    WouldBlock
+    Eof
+    AddrInUse
+    AddrNotAvailable
+    Refused
+    Reset
+    Unreachable
+    Other
+}
+
+// Error is one failure of a call. Errno is the number the system reported,
+// or zero when the failure is not one the system names, and Msg is the text
+// the system gave it.
+
+struct Error {
+    Kind: ErrorKind
+    Errno: i32
+    Msg: str
+    impl Show {
+        func Show(w: Buf) {
+            w.WriteStr(f"fs: {self.Msg}")
+        }
+    }
+}
+
+// error_of builds the failure a C call just reported.
+
+func error_of() -> Error {
+    var text = new Buf(0)
+    c.zyxfs_error_message(text)
+    return Error { Kind: error_kind(c.zyxfs_error_kind()) Errno: c.zyxfs_error_number() Msg: text.Str() }
+}
+
+// error_kind maps the number a C call reports onto the kind of failure it is.
+// The numbers are the ones the package's own header defines.
+
+func error_kind(code: i32) -> ErrorKind {
+    match code {
+        1 => {
+            return ErrorKind.NotFound}
+        2 => {
+            return ErrorKind.Permission}
+        3 => {
+            return ErrorKind.Exists}
+        4 => {
+            return ErrorKind.NotDir}
+        5 => {
+            return ErrorKind.IsDir}
+        6 => {
+            return ErrorKind.Invalid}
+        7 => {
+            return ErrorKind.Closed}
+        8 => {
+            return ErrorKind.Timeout}
+        9 => {
+            return ErrorKind.Interrupted}
+        10 => {
+            return ErrorKind.WouldBlock}
+        11 => {
+            return ErrorKind.Eof}
+        _ => {
+            return ErrorKind.Other}
+    }
+}
+
+// A File is a handle on an open file. It is a reference: a copy names the
+// same file, and nothing runs when the last name goes away, so a program
+// closes what it opened. Its fields are open because another package builds
+// the handle of a stream the process already holds.
+
+struct File {
+    Handle: raw
+    Closed: bool
+    // A file is a handle the runtime owns, so it crosses a coroutine boundary
+    // as itself rather than as a copy of its object.
+    impl SyncSafe { }
+    // Read reads at most max bytes into b, and answers how many it read. A
+    // zero answer is the end of the file. A file that was closed is refused.
+    func Read(b: Buf, max: usize) -> Result<usize, Error> {
+        if self.Closed { return Result.Err(closed_error()) }
+        var n = c.zyxfs_read(self.Handle, b, max)
+        if n < 0 {
+            return Result.Err(error_of())
+        }
+        return Result.Ok(usize(n))
+    }
+    // Write writes the bytes of b. The answer is how many of them the file
+    // took, which may be fewer than it was given.
+    func Write(b: [u8]) -> Result<usize, Error> {
+        if self.Closed { return Result.Err(closed_error()) }
+        var n = c.zyxfs_write(self.Handle, b)
+        if n < 0 {
+            return Result.Err(error_of())
+        }
+        return Result.Ok(usize(n))
+    }
+    // WriteStr writes the bytes of s.
+    func WriteStr(s: str) -> Result<usize, Error> {
+        return self.Write(bytes_of(s))
+    }
+    // Seek moves the position of the file and answers where it now stands.
+    // Whence is 0 to count from the start, 1 to count from where the file
+    // stands, and 2 to count back from its end.
+    func Seek(off: i64, whence: i32) -> Result<i64, Error> {
+        if self.Closed { return Result.Err(closed_error()) }
+        var at = c.zyxfs_seek(self.Handle, off, whence)
+        if at < 0 {
+            return Result.Err(error_of())
+        }
+        return Result.Ok(at)
+    }
+    // Stat answers what the system knows about the file.
+    func Stat() -> Result<FileInfo, Error> {
+        if self.Closed { return Result.Err(closed_error()) }
+        var st: status = status {
+            size: 0, mode: 0, is_dir: 0, mtime_nanos: 0}
+        if c.zyxfs_stat_file(self.Handle, & st) != 0 {
+            return Result.Err(error_of())
+        }
+        return Result.Ok(info_of(st))
+    }
+    // Sync waits until everything written to the file has reached the file
+    // system.
+    func Sync() -> Result<(), Error> {
+        if self.Closed { return Result.Err(closed_error()) }
+        if c.zyxfs_sync(self.Handle) != 0 {
+            return Result.Err(error_of())
+        }
+        return Result.Ok()
+    }
+    // Close gives the file up. It is idempotent: a file already closed is
+    // left alone, and a call on it afterwards is refused.
+    func Close() {
+        if self.Closed { return }
+        c.zyxfs_close(self.Handle)
+        self.Closed = true
+    }
+}
+
+// closed_error is the failure of a call on a handle that was closed.
+
+func closed_error() -> Error {
+    return Error { Kind: ErrorKind.Closed, Errno: 0, Msg: "the file is closed" }
+}
+
+// status is the shape a C stat fills, which is the layout of the same fields
+// in the package's own header. FileInfo is what a program reads instead.
+
+extern struct status {
+    size: i64
+    mode: u32
+    is_dir: i32
+    mtime_nanos: i64
+}
+
+// FileInfo is what the system knows about a file. Mtime is the wall clock of
+// its last modification.
+
+struct FileInfo {
+    Size: i64
+    Mode: u32
+    Mtime: time.Time
+    IsDir: bool
+}
+
+// info_of reads the shape a C stat filled as the value a program sees.
+
+func info_of(s: status) -> FileInfo {
+    return FileInfo { Size: s.size Mode: s.mode Mtime: time.TimeFromUnixNano(s.mtime_nanos) IsDir: s.is_dir != 0 }
+}
+
+// Open opens the file a path names for reading.
+
+func Open(p: str) -> Result<File, Error> {
+    return open_mode(p, 1)
+}
+
+// Create opens the file a path names for writing, emptying it if it was
+// there.
+
+func Create(p: str) -> Result<File, Error> {
+    return open_mode(p, 2)
+}
+
+// OpenAppend opens the file a path names for writing, with everything
+// written added to what it already holds.
+
+func OpenAppend(p: str) -> Result<File, Error> {
+    return open_mode(p, 3)
+}
+
+// open_mode opens a path in one of the modes the package's own header names.
+// A call that answered nothing is read through the failure it left behind,
+// because a raw address is not something this package compares.
+
+func open_mode(p: str, mode: i32) -> Result<File, Error> {
+    var handle = c.zyxfs_open(p, mode)
+    if c.zyxfs_error_kind() != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok(File { Handle: handle, Closed: false })
+}
+
+// ReadFile reads a whole file into an array of its bytes. The handle is
+// closed here rather than by a deferred call, because an object whose last
+// use stands in a deferred call is released before that call runs.
+
+func ReadFile(p: str) -> Result<Array<u8>, Error> {
+    var out = new Array<u8>(0)
+    var f = try Open(p)
+    var chunk = new Buf(0)
+    for {
+        chunk.Reset()
+        var n = try f.Read(chunk, 65536)
+        if n == 0 {
+            break
+        }
+        for b in chunk.Bytes() {
+            out.Push(b)
+        }
+    }
+    f.Close()
+    return Result.Ok(out)
+}
+
+// WriteFile writes the bytes of b to the file a path names, making it if it
+// was not there and emptying it if it was. The handle is closed here rather
+// than by a deferred call, because an object whose last use stands in a
+// deferred call is released before that call runs.
+
+func WriteFile(p: str, b: [u8]) -> Result<(), Error> {
+    var f = try Create(p)
+    if c.zyxfs_write_all(f.Handle, b) < 0 {
+        var e = error_of()
+        f.Close()
+        return Result.Err(e)
+    }
+    f.Close()
+    return Result.Ok()
+}
+
+// AppendFile adds the bytes of b to the file a path names, making it if it
+// was not there.
+
+func AppendFile(p: str, b: [u8]) -> Result<(), Error> {
+    var f = try OpenAppend(p)
+    if c.zyxfs_write_all(f.Handle, b) < 0 {
+        var e = error_of()
+        f.Close()
+        return Result.Err(e)
+    }
+    f.Close()
+    return Result.Ok()
+}
+
+// Stat answers what the system knows about the file a path names.
+
+func Stat(p: str) -> Result<FileInfo, Error> {
+    var st: status = status {
+        size: 0, mode: 0, is_dir: 0, mtime_nanos: 0}
+    if c.zyxfs_stat_path(p, & st) != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok(info_of(st))
+}
+
+// Exists reports whether a path names something.
+
+func Exists(p: str) -> bool {
+    match Stat(p) {
+        Ok(_) => {
+            return true}
+        Err(e) => {
+            return false}
+    }
+}
+
+// Remove removes the file a path names.
+
+func Remove(p: str) -> Result<(), Error> {
+    if c.zyxfs_remove(p) != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok()
+}
+
+// Rename moves what old names to what to names. The word "new" is the
+// language's own, so the second path is named here rather than there.
+
+func Rename(old: str, to: str) -> Result<(), Error> {
+    if c.zyxfs_rename(old, to) != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok()
+}
+
+// Mkdir makes the directory a path names. Its parent must be there.
+
+func Mkdir(p: str, mode: u32) -> Result<(), Error> {
+    if c.zyxfs_mkdir(p, mode) != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok()
+}
+
+// MkdirAll makes the directory a path names and every directory above it that
+// is not there yet. A directory that is already there is not a failure.
+
+func MkdirAll(p: str, mode: u32) -> Result<(), Error> {
+    if Exists(p) {
+        return Result.Ok()
+    }
+    var parent = Dir(Clean(p))
+    if parent != "" && parent != "/" && parent != p {
+        try MkdirAll(parent, mode)
+    }
+    match Mkdir(p, mode) {
+        Ok(_) => {
+            return Result.Ok()}
+        Err(e) => {
+            // A directory that appeared between the test above and the call
+            // is not a failure.
+            if Exists(p) {
+                return Result.Ok()
+            }
+            return Result.Err(e)
+        }
+    }
+}
+
+// RemoveAll removes the file or the directory a path names, and everything
+// under a directory, and answers nothing when it was not there.
+
+func RemoveAll(p: str) -> Result<(), Error> {
+    var info = Stat(p)
+    match info {
+        Ok(v) => {
+            if !v.IsDir { return Remove(p) }
+        }
+        Err(e) => {
+            return Result.Ok()}
+    }
+    var names = try ListDir(p)
+    for name in names {
+        // The parts are pushed one at a time rather than written as a
+        // literal, because a literal of an array of strings does not read
+        // back yet.
+        var pair = new Array<str>(0)
+        pair.Push(p)
+        pair.Push(name)
+        try RemoveAll(Join(pair))
+    }
+    if c.zyxfs_rmdir(p) != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok()
+}
+
+// Chmod changes what the system allows of a file, where the system has such
+// a notion.
+
+func Chmod(p: str, mode: u32) -> Result<(), Error> {
+    if c.zyxfs_chmod(p, mode) != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok()
+}
+
+// ListDir answers the name of every entry of a directory, without a path, in
+// byte order. The two entries that name the directory itself are left out.
+
+func ListDir(p: str) -> Result<Array<str>, Error> {
+    var text = new Buf(0)
+    if c.zyxfs_read_dir(text, p) != 0 {
+        return Result.Err(error_of())
+    }
+    var out = new Array<str>(0)
+    var name = new Buf(0)
+    for b in text.Bytes() {
+        if b == 0 {
+            out.Push(name.Str())
+            name = new Buf(0)
+        }  else {
+            name.WriteByte(b)
+        }
+    }
+    return Result.Ok(out)
+}
+
+// TempDir answers the directory a program that needs one of its own should
+// use.
+
+func TempDir() -> str {
+    var text = new Buf(0)
+    if c.zyxfs_temp_dir(text) != 0 {
+        return "."
+    }
+    return text.Str()
+}
+
+// TempFile makes a file whose name no other call has used, in a directory
+// and with a name that starts with a prefix. The name itself is not part of
+// the answer, so a program that must name the file afterwards should build a
+// name of its own instead.
+
+func TempFile(dir: str, pattern: str) -> Result<File, Error> {
+    var handle = c.zyxfs_temp_file(dir, pattern)
+    if c.zyxfs_error_kind() != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok(File { Handle: handle, Closed: false })
+}
+
+// A filename whose bytes are read one at a time, which is what a path
+// operation needs and what a binding of a view may not do.
+// bytes_of turns a text into the bytes a write takes.
+
+func bytes_of(s: str) -> [u8] {
+    var out = new Array<u8>(0)
+    var i: usize = 0
+    for i < s.Len() {
+        out.Push(s[i])
+        i += 1
+    }
+    return out[0 .. out.Len()]
+}
+
+// Join joins the parts of a path with the separator this package writes, a
+// forward slash, leaving out the empty ones and the separators that would
+// stand twice.
+
+func Join(parts: Array<str>) -> str {
+    var out = new Buf(0)
+    for part in parts {
+        var i: usize = 0
+        for i < part.Len() {
+            var b = part[i]
+            if b == slash() {
+                if out.Len() == 0 || last_is_separator(out) {
+                    i += 1
+                    continue
+                }
+            }
+            out.WriteByte(b)
+            i += 1
+        }
+        if out.Len() > 0 && !last_is_separator(out) {
+            out.WriteByte(slash())
+        }
+    }
+    if out.Len() > 0 && last_is_separator(out) {
+        var whole = out.Str()
+        if whole.Len() > 1 {
+            out.Clear()
+            var i: usize = 0
+            for i < whole.Len() - 1 {
+                out.WriteByte(whole[i])
+                i += 1
+            }
+        }
+    }
+    return out.Str()
+}
+
+// last_is_separator reports whether the last byte a buffer holds is the
+// separator.
+
+func last_is_separator(b: Buf) -> bool {
+    var n = b.Len()
+    if n == 0 {
+        return false
+    }
+    var whole = b.Str()
+    return whole[n - 1] == slash()
+}
+
+// slash is the separator this package writes.
+
+func slash() -> u8 {
+    return 47
+}
+
+// dot is the byte that begins an extension.
+
+func dot() -> u8 {
+    return 46
+}
+
+// Base answers the last element of a path, which is the empty string for an
+// empty path and the separator itself for a path of separators.
+
+func Base(p: str) -> str {
+    var n = p.Len()
+    if n == 0 {
+        return ""
+    }
+    var end = n
+    for end > 0 && p[end - 1] == slash() {
+        end -= 1
+    }
+    if end == 0 {
+        return "/"
+    }
+    var at = end
+    for at > 0 && p[at - 1] != slash() {
+        at -= 1
+    }
+    return cut(p, at, end)
+}
+
+// Dir answers everything of a path before its last element, which is the
+// separator for a path that is one element and the empty string for an empty
+// path.
+
+func Dir(p: str) -> str {
+    var n = p.Len()
+    if n == 0 {
+        return ""
+    }
+    var at = n
+    for at > 0 && p[at - 1] == slash() {
+        at -= 1
+    }
+    for at > 0 && p[at - 1] != slash() {
+        at -= 1
+    }
+    for at > 0 && p[at - 1] == slash() {
+        at -= 1
+    }
+    if at == 0 {
+        if p[0] == slash() {
+            return "/"
+        }
+        return ""
+    }
+    return cut(p, 0, at)
+}
+
+// Ext answers the extension of the last element of a path, which is the
+// suffix that begins at its last dot, or the empty string when it has none.
+
+func Ext(p: str) -> str {
+    var n = p.Len()
+    var at = n
+    for at > 0 && p[at - 1] != slash() {
+        if p[at - 1] == dot() {
+            return cut(p, at - 1, n)
+        }
+        at -= 1
+    }
+    return ""
+}
+
+// IsAbs reports whether a path begins at the root, which is what a leading
+// separator names.
+
+func IsAbs(p: str) -> bool {
+    return p.Len() > 0 && p[0] == slash()
+}
+
+// Abs answers the absolute form of a path, which is the path itself when it
+// is absolute and the directory the process runs in joined before it
+// otherwise.
+
+func Abs(p: str) -> Result<str, Error> {
+    if IsAbs(p) {
+        return Result.Ok(Clean(p))
+    }
+    var parts = new Array<str>(0)
+    parts.Push(Dir(Here()))
+    parts.Push(p)
+    return Result.Ok(Clean(Join(parts)))
+}
+
+// Here answers the directory the process runs in.
+
+func Here() -> str {
+    var text = new Buf(0)
+    if c.zyxfs_cwd(text) != 0 {
+        return "."
+    }
+    return text.Str()
+}
+
+// Clean answers the shortest path that names what a path names: the
+// separators and the dots that say nothing are taken out, and every parent
+// that a following element undoes is taken out with its element.
+
+func Clean(p: str) -> str {
+    if p.Len() == 0 {
+        return "."
+    }
+    var rooted = p[0] == slash()
+    var kept = new Array<str>(0)
+    var at: usize = 0
+    for at < p.Len() {
+        var end = at
+        for end < p.Len() && p[end] != slash() {
+            end += 1
+        }
+        var element = cut(p, at, end)
+        at = end + 1
+        if element.Len() == 0 || element == "." {
+            continue
+        }
+        if element == ".." {
+            if kept.Len() > 0 {
+                if kept[kept.Len() - 1] != ".." {
+                    kept.Remove(kept.Len() - 1)
+                    continue
+                }
+            }
+            if rooted {
+                continue
+            }
+        }
+        kept.Push(element)
+    }
+    var out = new Buf(0)
+    if rooted {
+        out.WriteByte(slash())
+    }
+    var i: usize = 0
+    for i < kept.Len() {
+        if i > 0 {
+            out.WriteByte(slash())
+        }
+        write_text(out, kept[i])
+        i += 1
+    }
+    if out.Len() == 0 {
+        return "."
+    }
+    return out.Str()
+}
+
+// cut answers the bytes of a text between two offsets. A view of a string is
+// not something a binding may hold, so the bytes are copied into a text of
+// their own.
+
+func cut(s: str, from: usize, to: usize) -> str {
+    var out = new Buf(to - from)
+    var i = from
+    for i < to {
+        out.WriteByte(s[i])
+        i += 1
+    }
+    return out.Str()
+}
+
+// write_text adds the bytes of a text to a buffer.
+
+func write_text(out: Buf, s: str) {
+    var i: usize = 0
+    for i < s.Len() {
+        out.WriteByte(s[i])
+        i += 1
+    }
+}
+
+// Mmap maps a part of a file into the address space of the process, which a
+// program reads and writes as the bytes of the file itself.
+
+func Mmap(f: File, len: usize, off: u64) -> Result<raw, Error> {
+    if f.Closed { return Result.Err(closed_error()) }
+    var p = c.zyxfs_mmap(f.Handle, len, off)
+    if c.zyxfs_error_kind() != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok(p)
+}
+
+// Munmap gives a mapping back.
+
+func Munmap(p: raw, len: usize) -> Result<(), Error> {
+    if c.zyxfs_munmap(p, len) != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok()
+}

@@ -1,0 +1,114 @@
+package main
+
+import "std/fmt"
+import "std/time"
+
+// Nothing here prints a reading of a clock: a program that did would print a
+// different line every time it ran. What it prints instead is what a
+// constructed moment is, what a difference between two readings of the
+// monotonic clock must be, and how a text reads back.
+// The moment this program is about: the last day of February in a leap year.
+
+const Sample: i64 = 1709207696123456789
+
+const Second: Duration = dur.sec(1)
+
+const Half: Duration = dur.ms(500)
+
+const Pause: Duration = dur.ms(2)
+
+const Zero: Duration = dur.sec(0)
+
+func main() {
+    var t = time.TimeFromUnixNano(Sample)
+    fmt.PrintI64(t.Year())
+    fmt.Print(" ")
+    fmt.PrintI64(t.Month())
+    fmt.Print(" ")
+    fmt.PrintI64(t.Day())
+    fmt.Print(" ")
+    fmt.PrintI64(t.Hour())
+    fmt.Print(" ")
+    fmt.PrintI64(t.Minute())
+    fmt.Print(" ")
+    fmt.PrintI64(t.Second())
+    fmt.Print(" ")
+    fmt.PrintI64(t.Nanosecond())
+    fmt.PrintNl()
+    fmt.Println(t.Format("2006-01-02"))
+    fmt.Println(t.Format("15:04:05"))
+    fmt.Println(t.Format("2006-01-02T15:04:05.000000000Z07:00"))
+    fmt.Println(t.Format("Mon Jan 2 15:04:05 2006"))
+    fmt.Println(t.Format("Monday, January 2, 2006"))
+    fmt.Println(t.Format("03:04:05 PM"))
+    fmt.Println(t.Format("06/1/2 3:4:5 pm"))
+    fmt.Println(t.Format("2006-01-02T15:04:05.999999999"))
+    fmt.Println(t.Format("2006-01-02T15:04:05.000000"))
+    fmt.Println(t.Format("2006-01-02T15:04:05.000"))
+    fmt.Println(t.Format("2006-01-_2"))
+    fmt.Println(time.TimeFromUnixNano(1709207696000000000).Format("2006-01-02T15:04:05.999999999"))
+    fmt.Println(t.Format("nothing to name"))
+    fmt.PrintI64(t.UnixNano())
+    fmt.PrintNl()
+    show("epoch", t.Parse("2006-01-02T15:04:05Z07:00", "1970-01-01T00:00:00Z"))
+    show("leap day", t.Parse("2006-01-02", "2024-02-29"))
+    show("twelve hour", t.Parse("03:04:05 PM", "12:34:56 PM"))
+    show("names", t.Parse("Mon Jan 2 15:04:05 2006", "Thu Feb 29 12:34:56 2024"))
+    show("compact", t.Parse("20060102", "20240229"))
+    show("short year", t.Parse("06-01-02", "24-02-29"))
+    show("offset", t.Parse("2006-01-02T15:04:05-0700", "2024-02-29T12:34:56+0000"))
+    show("fraction", t.Parse("2006-01-02T15:04:05.999999999", "2024-02-29T12:34:56.5"))
+    show("bad month", t.Parse("2006-01-02", "2024-13-01"))
+    show("bad literal", t.Parse("2006-01-02", "2024_02_29"))
+    show("short text", t.Parse("2006-01-02", "2024-02"))
+    show("trailing text", t.Parse("2006-01-02", "2024-02-29x"))
+    show("bad layout", t.Parse("9999", "2024"))
+    show("round trip", t.Parse("2006-01-02T15:04:05.999999999", t.Format("2006-01-02T15:04:05.999999999")))
+    // A reading of the monotonic clock is a value of its own, so the interval
+    // between two readings is the one they were built with.
+    var started = time.Monotonic()
+    fmt.PrintBool(started.UnixNano() > 0)
+    fmt.PrintNl()
+    fmt.Print(fmt.SprintValue(started.Add(Second).Since(started)))
+    fmt.PrintNl()
+    fmt.Print(fmt.SprintValue(started.Since(started)))
+    fmt.PrintNl()
+    fmt.PrintBool(started.Add(Half).UnixNano() > started.UnixNano())
+    fmt.PrintNl()
+    // Sleep suspends the coroutine, and the clock moves on while it is
+    // suspended. A Duration is not compared with an order here, because the
+    // order of two durations is not something this language writes yet, so
+    // the readings themselves are compared.
+    var before = time.Monotonic()
+    time.Sleep(Pause)
+    fmt.PrintBool(time.Monotonic().UnixNano() > before.UnixNano())
+    fmt.PrintNl()
+    fmt.PrintBool(started.Since(started) == Zero)
+    fmt.PrintNl()
+    // The wall clock is read, not printed.
+    var now = time.Now()
+    fmt.PrintBool(now.Year() >= 1970)
+    fmt.Print(" ")
+    fmt.PrintBool(time.UnixNano() > 0)
+    fmt.Print(" ")
+    fmt.PrintBool(time.UnixMilli() > 0)
+    fmt.Print(" ")
+    fmt.PrintBool(now.Format("Z07:00") == "Z")
+    fmt.PrintNl()
+}
+
+// show prints what a parse answered, so a refusal and a moment read the same
+// way as they are compared.
+
+func show(label: str, r: Result<time.Time, time.Error>) {
+    fmt.Print(label)
+    fmt.Print(": ")
+    match r {
+        Ok(v) => fmt.Print(v.Format("2006-01-02T15:04:05.000000000"))
+        Err(e) => match e {
+            InvalidLayout => fmt.Print("invalid layout")
+            InvalidValue => fmt.Print("invalid value")
+        }
+    }
+    fmt.PrintNl()
+}
