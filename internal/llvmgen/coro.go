@@ -29,8 +29,8 @@ func (g *generator) spawn(module string, n *zyxc.Node) *value {
 
 // startedFunction answers the symbol of the ordinary function a call names
 // directly, and whether it names one. A call the program reaches through a
-// value — a function held in a variable or held as a parameter, or a bound
-// method value — answers false, because what is started is that value.
+// value, a function held in a variable or held as a parameter, or a bound
+// method value, answers false, because what is started is that value.
 func (g *generator) startedFunction(call *zyxc.Node) (string, bool) {
 	sym := g.calleeSymbol(g.wrapped(call, "callee"))
 	if sym == "" {

@@ -128,7 +128,7 @@ func (m *module) stringGlobal(s string) string {
 // rather than by its symbol id, because the id of a generic declaration is its
 // package and name alone: Option<Error> and Option<Result<Array<str>,Error>>
 // share an id, and the second would reuse the first one's body while the
-// layout algorithm — which keys by the same canonical text — sized it for
+// layout algorithm, which keys by the same canonical text, sized it for
 // itself. The two disagree about every offset after the first differing field.
 func (g *generator) structName(t *types.Type) string {
 	key := t.Canonical()
