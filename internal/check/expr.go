@@ -382,6 +382,21 @@ func (c *checker) equalityOK(t *types.Type) bool {
 	if t.IsBasic() {
 		return true
 	}
+	if t.Kind == types.KindEnum {
+		// An enum whose variants carry nothing is compared by its tag, which
+		// the language lowers without a declared Eq. One that carries something
+		// compares structurally only through an Eq its declaration provides.
+		d := c.declOf(t)
+		if d == nil {
+			return false
+		}
+		for _, v := range d.Variants {
+			if len(v.Payload) != 0 {
+				return false
+			}
+		}
+		return true
+	}
 	return c.implements(t, types.Eq)
 }
 

@@ -995,6 +995,32 @@ func (g *generator) compare(op string, a, b *value) *value {
 		default:
 			instr = "fcmp o" + pred
 		}
+	case a.typ.Kind == types.KindEnum && (pred == "eq" || pred == "ne"):
+		// An enum whose variants carry nothing is its tag, so equality compares
+		// the two tags: no instruction compares the aggregate a payload would
+		// make of it, and the checker admits only the enums that carry nothing.
+		// An operand that answers with the object's address is read first.
+		left, right := a, b
+		if a.ll == "ptr" {
+			reg := g.newReg()
+			g.emit("  %s = load %s, ptr %s", reg, g.llType(a.typ), a.text)
+			left = &value{text: reg, ll: g.llType(a.typ), typ: a.typ}
+		}
+		if b.ll == "ptr" {
+			reg := g.newReg()
+			g.emit("  %s = load %s, ptr %s", reg, g.llType(b.typ), b.text)
+			right = &value{text: reg, ll: g.llType(b.typ), typ: b.typ}
+		}
+		tag := g.tagType(g.tagSize(a.typ))
+		tags := make([]string, 2)
+		for i, v := range []*value{left, right} {
+			reg := g.newReg()
+			g.emit("  %s = extractvalue %s %s, 0", reg, v.ll, v.text)
+			tags[i] = reg
+		}
+		reg := g.newReg()
+		g.emit("  %s = icmp %s %s %s, %s", reg, pred, tag, tags[0], tags[1])
+		return &value{text: reg, ll: "i1", typ: types.Bool}
 	case pred == "eq" || pred == "ne":
 		// Equality carries no signedness.
 		instr = "icmp " + pred

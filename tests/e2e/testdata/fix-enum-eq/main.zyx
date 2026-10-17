@@ -1,0 +1,23 @@
+package main
+
+// An enum whose variants carry nothing is compared by its tag, so == and !=
+// answer whether the two name the same variant.
+
+import "std/fmt"
+
+enum colour {
+    red
+    green
+    blue
+}
+
+func main() {
+    var a = colour.red
+    var b = colour.green
+    fmt.PrintBool(a == a)
+    fmt.PrintNl()
+    fmt.PrintBool(a == b)
+    fmt.PrintNl()
+    fmt.PrintBool(a != b)
+    fmt.PrintNl()
+}
