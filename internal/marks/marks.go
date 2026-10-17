@@ -305,6 +305,15 @@ func (b *builder) stmt(s ast.Stmt) {
 		b.stmt(v.Body)
 	case *ast.MatchStmt:
 		b.expr(v.Subject)
+		// Every arm reaches what the subject carries, so a value the subject
+		// builds is still in use inside the arms: releasing it where its own
+		// expression ends would take its payload away from them. A value the
+		// program named lives by its binding, so only a temporary is kept here.
+		switch v.Subject.(type) {
+		case *ast.CallExpr, *ast.NewExpr, *ast.AggregateLitExpr, *ast.ArrayLitExpr,
+			*ast.ArrayRepeatExpr, *ast.TupleExpr:
+			b.stored(v.Subject)
+		}
 		for _, arm := range v.Arms {
 			b.expr(arm.Guard)
 			b.stmt(arm.Body)
