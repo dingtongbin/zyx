@@ -30,24 +30,34 @@ static void *new_slot(void) {
 
 void *zyxrt_ctx_thread(void) { return new_slot(); }
 
-void *zyxrt_ctx_new(void *stack, size_t size) {
-  /* The first frame is laid out exactly as the switch restores it: the
-     vector state, then the callee-saved registers, then the address the
-     switch returns to. The stack pointer is aligned so that the entry runs
-     with the alignment the ABI expects after a call. */
+/* The first frame is laid out exactly as the switch restores it: the vector
+   state, then the callee-saved registers, then the address the switch returns
+   to. The stack pointer is aligned so that the entry runs with the alignment the
+   ABI expects after a call. */
+static void slot_reset(void *ctx, void *stack, size_t size) {
   size_t total = zyxrt_ctx_saved_bytes + (zyxrt_ctx_saved_words + 1) * sizeof(void *);
   uintptr_t top = (uintptr_t)stack + size;
-  /* The switch restores the registers with the stack pointer it recorded,
-     so the first frame must sit where a saved one would. */
+  /* The switch restores the registers with the stack pointer it recorded, so
+     the first frame must sit where a saved one would. */
   uintptr_t sp = (top - total) & ~(uintptr_t)15;
   void **words = (void **)(sp + zyxrt_ctx_saved_bytes);
   for (size_t i = 0; i < zyxrt_ctx_saved_words; i++) {
     words[i] = NULL;
   }
   words[zyxrt_ctx_saved_words] = (void *)zyxrt_ctx_enter;
-  void **slot = (void **)new_slot();
-  *slot = (void *)sp;
+  *(void **)ctx = (void *)sp;
+}
+
+void *zyxrt_ctx_new(void *stack, size_t size) {
+  void *slot = new_slot();
+  slot_reset(slot, stack, size);
   return slot;
+}
+
+void *zyxrt_ctx_reset(void *ctx, void *stack, size_t size) {
+  if (ctx == NULL) ctx = new_slot();
+  slot_reset(ctx, stack, size);
+  return ctx;
 }
 
 void zyxrt_ctx_free(void *ctx) { free(ctx); }

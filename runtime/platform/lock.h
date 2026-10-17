@@ -10,7 +10,29 @@
 #ifndef ZYXRUNTIME_LOCK_H
 #define ZYXRUNTIME_LOCK_H
 
+#include <stdatomic.h>
 #include <stddef.h>
+
+/* zyxrt_spin holds a lock over a handful of instructions, which is what a free
+   list shared by the lanes needs: it is taken and released without a system
+   call, and what it guards is a few pointer writes. */
+typedef _Atomic int zyxrt_spin;
+
+static inline void zyxrt_spin_init(zyxrt_spin *s) {
+  atomic_store_explicit(s, 0, memory_order_relaxed);
+}
+
+static inline void zyxrt_spin_hold(zyxrt_spin *s) {
+  int expected = 0;
+  while (!atomic_compare_exchange_weak_explicit(s, &expected, 1,
+                                                memory_order_acquire, memory_order_relaxed)) {
+    expected = 0;
+  }
+}
+
+static inline void zyxrt_spin_drop(zyxrt_spin *s) {
+  atomic_store_explicit(s, 0, memory_order_release);
+}
 
 #if defined(__wasm__)
 

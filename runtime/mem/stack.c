@@ -110,22 +110,12 @@ typedef struct zyxrt_slot {
 static zyxrt_slot *free_slots;
 
 /* The free list is shared by every lane: a coroutine may be started on one
-   thread and released by another, so what hands a slot out and takes one back
-   is a short critical section. What is committed for the stacks of coroutines is
+   thread and released by another, so what hands a slot out and takes one back is
+   a short critical section. What is committed for the stacks of coroutines is
    counted, because that is the number a program that keeps many of them alive
    watches. */
-static _Atomic int slot_lock;
+static zyxrt_spin slot_lock;
 static _Atomic size_t committed_stacks;
-
-static void slot_hold(void) {
-  int expected = 0;
-  while (!atomic_compare_exchange_weak_explicit(&slot_lock, &expected, 1,
-                                                memory_order_acquire, memory_order_relaxed)) {
-    expected = 0;
-  }
-}
-
-static void slot_drop(void) { atomic_store_explicit(&slot_lock, 0, memory_order_release); }
 
 size_t zyxrt_stack_committed(void) {
   return atomic_load_explicit(&committed_stacks, memory_order_relaxed);
@@ -183,16 +173,16 @@ void *zyxrt_stack_map(size_t size, int tier, void **limit) {
   char *stack;
   char *warm_limit;
   zyxrt_slot *s;
-  slot_hold();
+  zyxrt_spin_hold(&slot_lock);
   s = free_slots;
   if (s != NULL) free_slots = s->next;
-  slot_drop();
+  zyxrt_spin_drop(&slot_lock);
   if (s == NULL) {
     stack_run(size, tier);
-    slot_hold();
+    zyxrt_spin_hold(&slot_lock);
     s = free_slots;
     if (s != NULL) free_slots = s->next;
-    slot_drop();
+    zyxrt_spin_drop(&slot_lock);
     if (s == NULL) {
       *limit = NULL;
       return NULL;
@@ -218,10 +208,10 @@ void *zyxrt_stack_map(size_t size, int tier, void **limit) {
 void zyxrt_stack_unmap(void *stack, size_t size, void *limit) {
   zyxrt_slot *s = (zyxrt_slot *)((char *)stack + size - sizeof(zyxrt_slot));
   s->limit = limit;
-  slot_hold();
+  zyxrt_spin_hold(&slot_lock);
   s->next = free_slots;
   free_slots = s;
-  slot_drop();
+  zyxrt_spin_drop(&slot_lock);
 }
 
 /* slot_commit commits more of a slot, which is what a frame that reaches below

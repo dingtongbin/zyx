@@ -522,15 +522,70 @@ void zyxrt_wait_wake(zyxrt_waitlist *list) {
   }
 }
 
+/* A finished coroutine is kept rather than freed, because a program that starts
+   coroutines in a loop otherwise pays the allocator for every one of them: the
+   object is the same shape every time, and so is the word the switch keeps a
+   stack pointer in. The list is shared by the lanes like the stacks are, and it
+   is bounded, so a program that started many coroutines once does not keep their
+   objects for the rest of its life. */
+#define ZYXXRT_CORO_POOL 1024
+
+static zyxrt_coro *pool_free;
+static size_t pool_depth;
+static zyxrt_spin pool_lock;
+
+/* coro_take answers a coroutine to start: one a finished coroutine left behind,
+   with everything it carried cleared, or a new one. */
+static zyxrt_coro *coro_take(void) {
+  void *ctx = NULL;
+  zyxrt_coro *c = NULL;
+  zyxrt_spin_hold(&pool_lock);
+  if (pool_free != NULL) {
+    c = pool_free;
+    pool_free = c->wait_next;
+    pool_depth--;
+  }
+  zyxrt_spin_drop(&pool_lock);
+  if (c != NULL) {
+    /* What the last coroutine left in the object goes, except the context,
+       which is put back on a stack when the next one starts; the region it ran
+       in is gone with it, so the coroutine is given a region of its own rather
+       than the one that may have been released. */
+    ctx = c->ctx;
+    memset(c, 0, sizeof(zyxrt_coro));
+  } else {
+    c = (zyxrt_coro *)calloc(1, sizeof(zyxrt_coro));
+    if (!c) zyxrt_panic("out of memory", 13);
+  }
+  zyxrt_lock_init(&c->lock);
+  c->ctx = ctx;
+  return c;
+}
+
+/* coro_give keeps a finished coroutine for the next one, or gives it up when
+   the pool is full. */
+static void coro_give(zyxrt_coro *c) {
+  zyxrt_spin_hold(&pool_lock);
+  if (pool_depth < ZYXXRT_CORO_POOL) {
+    c->wait_next = pool_free;
+    pool_free = c;
+    pool_depth++;
+    zyxrt_spin_drop(&pool_lock);
+    return;
+  }
+  zyxrt_spin_drop(&pool_lock);
+  if (c->ctx) zyxrt_ctx_free(c->ctx);
+  free(c);
+}
+
 /* free_coro releases a finished coroutine. */
 static void free_coro(zyxrt_coro *c) {
   /* The region that was waiting for this coroutine must not wait for it
      again. */
   zyxrt_region_detach(c->owner_region, c);
-  if (c->ctx) zyxrt_ctx_free(c->ctx);
   if (c->stack) zyxrt_stack_unmap(c->stack, c->stack_size, c->stack_limit);
   free(c->regions);
-  free(c);
+  coro_give(c);
 }
 
 void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg, int tier) {
@@ -538,9 +593,7 @@ void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg, int tier) {
 }
 
 void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, void *watch_recv, int tier) {
-  zyxrt_coro *c = (zyxrt_coro *)calloc(1, sizeof(zyxrt_coro));
-  if (!c) zyxrt_panic("out of memory", 13);
-  zyxrt_lock_init(&c->lock);
+  zyxrt_coro *c = coro_take();
   c->fn = fn;
   c->arg = arg;
   c->watch = watch;
@@ -549,7 +602,7 @@ void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, voi
   c->stack_size = zyxrt_stack_size();
   c->stack = zyxrt_stack_map(c->stack_size, tier, &c->stack_limit);
   if (!c->stack) zyxrt_panic("out of memory", 13);
-  c->ctx = zyxrt_ctx_new(c->stack, c->stack_size);
+  c->ctx = zyxrt_ctx_reset(c->ctx, c->stack, c->stack_size);
   /* The region the spawner is running in waits for this coroutine before it
      releases its memory, so the coroutine never reads freed storage. */
   zyxrt_region_adopt(zyxrt_region_current(), c);

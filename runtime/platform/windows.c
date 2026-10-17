@@ -68,6 +68,13 @@ void *zyxrt_ctx_new(void *stack, size_t size) {
   return CreateFiber(size, (LPFIBER_START_ROUTINE)zyxrt_sched_enter, NULL);
 }
 
+/* A fiber is not given a stack again once it has run, so a context that goes
+   back on a stack is a new one and the old is given up. */
+void *zyxrt_ctx_reset(void *ctx, void *stack, size_t size) {
+  if (ctx != NULL) DeleteFiber(ctx);
+  return zyxrt_ctx_new(stack, size);
+}
+
 void zyxrt_ctx_switch(void *from, void *to) {
   (void)from;
   SwitchToFiber(to);

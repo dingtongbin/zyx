@@ -7,6 +7,7 @@
 #include "zyxrt_internal.h"
 
 #include <stdlib.h>
+#include <string.h>
 #include <ucontext.h>
 
 /* A context is a ucontext_t plus the scheduler context it returns to. */
@@ -18,8 +19,16 @@ typedef struct zyxrt_posix_ctx {
 void *zyxrt_ctx_thread(void) { return NULL; }
 
 void *zyxrt_ctx_new(void *stack, size_t size) {
-  zyxrt_posix_ctx *c = (zyxrt_posix_ctx *)calloc(1, sizeof(zyxrt_posix_ctx));
-  if (!c) zyxrt_panic("out of memory", 13);
+  return zyxrt_ctx_reset(NULL, stack, size);
+}
+
+void *zyxrt_ctx_reset(void *ctx, void *stack, size_t size) {
+  zyxrt_posix_ctx *c = (zyxrt_posix_ctx *)ctx;
+  if (c == NULL) {
+    c = (zyxrt_posix_ctx *)calloc(1, sizeof(zyxrt_posix_ctx));
+    if (!c) zyxrt_panic("out of memory", 13);
+  }
+  memset(c, 0, sizeof(zyxrt_posix_ctx));
   getcontext(&c->self);
   c->self.uc_stack.ss_sp = stack;
   c->self.uc_stack.ss_size = size;

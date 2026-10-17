@@ -192,6 +192,11 @@ typedef struct zyxrt_coro {
    whatever the platform's own facility needs. */
 void *zyxrt_ctx_thread(void);
 void *zyxrt_ctx_new(void *stack, size_t size);
+/* zyxrt_ctx_reset puts a context back on a stack, so a coroutine whose object a
+   program kept can run again without asking the system for a context. It answers
+   the context to use: the one it was given, wherever a platform lets a context
+   be reused, and a new one where it does not or where there is none yet. */
+void *zyxrt_ctx_reset(void *ctx, void *stack, size_t size);
 /* zyxrt_sched_enter is where a coroutine begins. */
 void zyxrt_sched_enter(void);
 void zyxrt_ctx_switch(void *from, void *to);
