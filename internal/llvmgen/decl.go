@@ -521,10 +521,10 @@ func (g *generator) function(module string, n *zyxc.Node) {
 		}
 		body = zyxc.New("block").Child(zyxc.New("return").Child(bodyExpr))
 	}
-	if g.m.defined[symbol] {
+	if _, ok := g.m.defined[symbol]; ok {
 		return
 	}
-	g.m.defined[symbol] = true
+	g.m.defined[symbol] = n.Pos
 
 	g.fn = &funcState{symbol: symbol, vars: map[string]*varSlot{}, result: result}
 	g.fn.entry = g.newLabel("entry")

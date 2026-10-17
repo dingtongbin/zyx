@@ -231,7 +231,34 @@ func TestForeignFaultIsReported(t *testing.T) {
 	if strings.Contains(stdout, "after") {
 		t.Errorf("standard output =\n%s\nwant it to stop where the fault is", stdout)
 	}
-	for _, want := range []string{"fatal:", "frames:", "example.com/program.main"} {
+	for _, want := range []string{"fatal:", "frames:", "  at ", "example.com/program.main"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("standard error =\n%s\nwant it to hold %q", stderr, want)
+		}
+	}
+}
+
+// TestPanicReportNamesTheStack checks the shape of a panic report: the message
+// first, then one line per frame from the inside out, each naming the function
+// and where it was declared. The frames are taken where the panic is raised,
+// because the stack a panic unwinds is gone by the time it is reported.
+func TestPanicReportNamesTheStack(t *testing.T) {
+	if _, err := toolchain.Locate(); err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	writeProgram(t, dir, "package main\n\nimport \"std/fmt\"\n\n"+
+		"func divide(a: i64, b: i64) -> i64 {\n\treturn a / b\n}\n\n"+
+		"func main() {\n\tfmt.Println(\"before\")\n\tfmt.PrintI64(divide(1, 0))\n}\n")
+	stdout, stderr, code := run(dir, "run", "./...")
+	if code != 101 {
+		t.Errorf("the process ended with %d, want 101\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "before") {
+		t.Errorf("standard output =\n%s\nwant it to hold %q", stdout, "before")
+	}
+	for _, want := range []string{"panic: division by zero", "  at ", "main.zyx:", "example.com/program.main"} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("standard error =\n%s\nwant it to hold %q", stderr, want)
 		}

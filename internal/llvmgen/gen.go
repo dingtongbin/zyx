@@ -270,11 +270,12 @@ func (g *generator) run() {
 
 // emitFrames emits the table a fault report reads to name the functions a stack
 // passed through: one entry per function this module defined, holding its
-// address and its name, and a constructor that registers the table before the
-// program runs. The names are the symbols, which is what the report shows; a
-// module that carries its own names needs no debug information to be installed
-// and no tool to be found. The table is ordered by name, so that a module built
-// twice is byte for byte the same.
+// address, its name, and where it was declared. The names are the symbols,
+// which is what the report shows, and the positions come from the front end,
+// which records where every node came from. A module that carries its own names
+// and positions needs no debug information to be installed and no tool to be
+// found. The table is ordered by name, so that a module built twice is byte for
+// byte the same.
 func (g *generator) emitFrames() {
 	if g.err != nil || len(g.m.defined) == 0 {
 		return
@@ -286,13 +287,14 @@ func (g *generator) emitFrames() {
 	sort.Strings(names)
 	g.declareRuntime("zyxrt_frames_register", "void", "ptr", "i64")
 	var body strings.Builder
-	fmt.Fprintf(&body, "@zyx.frames = internal constant [%d x { ptr, ptr }] [\n", len(names))
+	fmt.Fprintf(&body, "@zyx.frames = internal constant [%d x { ptr, ptr, ptr }] [\n", len(names))
 	for i, symbol := range names {
 		comma := ","
 		if i == len(names)-1 {
 			comma = ""
 		}
-		fmt.Fprintf(&body, "  { ptr, ptr } { ptr @%s, ptr %s }%s\n", llvmName(symbol), g.m.stringGlobal(symbol), comma)
+		fmt.Fprintf(&body, "  { ptr, ptr, ptr } { ptr @%s, ptr %s, ptr %s }%s\n",
+			llvmName(symbol), g.m.stringGlobal(symbol), g.m.stringGlobal(g.m.defined[symbol]), comma)
 	}
 	body.WriteString("]\n")
 	body.WriteString("define internal void @zyx.frames.init() {\n")

@@ -29,8 +29,10 @@ type module struct {
 	strs map[string]string
 	// declared records the external symbols already declared.
 	declared map[string]bool
-	// defined records the symbols already defined.
-	defined map[string]bool
+	// defined records the functions the module defines, by symbol, and the
+	// source position each was declared at, which is what a report of a
+	// fault names them with.
+	defined map[string]string
 	// globalInits holds the top-level initializers that are not constants.
 	globalInits []globalInit
 	// ifaceTables maps a concrete type and an interface onto the name of the
@@ -52,7 +54,7 @@ func newModule(target string) *module {
 		strs:        map[string]string{},
 		ifaceTables: map[string]string{},
 		declared:    map[string]bool{},
-		defined:     map[string]bool{},
+		defined:     map[string]string{},
 		receivers:   map[string]string{},
 	}
 }

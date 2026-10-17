@@ -1,1 +1,5 @@
 panic: bang
+  at main.zyx:19:1-22:2 example.com/defers.boom
+  at main.zyx:19:1-22:2 example.com/defers.boom
+  at main.zyx:24:1-31:2 example.com/defers.main
+  at main.zyx:24:1-31:2 example.com/defers.main

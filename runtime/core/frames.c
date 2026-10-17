@@ -17,7 +17,6 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unwind.h>
 
 #if defined(_WIN32)
 
@@ -41,6 +40,7 @@ static int in_program(uintptr_t address) {
 
 #include <dlfcn.h>
 #include <unistd.h>
+#include <unwind.h>
 
 static void report_write(const char *text, size_t length) {
   ssize_t written = write(2, text, length);
@@ -78,12 +78,12 @@ void zyxrt_frames_register(const zyxrt_frame *frames, size_t count) {
   tables[at].count = count;
 }
 
-/* frame_name answers the name of the function an address falls in: of the
-   functions at or below it, the nearest one. Only addresses the program's own
-   file holds are named, because that is what the tables describe. A program has
-   a few thousand functions, so a walk is the right shape for a report. */
-static const char *frame_name(uintptr_t address) {
-  const char *best = NULL;
+/* frame_entry answers the table entry of the function an address falls in: of
+   the functions at or below it, the nearest one. Only addresses the program's
+   own file holds are named, because that is what the tables describe. A program
+   has a few thousand functions, so a walk is the right shape for a report. */
+static const zyxrt_frame *frame_entry(uintptr_t address) {
+  const zyxrt_frame *best = NULL;
   uintptr_t best_at = 0;
   size_t count;
   if (!in_program(address)) return NULL;
@@ -96,17 +96,12 @@ static const char *frame_name(uintptr_t address) {
       uintptr_t at = (uintptr_t)frames[j].address;
       if (at == 0 || at > address) continue;
       if (best == NULL || at > best_at) {
-        best = frames[j].name;
+        best = &frames[j];
         best_at = at;
       }
     }
   }
   return best;
-}
-
-const char *zyxrt_frame_name(void *address) {
-  if (address == NULL) return NULL;
-  return frame_name((uintptr_t)address);
 }
 
 static void write_text(const char *text) { report_write(text, strlen(text)); }
@@ -130,25 +125,98 @@ static void write_name(const char *name) {
   write_text(name);
 }
 
-/* frame_step writes one frame of the stack the report walks. The unwinder stops
-   at the end of the stack it is given, which for a coroutine is the end of that
-   coroutine's own stack. A frame whose module was built with line information
-   carries a name; one that was not is written as the address it is. */
+#if defined(_WIN32)
+
+/* Windows walks a stack from the unwind data of the executable itself. It says
+   nothing about a frame it cannot unwind and finds none that is not there, which
+   is what a report needs: the frames it can read are the frames it names. Two
+   frames of the walk are skipped, this function and the report that called it.
+   The walk ends where the report can no longer name what it sees, so that a
+   report of a panic is the program's own frames and nothing of the runtime it
+   runs on. */
+size_t zyxrt_frames_capture(void **out, size_t max, void *above) {
+  size_t got;
+  size_t named = 0;
+  (void)above;
+  got = (size_t)CaptureStackBackTrace(2, (DWORD)max, out, NULL);
+  while (named < got && frame_entry((uintptr_t)out[named]) != NULL) {
+    named++;
+  }
+  return named;
+}
+
+#else
+
+/* A walk records the addresses of the frames outside the marker the caller
+   named, innermost first. The unwinder stops at the end of the stack it is
+   given, which for a coroutine is the end of that coroutine's own stack. */
+typedef struct zyxrt_walk {
+  void **out;
+  size_t max;
+  size_t count;
+  void *above;
+  int passed;
+} zyxrt_walk;
+
 static _Unwind_Reason_Code frame_step(struct _Unwind_Context *ctx, void *arg) {
-  int *depth = (int *)arg;
-  if (*depth >= 32) return _URC_END_OF_STACK;
+  zyxrt_walk *walk = (zyxrt_walk *)arg;
   uintptr_t at = (uintptr_t)_Unwind_GetIP(ctx);
   if (at == 0) return _URC_END_OF_STACK;
-  write_text("  ");
-  write_name(frame_name(at));
-  write_text("  at ");
-  write_hex(at);
-  write_text("\n");
-  (*depth)++;
+  if (walk->above != NULL && !walk->passed) {
+    /* The frame that holds the marker is the caller's own, so it and the frames
+       inside it are the report rather than the program it reports on. */
+    if ((uintptr_t)_Unwind_GetCFA(ctx) <= (uintptr_t)walk->above) {
+      return _URC_NO_REASON;
+    }
+    walk->passed = 1;
+    return _URC_NO_REASON;
+  }
+  /* The walk ends where the report can no longer name what it sees, so that a
+     report of a panic is the program's own frames and nothing of the runtime it
+     runs on. */
+  if (frame_entry(at) == NULL) return _URC_END_OF_STACK;
+  if (walk->count >= walk->max) return _URC_END_OF_STACK;
+  walk->out[walk->count++] = (void *)at;
   return _URC_NO_REASON;
 }
 
+size_t zyxrt_frames_capture(void **out, size_t max, void *above) {
+  zyxrt_walk walk = {out, max, 0, above, 0};
+  _Unwind_Backtrace(frame_step, &walk);
+  return walk.count;
+}
+
+#endif
+
+/* write_frame writes one frame: the position the function was declared at and
+   its name. The walk ends before a frame the program cannot name, so every
+   frame a report writes is one it knows. */
+static void write_frame(uintptr_t at) {
+  const zyxrt_frame *entry = frame_entry(at);
+  write_text("  at ");
+  if (entry != NULL && entry->where != NULL && entry->where[0] != '\0') {
+    write_text(entry->where);
+  } else {
+    write_text("<unknown>");
+  }
+  write_text(" ");
+  write_name(entry != NULL ? entry->name : NULL);
+  write_text("\n");
+}
+
+void zyxrt_frames_print(void *const *frames, size_t count) {
+  for (size_t i = 0; i < count; i++) {
+    write_frame((uintptr_t)frames[i]);
+  }
+}
+
 void zyxrt_fatal_report(const char *what, void *address, void *sp) {
+  /* A fault is reported where the fault is, with the frames that led to it
+     still on the stack, so the walk needs no marker to find them: a handler a
+     system calls has its own way of arriving, and the frames a panic takes are
+     the ones it walks while nothing has been unwound yet. */
+  void *frames[32];
+  size_t count;
   zyxrt_coro *self = zyxrt_sched_current();
   write_text("\nfatal: ");
   write_text(what);
@@ -168,11 +236,9 @@ void zyxrt_fatal_report(const char *what, void *address, void *sp) {
     if (self->root) write_text(" (the program's own)");
     write_text("\n");
   }
+  count = zyxrt_frames_capture(frames, sizeof frames / sizeof frames[0], NULL);
   write_text("frames:\n");
-  {
-    int depth = 0;
-    _Unwind_Backtrace(frame_step, &depth);
-  }
+  zyxrt_frames_print(frames, count);
   write_text("\n");
   _exit(101);
 }

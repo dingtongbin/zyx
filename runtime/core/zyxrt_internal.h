@@ -292,20 +292,28 @@ void zyxrt_preempt_stop(void);
    coroutine panicked, and nothing otherwise. */
 int zyxrt_panic_code(void);
 
-/* A frame of the table a module registers: the address of a function it defined
-   and the name that function has in the source. The compiler emits one table per
-   module and registers it before the program runs, which is what lets a fault
-   that cannot be unwound be reported with the names of the functions it passed
-   through, with no tool to find and no debug information to parse. */
+/* A frame of the table a module registers: the address of a function it defined,
+   the name that function has in the source, and where it was declared. The
+   compiler emits one table per module and registers it before the program runs,
+   which is what lets a report be written with the names of the functions a stack
+   passed through, with no tool to find and no debug information to parse. */
 typedef struct zyxrt_frame {
   void *address;
   const char *name;
+  const char *where;
 } zyxrt_frame;
 
 void zyxrt_frames_register(const zyxrt_frame *frames, size_t count);
-/* zyxrt_frame_name answers the name of the function an address falls in, or NULL
-   when no table holds it. */
-const char *zyxrt_frame_name(void *address);
+/* zyxrt_frames_capture walks the calling stack and records the addresses of the
+   frames outside the given marker, which is a local of the caller: the frames at
+   or below it belong to the report rather than to the program. A panic takes its
+   frames this way because the stack it unwinds is gone by the time the panic is
+   reported. It answers how many addresses it recorded. */
+size_t zyxrt_frames_capture(void **out, size_t max, void *above);
+/* zyxrt_frames_print writes one line per frame, innermost first, in the shape the
+   command line documents: the position a function was declared at, or its
+   address when the program does not carry it, and its name. */
+void zyxrt_frames_print(void *const *frames, size_t count);
 /* zyxrt_fatal_report reports a fault the program cannot continue from: what
    happened, where, which coroutine it happened in, and the functions the stack
    passed through. It does not return. */

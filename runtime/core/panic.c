@@ -15,11 +15,15 @@
 #include <unwind.h>
 
 /* The exception a panic raises. The message is copied, so it outlives the
-   region the panicking coroutine owned. */
+   region the panicking coroutine owned, and the frames are taken for the same
+   reason: the stack they are taken from is unwound before the panic is
+   reported. */
 typedef struct zyxrt_panic {
   struct _Unwind_Exception exc;
   char *message;
   size_t length;
+  void *frames[32];
+  size_t frames_count;
 } zyxrt_exception;
 
 /* The exception class, which spells ZYXPANIC. */
@@ -45,6 +49,12 @@ void zyxrt_panic(const char *msg, size_t len) {
   p->length = len;
   p->exc.exception_class = ZYXXRT_PANIC_CLASS;
   p->exc.exception_cleanup = NULL;
+  {
+    /* The stack this panic came from is about to be unwound, so its frames are
+       taken now, while it is whole, and named when the panic is reported. */
+    int marker = 0;
+    p->frames_count = zyxrt_frames_capture(p->frames, 32, &marker);
+  }
   _Unwind_ForcedUnwind(&p->exc, panic_stop, p);
   /* panic_stop never returns. */
   abort();
@@ -72,6 +82,8 @@ static _Unwind_Reason_Code panic_stop(int version, _Unwind_Action actions,
   fwrite(p->message, 1, p->length, stderr);
   fputc('\n', stderr);
   fflush(stderr);
+  /* The frames were taken where the panic was raised, innermost first. */
+  zyxrt_frames_print(p->frames, p->frames_count);
   /* A panic leaves every enclosing region, so every pending call runs. */
   zyxrt_defer_run(NULL);
   zyxrt_coro *self = zyxrt_sched_current();
