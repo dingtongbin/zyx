@@ -107,14 +107,17 @@ func escapeBytes(data []byte) string {
 	return b.String()
 }
 
-// stringGlobal interns a string literal and returns its global name.
+// stringGlobal interns a string literal and returns its global name. The
+// literal carries a zero byte after it, because the runtime reads a symbol and a
+// position as a C string: without it a report would run into the literal that
+// follows in memory and print them joined.
 func (m *module) stringGlobal(s string) string {
 	if name, ok := m.strs[s]; ok {
 		return name
 	}
 	name := fmt.Sprintf("@.str.%d", len(m.globals))
 	m.strs[s] = name
-	data := []byte(s)
+	data := append([]byte(s), 0)
 	m.globals = append(m.globals,
 		fmt.Sprintf("%s = private unnamed_addr constant [%d x i8] c\"%s\"\n", name, len(data), escapeBytes(data)))
 	return name
