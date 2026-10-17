@@ -29,17 +29,17 @@ struct Error {
 
 // EXACT_LIMIT is the largest integer a double holds exactly. A whole number
 // beyond it cannot come back as the integer it was written as.
-const EXACT_LIMIT_INT: i64 = 9007199254740992
+const exact_limit_int: i64 = 9007199254740992
 
 // The shapes a bare value can turn out to have.
-const VALUE_INVALID: i32 = 0
-const VALUE_BOOL: i32 = 1
-const VALUE_INTEGER: i32 = 2
-const VALUE_FLOAT: i32 = 3
-const VALUE_DATETIME: i32 = 4
+const value_invalid: i32 = 0
+const value_bool: i32 = 1
+const value_integer: i32 = 2
+const value_float: i32 = 3
+const value_datetime: i32 = 4
 
-const LF: u8 = 10
-const CR: u8 = 13
+const lf: u8 = 10
+const cr: u8 = 13
 
 // code is the byte an ASCII character stands for.
 func code(ch: char) -> u8 {
@@ -196,7 +196,7 @@ struct Parser {
     func skip_ws() {
         for !self.at_end() {
             var b = self.peek()
-            if b == code(' ') || b == code('\t') || b == CR {
+            if b == code(' ') || b == code('\t') || b == cr {
                 self.pos += 1
             } else {
                 return
@@ -209,7 +209,7 @@ struct Parser {
         if !self.is_at(code('#')) {
             return
         }
-        for !self.at_end() && self.peek() != LF {
+        for !self.at_end() && self.peek() != lf {
             self.pos += 1
         }
     }
@@ -218,11 +218,11 @@ struct Parser {
     // consumes the line feed.
     func finish_line() -> Result<(), Error> {
         self.skip_ws()
-        if !self.at_end() && self.peek() != LF && self.peek() != code('#') {
+        if !self.at_end() && self.peek() != lf && self.peek() != code('#') {
             return Result.Err(self.error(self.pos, "unexpected text after the entry"))
         }
         self.skip_comment()
-        if self.is_at(LF) {
+        if self.is_at(lf) {
             self.pos += 1
         }
         return Result.Ok()
@@ -236,7 +236,7 @@ struct Parser {
                 break
             }
             var b = self.peek()
-            if b == LF {
+            if b == lf {
                 self.pos += 1
                 continue
             }
@@ -586,14 +586,14 @@ struct Parser {
             return self.parse_datetime(at, text)
         }
         var kind = number_kind(text)
-        if kind == VALUE_INTEGER {
+        if kind == value_integer {
             var v = try self.parse_integer(at, text)
-            if v > EXACT_LIMIT_INT || v < -EXACT_LIMIT_INT {
+            if v > exact_limit_int || v < -exact_limit_int {
                 return Result.Err(self.error(at, "the integer cannot be held exactly"))
             }
             return Result.Ok(Value.Num(f64(v)))
         }
-        if kind == VALUE_FLOAT {
+        if kind == value_float {
             var v = try self.parse_float(at, text)
             return Result.Ok(Value.Num(v))
         }
@@ -915,7 +915,7 @@ struct Parser {
                 self.pos += 1
                 return Result.Ok(out.Str())
             }
-            if b == LF {
+            if b == lf {
                 return Result.Err(self.error(at, "the string is never closed"))
             }
             if b == code('\\') {
@@ -943,7 +943,7 @@ struct Parser {
                 self.pos += 1
                 return Result.Ok(out.Str())
             }
-            if b == LF {
+            if b == lf {
                 return Result.Err(self.error(at, "the string is never closed"))
             }
             if b < 0x20 || b == 0x7F {
@@ -959,15 +959,15 @@ struct Parser {
     func parse_multiline_basic() -> Result<str, Error> {
         var at = self.pos
         self.pos += 3
-        if self.is_at(LF) {
+        if self.is_at(lf) {
             self.pos += 1
-        } else if self.is_at(CR) && self.pos + 1 < self.src.Len() && self.src[self.pos + 1] == LF {
+        } else if self.is_at(cr) && self.pos + 1 < self.src.Len() && self.src[self.pos + 1] == lf {
             self.pos += 2
         }
         var out = new Buf(0)
         for !self.at_end() {
-            if self.src[self.pos] == CR && self.pos + 1 < self.src.Len() && self.src[self.pos + 1] == LF {
-                out.WriteByte(LF)
+            if self.src[self.pos] == cr && self.pos + 1 < self.src.Len() && self.src[self.pos + 1] == lf {
+                out.WriteByte(lf)
                 self.pos += 2
                 continue
             }
@@ -995,7 +995,7 @@ struct Parser {
                 try self.parse_escape(out)
                 continue
             }
-            if (b < 0x20 && b != LF && b != code('\t')) || b == 0x7F {
+            if (b < 0x20 && b != lf && b != code('\t')) || b == 0x7F {
                 return Result.Err(self.error(self.pos, "a control byte stands in the string"))
             }
             out.WriteByte(b)
@@ -1013,11 +1013,11 @@ struct Parser {
         var saw_end = false
         for !self.at_end() {
             var b = self.peek()
-            if b == code(' ') || b == code('\t') || b == CR {
+            if b == code(' ') || b == code('\t') || b == cr {
                 self.pos += 1
                 continue
             }
-            if b == LF {
+            if b == lf {
                 saw_end = true
                 self.pos += 1
                 continue
@@ -1037,15 +1037,15 @@ struct Parser {
     func parse_multiline_literal() -> Result<str, Error> {
         var at = self.pos
         self.pos += 3
-        if self.is_at(LF) {
+        if self.is_at(lf) {
             self.pos += 1
-        } else if self.is_at(CR) && self.pos + 1 < self.src.Len() && self.src[self.pos + 1] == LF {
+        } else if self.is_at(cr) && self.pos + 1 < self.src.Len() && self.src[self.pos + 1] == lf {
             self.pos += 2
         }
         var out = new Buf(0)
         for !self.at_end() {
-            if self.src[self.pos] == CR && self.pos + 1 < self.src.Len() && self.src[self.pos + 1] == LF {
-                out.WriteByte(LF)
+            if self.src[self.pos] == cr && self.pos + 1 < self.src.Len() && self.src[self.pos + 1] == lf {
+                out.WriteByte(lf)
                 self.pos += 2
                 continue
             }
@@ -1063,7 +1063,7 @@ struct Parser {
                 return Result.Ok(out.Str())
             }
             var b = self.peek()
-            if (b < 0x20 && b != LF && b != code('\t')) || b == 0x7F {
+            if (b < 0x20 && b != lf && b != code('\t')) || b == 0x7F {
                 return Result.Err(self.error(self.pos, "a control byte stands in the string"))
             }
             out.WriteByte(b)
@@ -1090,7 +1090,7 @@ struct Parser {
             return Result.Ok()
         }
         if b == code('n') {
-            out.WriteByte(LF)
+            out.WriteByte(lf)
             return Result.Ok()
         }
         if b == code('f') {
@@ -1098,7 +1098,7 @@ struct Parser {
             return Result.Ok()
         }
         if b == code('r') {
-            out.WriteByte(CR)
+            out.WriteByte(cr)
             return Result.Ok()
         }
         if b == code('"') {
@@ -1182,7 +1182,7 @@ struct Parser {
     func skip_array_space() {
         for !self.at_end() {
             var b = self.peek()
-            if b == code(' ') || b == code('\t') || b == CR || b == LF {
+            if b == code(' ') || b == code('\t') || b == cr || b == lf {
                 self.pos += 1
                 continue
             }
@@ -1242,7 +1242,7 @@ struct Parser {
 
 // is_value_end reports whether a byte ends a bare value.
 func is_value_end(b: u8) -> bool {
-    if b == code(' ') || b == code('\t') || b == LF || b == CR {
+    if b == code(' ') || b == code('\t') || b == lf || b == cr {
         return true
     }
     return b == code(',') || b == code(']') || b == code('}') || b == code('#')
@@ -1255,7 +1255,7 @@ func after_line_end(src: str, at: usize) -> bool {
         return false
     }
     var b = src[at]
-    if b == LF || b == CR || b == code(' ') || b == code('\t') {
+    if b == lf || b == cr || b == code(' ') || b == code('\t') {
         return true
     }
     return false
@@ -1293,25 +1293,25 @@ func decimal(text: str, from: usize, count: usize) -> i32 {
 // number_kind answers what the shape of a bare number says it is.
 func number_kind(text: str) -> i32 {
     if text.Len() == 0 {
-        return VALUE_INVALID
+        return value_invalid
     }
     if text == "inf" || text == "+inf" || text == "-inf" {
-        return VALUE_FLOAT
+        return value_float
     }
     if text == "nan" || text == "+nan" || text == "-nan" {
-        return VALUE_FLOAT
+        return value_float
     }
     var i: usize = 0
     if text[0] == code('-') || text[0] == code('+') {
         i = 1
     }
     if i >= text.Len() {
-        return VALUE_INVALID
+        return value_invalid
     }
     if i + 1 < text.Len() && text[i] == code('0') {
         var prefix = text[i + 1]
         if prefix == code('x') || prefix == code('o') || prefix == code('b') {
-            return VALUE_INTEGER
+            return value_integer
         }
     }
     var is_float = false
@@ -1337,15 +1337,15 @@ func number_kind(text: str) -> i32 {
             i += 1
             continue
         }
-        return VALUE_INVALID
+        return value_invalid
     }
     if digits == 0 {
-        return VALUE_INVALID
+        return value_invalid
     }
     if is_float {
-        return VALUE_FLOAT
+        return value_float
     }
-    return VALUE_INTEGER
+    return value_integer
 }
 
 // scale answers the double a whole mantissa and a power of ten stand for. A

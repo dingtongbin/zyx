@@ -34,11 +34,11 @@ struct Error {
     }
 }
 
-// EXACT_LIMIT_INT is the largest integer a double holds exactly.
-const EXACT_LIMIT_INT: i64 = 9007199254740992
+// exact_limit_int is the largest integer a double holds exactly.
+const exact_limit_int: i64 = 9007199254740992
 
-const LF: u8 = 10
-const CR: u8 = 13
+const lf: u8 = 10
+const cr: u8 = 13
 
 func code(ch: char) -> u8 {
     return u8(u32(ch))
@@ -60,10 +60,6 @@ func hex_value(b: u8) -> u32 {
         return u32(b - code('A')) + 10
     }
     return u32(b - code('a')) + 10
-}
-
-func is_letter(b: u8) -> bool {
-    return (b >= code('a') && b <= code('z')) || (b >= code('A') && b <= code('Z'))
 }
 
 func is_space(b: u8) -> bool {
@@ -92,24 +88,6 @@ func write_char(out: Buf, cp: u32) {
     out.WriteByte(u8(0x80 | ((cp >> 12) & 0x3F)))
     out.WriteByte(u8(0x80 | ((cp >> 6) & 0x3F)))
     out.WriteByte(u8(0x80 | (cp & 0x3F)))
-}
-
-func write_usize(out: Buf, v: usize) {
-    if v == 0 {
-        out.WriteByte(code('0'))
-        return
-    }
-    var digits = new Array<u8>(0)
-    var n = v
-    for n > 0 {
-        digits.Push(u8(48 + (n % 10)))
-        n = n / 10
-    }
-    var i = digits.Len()
-    for i > 0 {
-        i -= 1
-        out.WriteByte(digits[i])
-    }
 }
 
 // trim_right answers a text without the spaces at its end.
@@ -159,17 +137,17 @@ func is_dash_line(text: str) -> bool {
     return text.Len() == 1 || is_space(text[1])
 }
 
-// NO_COLON says that a line is not a mapping entry.
-const NO_COLON: usize = ~usize(0)
+// no_colon says that a line is not a mapping entry.
+const no_colon: usize = ~usize(0)
 
 // entry_colon answers the index of the ':' that separates a key from its value,
-// or NO_COLON when the line is not a mapping entry.
+// or no_colon when the line is not a mapping entry.
 func entry_colon(text: str) -> usize {
     if text.Len() == 0 {
-        return NO_COLON
+        return no_colon
     }
     if text[0] == code('?') && (text.Len() == 1 || is_space(text[1])) {
-        return NO_COLON
+        return no_colon
     }
     var i: usize = 0
     if text[0] == code('"') || text[0] == code('\'') {
@@ -185,7 +163,7 @@ func entry_colon(text: str) -> usize {
         if i < text.Len() && text[i] == code(':') {
             return i
         }
-        return NO_COLON
+        return no_colon
     }
     for i < text.Len() {
         var ch = text[i]
@@ -193,11 +171,11 @@ func entry_colon(text: str) -> usize {
             return i
         }
         if ch == code('#') || ch == code('[') || ch == code(']') || ch == code('{') || ch == code('}') || ch == code(',') {
-            return NO_COLON
+            return no_colon
         }
         i += 1
     }
-    return NO_COLON
+    return no_colon
 }
 
 // Parser reads a document. The line the parser stands on is held apart from the
@@ -240,11 +218,11 @@ struct Parser {
             return Result.Err(self.error(i, "a tab cannot stand where the indentation does"))
         }
         var end = i
-        for end < self.src.Len() && self.src[end] != LF {
+        for end < self.src.Len() && self.src[end] != lf {
             end += 1
         }
         var stop = end
-        if stop > i && self.src[stop - 1] == CR {
+        if stop > i && self.src[stop - 1] == cr {
             stop -= 1
         }
         self.line.Reset()
@@ -288,7 +266,7 @@ struct Parser {
         if is_dash_line(self.text()) {
             return self.sequence(self.indent)
         }
-        if entry_colon(self.text()) != NO_COLON {
+        if entry_colon(self.text()) != no_colon {
             return self.mapping(self.indent)
         }
         return self.inline(self.text())
@@ -312,13 +290,13 @@ struct Parser {
         if rest.Len() == 0 {
             return self.node(indent + 1)
         }
-        if entry_colon(rest) == NO_COLON {
+        if entry_colon(rest) == no_colon {
             return self.inline(rest)
         }
         var table = new Map<str, Value>()
         var key_indent = indent + 2
         try self.entry(table, rest, key_indent)
-        for self.has_line && self.indent == key_indent && entry_colon(self.text()) != NO_COLON {
+        for self.has_line && self.indent == key_indent && entry_colon(self.text()) != no_colon {
             var text = self.text()
             try self.advance()
             try self.entry(table, text, key_indent)
@@ -329,7 +307,7 @@ struct Parser {
     // mapping reads the entries of a block mapping.
     func mapping(indent: usize) -> Result<Value, Error> {
         var table = new Map<str, Value>()
-        for self.has_line && self.indent == indent && entry_colon(self.text()) != NO_COLON {
+        for self.has_line && self.indent == indent && entry_colon(self.text()) != no_colon {
             var text = self.text()
             try self.advance()
             try self.entry(table, text, indent)
@@ -461,7 +439,7 @@ struct Parser {
             var first = true
             for text in lines {
                 if !first {
-                    body.WriteByte(LF)
+                    body.WriteByte(lf)
                 }
                 body.WriteStr(text)
                 first = false
@@ -472,7 +450,7 @@ struct Parser {
             var after_break = false
             for text in lines {
                 if text.Len() == 0 {
-                    body.WriteByte(LF)
+                    body.WriteByte(lf)
                     after_break = true
                     first = false
                     previous_more = false
@@ -481,7 +459,7 @@ struct Parser {
                 var more = text[0] == code(' ')
                 if !first && !after_break {
                     if more || previous_more {
-                        body.WriteByte(LF)
+                        body.WriteByte(lf)
                     } else {
                         body.WriteByte(code(' '))
                     }
@@ -494,7 +472,7 @@ struct Parser {
         }
         var content = body.Str()
         var end = content.Len()
-        for end > 0 && content[end - 1] == LF {
+        for end > 0 && content[end - 1] == lf {
             end -= 1
         }
         var clipped = content[0 .. end]
@@ -506,7 +484,7 @@ struct Parser {
             kept.WriteStr(clipped)
             var k: usize = 0
             for k < trailing + 1 {
-                kept.WriteByte(LF)
+                kept.WriteByte(lf)
                 k += 1
             }
             return Result.Ok(Value.Str(kept.Str()))
@@ -516,7 +494,7 @@ struct Parser {
         }
         var out = new Buf(0)
         out.WriteStr(clipped)
-        out.WriteByte(LF)
+        out.WriteByte(lf)
         return Result.Ok(Value.Str(out.Str()))
     }
 }
@@ -579,7 +557,7 @@ struct Flow {
                 try self.escape(out)
                 continue
             }
-            if b == LF {
+            if b == lf {
                 return Result.Err(self.error(self.at + start, "the string is never closed"))
             }
             out.WriteByte(b)
@@ -614,7 +592,7 @@ struct Flow {
             return Result.Ok()
         }
         if b == code('n') {
-            out.WriteByte(LF)
+            out.WriteByte(lf)
             return Result.Ok()
         }
         if b == code('v') {
@@ -626,7 +604,7 @@ struct Flow {
             return Result.Ok()
         }
         if b == code('r') {
-            out.WriteByte(CR)
+            out.WriteByte(cr)
             return Result.Ok()
         }
         if b == code('e') {
@@ -861,10 +839,10 @@ func resolve(text: str) -> Value {
         return Value.Bool(false)
     }
     var kind = number_kind(text)
-    if kind == NUMBER_INTEGER {
+    if kind == number_integer {
         match integer_of(text) {
             Some(v) => {
-                if v > EXACT_LIMIT_INT || v < -EXACT_LIMIT_INT {
+                if v > exact_limit_int || v < -exact_limit_int {
                     return Value.Str(text)
                 }
                 return Value.Num(f64(v))
@@ -873,7 +851,7 @@ func resolve(text: str) -> Value {
         }
         return Value.Str(text)
     }
-    if kind == NUMBER_FLOAT {
+    if kind == number_float {
         match float_of(text) {
             Some(v) => {
                 return Value.Num(v)
@@ -884,35 +862,35 @@ func resolve(text: str) -> Value {
     return Value.Str(text)
 }
 
-const NUMBER_INVALID: i32 = 0
-const NUMBER_INTEGER: i32 = 1
-const NUMBER_FLOAT: i32 = 2
+const number_invalid: i32 = 0
+const number_integer: i32 = 1
+const number_float: i32 = 2
 
 // number_kind answers what the shape of a text says it is.
 func number_kind(text: str) -> i32 {
     if text == ".inf" || text == ".Inf" || text == ".INF" {
-        return NUMBER_FLOAT
+        return number_float
     }
     if text == "+.inf" || text == "-.inf" {
-        return NUMBER_FLOAT
+        return number_float
     }
     if text == ".nan" || text == ".NaN" || text == ".NAN" {
-        return NUMBER_FLOAT
+        return number_float
     }
     var i: usize = 0
     if text[0] == code('-') || text[0] == code('+') {
         i = 1
     }
     if i >= text.Len() {
-        return NUMBER_INVALID
+        return number_invalid
     }
     if text[i] == code('.') {
-        return NUMBER_INVALID
+        return number_invalid
     }
     if i + 1 < text.Len() && text[i] == code('0') {
         var prefix = text[i + 1]
         if prefix == code('x') || prefix == code('o') || prefix == code('b') {
-            return NUMBER_INTEGER
+            return number_integer
         }
     }
     var is_float = false
@@ -944,18 +922,18 @@ func number_kind(text: str) -> i32 {
             i += 1
             continue
         }
-        return NUMBER_INVALID
+        return number_invalid
     }
     if digits == 0 {
-        return NUMBER_INVALID
+        return number_invalid
     }
     if text[0] == code('.') {
-        return NUMBER_INVALID
+        return number_invalid
     }
     if is_float {
-        return NUMBER_FLOAT
+        return number_float
     }
-    return NUMBER_INTEGER
+    return number_integer
 }
 
 // integer_of answers the whole number a text stands for, or nothing when its
@@ -1206,7 +1184,7 @@ func write_node(dst: Buf, v: Value, indent: usize) {
         _ => {
             write_indent(dst, indent)
             write_scalar(dst, v)
-            dst.WriteByte(LF)
+            dst.WriteByte(lf)
         }
     }
 }
@@ -1222,9 +1200,9 @@ func write_mapping(dst: Buf, table: Map<str, Value>, indent: usize) {
                 if is_plain_node(value) {
                     dst.WriteByte(code(' '))
                     write_scalar(dst, value)
-                    dst.WriteByte(LF)
+                    dst.WriteByte(lf)
                 } else {
-                    dst.WriteByte(LF)
+                    dst.WriteByte(lf)
                     write_node(dst, value, indent + 2)
                 }
             }
@@ -1243,9 +1221,9 @@ func write_sequence(dst: Buf, items: Array<Value>, indent: usize) {
         if is_plain_node(item) {
             dst.WriteByte(code(' '))
             write_scalar(dst, item)
-            dst.WriteByte(LF)
+            dst.WriteByte(lf)
         } else {
-            dst.WriteByte(LF)
+            dst.WriteByte(lf)
             write_node(dst, item, indent + 2)
         }
     }
@@ -1358,13 +1336,13 @@ func write_quoted_body(dst: Buf, text: str) {
             dst.WriteStr("\\b")
         } else if b == 9 {
             dst.WriteStr("\\t")
-        } else if b == LF {
+        } else if b == lf {
             dst.WriteStr("\\n")
         } else if b == 11 {
             dst.WriteStr("\\v")
         } else if b == 12 {
             dst.WriteStr("\\f")
-        } else if b == CR {
+        } else if b == cr {
             dst.WriteStr("\\r")
         } else if b == 27 {
             dst.WriteStr("\\e")
@@ -1411,7 +1389,7 @@ func is_plain_text(text: str) -> bool {
     var i: usize = 0
     for i < text.Len() {
         var b = text[i]
-        if b == code(':') || b == code('#') || b == LF || b == CR || b == code('\t') {
+        if b == code(':') || b == code('#') || b == lf || b == cr || b == code('\t') {
             return false
         }
         if b < 0x20 || b == 0x7F {

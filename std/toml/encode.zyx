@@ -62,7 +62,7 @@ func write_table(dst: Buf, table: Map<str, Value>, path: Array<str>) {
                     write_key(dst, key)
                     dst.WriteStr(" = ")
                     write_value(dst, v)
-                    dst.WriteByte(LF)
+                    dst.WriteByte(lf)
                     wrote_any = true
                 }
             }
@@ -85,12 +85,12 @@ func write_table(dst: Buf, table: Map<str, Value>, path: Array<str>) {
                 match v {
                     Obj(o) => {
                         if !first_table || wrote_any {
-                            dst.WriteByte(LF)
+                            dst.WriteByte(lf)
                         }
                         dst.WriteByte(code('['))
                         write_path(dst, child)
                         dst.WriteByte(code(']'))
-                        dst.WriteByte(LF)
+                        dst.WriteByte(lf)
                         write_table(dst, o, child)
                         first_table = false
                     }
@@ -98,12 +98,12 @@ func write_table(dst: Buf, table: Map<str, Value>, path: Array<str>) {
                         var i: usize = 0
                         for item in a {
                             if !first_table || wrote_any || i > 0 {
-                                dst.WriteByte(LF)
+                                dst.WriteByte(lf)
                             }
                             dst.WriteStr("[[")
                             write_path(dst, child)
                             dst.WriteStr("]]")
-                            dst.WriteByte(LF)
+                            dst.WriteByte(lf)
                             match item {
                                 Obj(o) => {
                                     write_table(dst, o, child)
@@ -244,11 +244,11 @@ func write_basic_body(dst: Buf, text: str) {
             dst.WriteStr("\\b")
         } else if b == 9 {
             dst.WriteStr("\\t")
-        } else if b == LF {
+        } else if b == lf {
             dst.WriteStr("\\n")
         } else if b == 12 {
             dst.WriteStr("\\f")
-        } else if b == CR {
+        } else if b == cr {
             dst.WriteStr("\\r")
         } else if b < 0x20 || b == 0x7F {
             dst.WriteStr("\\u")

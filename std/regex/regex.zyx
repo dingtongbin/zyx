@@ -66,19 +66,19 @@ enum Kind {
 }
 
 // The escapes that stand for a set of bytes rather than one byte.
-const CLASS_D: i32 = 0
-const CLASS_W: i32 = 1
-const CLASS_S: i32 = 2
+const class_d: i32 = 0
+const class_w: i32 = 1
+const class_s: i32 = 2
 
-// NO_LIMIT is the high end of a quantifier that has none, and also the value
+// no_limit is the high end of a quantifier that has none, and also the value
 // of a slot that holds no position.
-const NO_LIMIT: usize = ~usize(0)
+const no_limit: usize = ~usize(0)
 
-// MAX_REPEAT is the largest count a repetition may carry. A count beyond it
+// max_repeat is the largest count a repetition may carry. A count beyond it
 // would make the compiled program larger than any use of it.
-const MAX_REPEAT: usize = 65535
+const max_repeat: usize = 65535
 
-const LF: u8 = 10
+const lf: u8 = 10
 
 // Node is one parsed piece of a pattern. Concat and Alt hold their parts in
 // kids, Repeat holds its body in kids[0], and Group holds its body in kids[0].
@@ -137,7 +137,7 @@ func group_node(g: usize, body: Node) -> Node {
     return n
 }
 
-// repeat_node builds a quantifier around a body. A high end of NO_LIMIT is a
+// repeat_node builds a quantifier around a body. A high end of no_limit is a
 // quantifier that has none.
 func repeat_node(body: Node, min: usize, max: usize, greedy: bool) -> Node {
     var n = leaf(Kind.Repeat)
@@ -199,10 +199,10 @@ func hex_value(b: u8) -> u32 {
 // class_has reports whether a byte belongs to one of the classes an escape
 // names.
 func class_has(kind: i32, b: u8) -> bool {
-    if kind == CLASS_D {
+    if kind == class_d {
         return is_digit(b)
     }
-    if kind == CLASS_W {
+    if kind == class_w {
         return is_word_byte(b)
     }
     return is_space_byte(b)
@@ -333,14 +333,14 @@ struct Parser {
         return i < n && self.src[i] == code('}')
     }
 
-    // read_count reads the digits of a count. A count beyond MAX_REPEAT is a
+    // read_count reads the digits of a count. A count beyond max_repeat is a
     // fault, because compiling it would build a program no use could justify.
     func read_count(at: usize) -> Result<usize, Error> {
         var v: usize = 0
         var digits: usize = 0
         for !self.at_end() && is_digit(self.peek()) {
             v = v * 10 + usize(self.peek() - code('0'))
-            if v > MAX_REPEAT {
+            if v > max_repeat {
                 return Result.Err(self.error(at, "repetition count is too large"))
             }
             digits += 1
@@ -361,11 +361,11 @@ struct Parser {
         var hi: usize = 0
         if ch == code('*') {
             self.pos += 1
-            hi = NO_LIMIT
+            hi = no_limit
         } else if ch == code('+') {
             self.pos += 1
             lo = 1
-            hi = NO_LIMIT
+            hi = no_limit
         } else if ch == code('?') {
             self.pos += 1
             hi = 1
@@ -376,7 +376,7 @@ struct Parser {
             if self.is_at(code(',')) {
                 self.pos += 1
                 if self.is_at(code('}')) {
-                    hi = NO_LIMIT
+                    hi = no_limit
                 } else {
                     hi = try self.read_count(at)
                 }
@@ -385,7 +385,7 @@ struct Parser {
                 return Result.Err(self.error(at, "unterminated repetition"))
             }
             self.pos += 1
-            if hi != NO_LIMIT && lo > hi {
+            if hi != no_limit && lo > hi {
                 return Result.Err(self.error(at, "numbers out of order in repetition"))
             }
         }
@@ -601,14 +601,14 @@ struct Parser {
             return Result.Err(self.error(at, "invalid range in character class"))
         }
         if ch == code('d') || ch == code('D') {
-            self.or_class(num, CLASS_D, ch == code('D'))
+            self.or_class(num, class_d, ch == code('D'))
             return Result.Ok()
         }
         if ch == code('w') || ch == code('W') {
-            self.or_class(num, CLASS_W, ch == code('W'))
+            self.or_class(num, class_w, ch == code('W'))
             return Result.Ok()
         }
-        self.or_class(num, CLASS_S, ch == code('S'))
+        self.or_class(num, class_s, ch == code('S'))
         return Result.Ok()
     }
 
@@ -708,15 +708,15 @@ struct Parser {
         var ch = self.peek()
         if ch == code('d') || ch == code('D') {
             self.pos += 1
-            return Result.Ok(class_node(self.make_class(CLASS_D, ch == code('D'))))
+            return Result.Ok(class_node(self.make_class(class_d, ch == code('D'))))
         }
         if ch == code('w') || ch == code('W') {
             self.pos += 1
-            return Result.Ok(class_node(self.make_class(CLASS_W, ch == code('W'))))
+            return Result.Ok(class_node(self.make_class(class_w, ch == code('W'))))
         }
         if ch == code('s') || ch == code('S') {
             self.pos += 1
-            return Result.Ok(class_node(self.make_class(CLASS_S, ch == code('S'))))
+            return Result.Ok(class_node(self.make_class(class_s, ch == code('S'))))
         }
         if ch == code('b') {
             self.pos += 1
@@ -850,7 +850,7 @@ struct Emitter {
             self.emit(body)
             i += 1
         }
-        if node.max == NO_LIMIT {
+        if node.max == no_limit {
             self.emit_loop(body, node.greedy)
             return
         }
@@ -908,7 +908,7 @@ struct Regex {
         var out = new Array<usize>(self.nslots)
         var i: usize = 0
         for i < self.nslots {
-            out.Push(NO_LIMIT)
+            out.Push(no_limit)
             i += 1
         }
         return out
@@ -923,11 +923,11 @@ struct Regex {
         for start <= n {
             var i: usize = 0
             for i < self.nslots {
-                slots[i] = NO_LIMIT
+                slots[i] = no_limit
                 i += 1
             }
             var end = self.run_at(s, start, slots)
-            if end != NO_LIMIT {
+            if end != no_limit {
                 slots[0] = start
                 slots[1] = end
                 return Option.Some((start, end))
@@ -938,7 +938,7 @@ struct Regex {
     }
 
     // run_at walks the program over the subject from one start position. It
-    // answers where the match ended, or NO_LIMIT when no way through the
+    // answers where the match ended, or no_limit when no way through the
     // program matches there.
     func run_at(s: str, start: usize, slots: Array<usize>) -> usize {
         var n = s.Len()
@@ -961,7 +961,7 @@ struct Regex {
                     }
                 }
                 Any => {
-                    if sp < n && s[sp] != LF {
+                    if sp < n && s[sp] != lf {
                         sp += 1
                         pc += 1
                     } else {
@@ -1005,7 +1005,7 @@ struct Regex {
                     }
                 }
                 End => {
-                    if sp == n || (sp + 1 == n && s[sp] == LF) {
+                    if sp == n || (sp + 1 == n && s[sp] == lf) {
                         pc += 1
                     } else {
                         failed = true
@@ -1046,7 +1046,7 @@ struct Regex {
             }
             if failed {
                 if stack.Len() == 0 {
-                    return NO_LIMIT
+                    return no_limit
                 }
                 var entry = stack.Pop().Unwrap()
                 pc = entry.0
@@ -1088,7 +1088,7 @@ struct Regex {
         var slots = self.new_slots()
         var n = s.Len()
         var pos: usize = 0
-        var last_end = NO_LIMIT
+        var last_end = no_limit
         for pos <= n {
             match self.search(s, pos, slots) {
                 Some(span) => {
@@ -1125,7 +1125,7 @@ struct Regex {
                 out.Push(Option.Some(span))
                 var g: usize = 1
                 for g <= self.ngroups {
-                    if slots[2 * g] == NO_LIMIT {
+                    if slots[2 * g] == no_limit {
                         out.Push(Option.None)
                     } else {
                         out.Push(Option.Some((slots[2 * g], slots[2 * g + 1])))
@@ -1150,7 +1150,7 @@ struct Regex {
         var n = s.Len()
         var pos: usize = 0
         var copied: usize = 0
-        var last_end = NO_LIMIT
+        var last_end = no_limit
         for pos <= n {
             match self.search(s, pos, slots) {
                 Some(span) => {
@@ -1192,7 +1192,7 @@ struct Regex {
                     g = g * 10 + usize(repl[j] - code('0'))
                     j += 1
                 }
-                if g <= self.ngroups && slots[2 * g] != NO_LIMIT {
+                if g <= self.ngroups && slots[2 * g] != no_limit {
                     copy_bytes(out, s, slots[2 * g], slots[2 * g + 1])
                 }
                 i = j
