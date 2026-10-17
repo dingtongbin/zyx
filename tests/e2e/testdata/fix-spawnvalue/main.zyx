@@ -1,0 +1,63 @@
+package main
+
+import "std/fmt"
+
+// A coroutine is started through any call, not only a call to a named
+// function: a function held in a variable, a function held as a parameter, and
+// a bound method value are all started the same way, with the value carried
+// beside the arguments.
+
+struct Item {
+    tag: i64
+    func Tag() -> i64 {
+        return self.tag
+    }
+}
+
+var seen: i64 = 0
+
+func Body(tag: i64) {
+    seen += tag
+}
+
+func add(a: i64, b: i64) -> i64 {
+    return a + b
+}
+
+func main() {
+    var item = Item { tag: 5 }
+    region {
+        var f = func Body
+        var h = spawn f(7)
+        h.Join()
+        fmt.PrintI64(seen)
+        fmt.PrintNl()
+
+        var tag = spawn item.Tag()
+        match tag.Join() {
+            Ok(v) => fmt.PrintI64(v)
+            Err(e) => fmt.PrintI64(-1)
+        }
+        fmt.PrintNl()
+
+        var g = func(a: i64, b: i64) -> i64 => add(a, b)
+        var sum = spawn g(20, 22)
+        match sum.Join() {
+            Ok(v) => fmt.PrintI64(v)
+            Err(e) => fmt.PrintI64(-1)
+        }
+        fmt.PrintNl()
+
+        // A second method value on the same receiver.
+        var again = spawn item.Tag()
+        match again.Join() {
+            Ok(v) => fmt.PrintI64(v)
+            Err(e) => fmt.PrintI64(-1)
+        }
+        fmt.PrintNl()
+    }
+    fmt.PrintI64(seen)
+    fmt.PrintNl()
+    fmt.PrintI64(item.tag)
+    fmt.PrintNl()
+}

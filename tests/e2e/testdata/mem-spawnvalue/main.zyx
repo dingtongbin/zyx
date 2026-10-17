@@ -1,0 +1,31 @@
+package main
+
+import "std/fmt"
+
+// A coroutine started through a bound method value carries its receiver beside
+// the call, so the receiver is not an argument of the spawn and the walk never
+// sees it there. The receiver here is not named again after the spawn, which
+// used to let the analysis release it at the end of the spawning statement: the
+// release writes the region's free-list link over the object's first field,
+// which the coroutine then reads.
+
+struct Item {
+    tag: i64
+    func Tag() -> i64 {
+        return self.tag
+    }
+}
+
+func main() {
+    var item = Item { tag: 41 }
+    region {
+        var h = spawn item.Tag()
+        match h.Join() {
+            Ok(v) => fmt.PrintI64(v)
+            Err(e) => fmt.PrintI64(- 1)
+        }
+        fmt.PrintNl()
+    }
+    fmt.PrintI64(42)
+    fmt.PrintNl()
+}

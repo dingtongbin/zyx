@@ -1,0 +1,30 @@
+package main
+
+import "std/fmt"
+
+// The argument of panic is a message, and the message here is an interpolation
+// that names a field: that shape used to fail in the emitter, because nothing
+// typed panic's argument, so the selector inside the interpolation reached the
+// intermediate form with no type of its own. The panic itself is behind a
+// condition that is false where the program runs, so the corpus case checks
+// that the shape compiles and the program runs: a panic that happened would end
+// the process with the code a panic ends it with.
+
+struct Err {
+    Msg: str
+}
+
+func report(err: Err, loud: bool) {
+    if loud {
+        panic(f"test: {err.Msg}")
+    }
+    fmt.Println(err.Msg)
+}
+
+func main() {
+    report(Err { Msg: "quiet" }, false)
+    if 1 == 0 {
+        panic("plain literal")
+    }
+    fmt.Println("done")
+}

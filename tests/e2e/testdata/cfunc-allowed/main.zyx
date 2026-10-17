@@ -1,0 +1,33 @@
+package main
+
+import "std/fmt"
+
+// A `c func` body runs on the blocking-pool thread that C called it on, so it
+// has no coroutine to park and no region to allocate from. What it keeps is
+// value types, raw, and the Try forms, which answer instead of waiting. The
+// callback here is never called from this program: what it checks is that the
+// checker accepts a body written in the allowed subset.
+
+struct Sample {
+    hits: i64
+    tag: str
+}
+
+c func callback_probe(ch: chan<i64>, p: raw, n: i64) -> i64 {
+    var ok = ch.TrySend(n)
+    var v, got = ch.TryRecv()
+    var xs: [i64; 3] = [1, 2, 3]
+    if ok && got {
+        return v + xs[0] + i64(usize(p))
+    }
+    return xs[2] + n
+}
+
+func main() {
+    var total: i64 = 0
+    for i in 0 .. 3 {
+        total = total + i
+    }
+    fmt.PrintI64(total)
+    fmt.PrintNl()
+}

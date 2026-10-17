@@ -1,0 +1,26 @@
+package main
+
+import "std/fmt"
+
+// A deferred call receives an argument the way any call does: a reference
+// aggregate arrives as a pointer to its object, while the argument block holds
+// the object itself. Reading the block as a pointer would call the function
+// with the object's first field as its address.
+
+struct Holder { tag: i64 }
+
+var closed: i64 = 0
+
+func closeHolder(holder: Holder) { closed = holder.tag }
+
+func main() {
+    region {
+        var holder = Holder { tag: 41 }
+        defer closeHolder(holder)
+        var noise = Holder { tag: 999 }
+        fmt.PrintI64(noise.tag)
+        fmt.PrintNl()
+    }
+    fmt.PrintI64(closed)
+    fmt.PrintNl()
+}
