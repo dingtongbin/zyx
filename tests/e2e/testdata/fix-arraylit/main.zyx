@@ -1,0 +1,37 @@
+package main
+
+import "std/fmt"
+
+// A growable array built from a literal is a container, so it is read the way
+// one built by pushes is. Reading it as a block of elements would fault: the
+// handle the runtime expects is not the elements themselves.
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+func main() {
+    var words: Array<str> = ["alpha", "beta", "gamma"]
+    fmt.Println(words[0])
+    fmt.Println(words[2])
+    fmt.PrintI64(i64(words.Len()))
+    fmt.PrintNl()
+
+    var numbers: Array<i64> = [4, 5, 6]
+    var total: i64 = 0
+    for i in 0 .. numbers.Len() {
+        total += numbers[i]
+    }
+    fmt.PrintI64(total)
+    fmt.PrintNl()
+
+    var points: Array<Point> = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]
+    fmt.PrintI64(points[1].y)
+    fmt.PrintNl()
+
+    // An empty literal is one too, and taking its length answers nothing.
+    var empty: Array<str> = []
+    fmt.PrintI64(i64(empty.Len()))
+    fmt.PrintNl()
+}

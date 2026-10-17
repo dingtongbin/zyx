@@ -42,23 +42,34 @@ func (g *generator) global(module string, n *zyxc.Node) {
 // globalValue emits one top-level binding. Its initializer is evaluated in
 // a function of its own, which keeps a computed initializer out of the
 // module's global section.
+//
+// The storage a binding takes is the one a local of the same type takes: a
+// value whose type lives at an address, such as a struct or a fixed-size
+// array, is held behind a pointer, and every other type holds its value. A
+// module that reads the binding from another package declares the same
+// storage, which is what lets the two meet at the link.
 func (g *generator) globalValue(module string, n *zyxc.Node, id, name string) {
 	typ := g.typeOfNode(n.First("type"), module)
-	init := g.initChild(n)
-	if init == nil {
-		if typ == nil {
-			g.fail(fmt.Errorf("llvmgen: the type of global %s is not settled", name))
-			return
-		}
-		fmt.Fprintf(&g.m.funcs, "@%s = %sglobal %s %s\n", llvmName(id), globalLinkage(name), g.llType(typ), g.zero(typ))
-		return
-	}
 	if typ == nil {
 		g.fail(fmt.Errorf("llvmgen: the type of global %s is not settled", name))
 		return
 	}
-	fmt.Fprintf(&g.m.funcs, "@%s = %sglobal %s %s\n", llvmName(id), globalLinkage(name), g.llType(typ), g.zero(typ))
-	g.m.globalInits = append(g.m.globalInits, globalInit{module: module, id: id, typ: typ, init: init})
+	ll := g.llPass(typ)
+	zero := g.globalZero(typ, ll)
+	if init := g.initChild(n); init != nil {
+		g.m.globalInits = append(g.m.globalInits, globalInit{module: module, id: id, typ: typ, init: init})
+	}
+	fmt.Fprintf(&g.m.funcs, "@%s = %sglobal %s %s\n", llvmName(id), globalLinkage(name), ll, zero)
+}
+
+// globalZero returns the zero value of the storage a global is declared with.
+// A binding held behind a pointer starts at no object, because the
+// initializer puts the object it makes there.
+func (g *generator) globalZero(typ *types.Type, ll string) string {
+	if ll == "ptr" {
+		return "null"
+	}
+	return g.zero(typ)
 }
 
 // A globalInit is a top-level initializer that runs before main.
@@ -546,6 +557,9 @@ func (g *generator) function(module string, n *zyxc.Node) {
 			g.storeFat(slot, p)
 		}
 		g.fn.vars[fmt.Sprintf("%s#%d", sym, i+1)] = &varSlot{alloca: slot, typ: p.typ}
+		// A parameter's object belongs to the caller, so it counts as
+		// created outside every loop of this function.
+		g.rememberBinding(fmt.Sprintf("%s#%d", sym, i+1))
 	}
 
 	// The region the function runs in is the home of every object that

@@ -45,7 +45,7 @@ func (m Mark) String() string {
 	if m.Arg == "" {
 		return m.Name
 	}
-	return m.Name + " " + quoteToken(m.Arg)
+	return m.Name + " " + quoteMarkArg(m.Arg)
 }
 
 // New returns a node of a kind with a payload.
@@ -156,13 +156,23 @@ func (n *Node) String() string {
 	return line
 }
 
-// quoteToken renders a payload token, quoting it when it holds a space or a
-// character the format reserves.
-func quoteToken(token string) string {
+// quoteToken renders a payload token, quoting it when it holds a space, a
+// control byte, or a character the format reserves. Tokens are separated by
+// spaces, so a comma is left alone: a type text is one token.
+func quoteToken(token string) string { return quote(token, "") }
+
+// quoteMarkArg renders a mark argument. Inside a marks section a comma
+// separates one mark from the next, so an argument that holds one is quoted
+// even though a payload token with the same text would not be.
+func quoteMarkArg(token string) string { return quote(token, ",{}") }
+
+// quote renders a token, quoting it when it is empty or holds a reserved
+// character.
+func quote(token, reserved string) string {
 	if token == "" {
 		return `""`
 	}
-	if !strings.ContainsAny(token, " \t\"\\\n") {
+	if !needsQuoting(token, reserved) {
 		return token
 	}
 	var b strings.Builder
@@ -179,12 +189,34 @@ func quoteToken(token string) string {
 			b.WriteString(`\r`)
 		case '\t':
 			b.WriteString(`\t`)
+		case 0:
+			b.WriteString(`\0`)
 		default:
+			if c < 0x20 {
+				// A control byte has no escape of its own, so it is written
+				// as the code point it is; a reader that does not know the
+				// escape would otherwise keep a byte that breaks the line.
+				fmt.Fprintf(&b, `\u{%x}`, c)
+				continue
+			}
 			b.WriteByte(c)
 		}
 	}
 	b.WriteByte('"')
 	return b.String()
+}
+
+// needsQuoting reports whether a token is not a bare word: an empty token, a
+// byte the format reserves, a control byte, or a character that separates one
+// token from another in the section the token stands in.
+func needsQuoting(token, reserved string) bool {
+	for i := 0; i < len(token); i++ {
+		c := token[i]
+		if c <= ' ' || c == '"' || c == '\\' || c == 0x7f || strings.IndexByte(reserved, c) >= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // checkKind reports a kind that is not a lowercase ASCII word, which the

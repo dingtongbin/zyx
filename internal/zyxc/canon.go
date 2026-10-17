@@ -27,7 +27,7 @@ const indentation = "  "
 // part of it so that a reader knows the size of the tree before reading it.
 func header(target, module, exports string, nodes int) []string {
 	return []string{
-		"zyx " + strconv.Itoa(FormatVersion),
+		"zyxc " + strconv.Itoa(FormatVersion),
 		"target " + target,
 		"module " + module,
 		"exports " + exports,

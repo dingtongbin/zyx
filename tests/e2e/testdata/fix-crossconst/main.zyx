@@ -1,0 +1,25 @@
+package main
+
+import "std/fmt"
+
+import "example.com/fixcrossconst/config"
+
+// A constant another package declares is read by name: a scalar comes back as
+// its value and an aggregate as the object it names, so both the link and the
+// value have to be right.
+
+func main() {
+    fmt.PrintI64(config.Size)
+    fmt.PrintNl()
+    fmt.PrintI64(config.SizeSquared())
+    fmt.PrintNl()
+    fmt.PrintI64(config.K[usize(2)])
+    fmt.PrintNl()
+    var sum: i64 = 0
+    for i in 0 .. 4 {
+        sum += config.K[usize(i)]
+    }
+    fmt.PrintI64(sum)
+    fmt.PrintNl()
+    fmt.Println(config.Name)
+}

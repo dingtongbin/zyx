@@ -1,0 +1,15 @@
+package config
+
+// The constants a program reads from another package. Each one occupies a
+// symbol in this package, so a module that imports it declares the same
+// storage and the link brings the two together.
+
+const Size: i64 = 4
+
+const K: [i64; 4] = [2, 3, 5, 7]
+
+const Name: str = "config"
+
+func SizeSquared() -> i64 {
+    return Size * Size
+}

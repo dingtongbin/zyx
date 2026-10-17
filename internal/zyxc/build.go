@@ -340,7 +340,7 @@ func (b *builder) member(member ast.Decl, selfType string) *Node {
 			n.Child(New("type", b.typeText(b.cpkg.Nodes[m.Type])))
 		}
 		if m.Value != nil {
-			n.Child(b.expr(m.Value))
+			n.Child(b.wrap("value", b.expr(m.Value)))
 		}
 		return b.at(n, m.Sp)
 	case *ast.ImplBlock:
@@ -559,12 +559,13 @@ func (b *builder) variantNode(v *ast.VariantDecl) *Node {
 	return b.at(n, v.Sp)
 }
 
-// joinComma joins type texts with the format's separator.
+// joinComma joins type texts with the format's separator: a comma with no
+// space after it, which is how every type text is spelled.
 func joinComma(parts []string) string {
 	out := ""
 	for i, p := range parts {
 		if i > 0 {
-			out += ", "
+			out += ","
 		}
 		out += p
 	}
@@ -662,6 +663,16 @@ func (b *builder) stmtNode(s ast.Stmt) *Node {
 		return b.at(n, v.Sp)
 	case *ast.ReturnStmt:
 		n := New("return")
+		if len(v.Values) > 1 {
+			// Several values are one tuple, so the statement carries one
+			// expression and the tuple holds the elements.
+			t := New("tuple-lit")
+			for _, e := range v.Values {
+				t.Child(b.wrap("elem", b.expr(e)))
+			}
+			n.Child(t)
+			return b.at(n, v.Sp)
+		}
 		for _, e := range v.Values {
 			n.Child(b.expr(e))
 		}
@@ -687,8 +698,9 @@ func (b *builder) stmtNode(s ast.Stmt) *Node {
 		return b.at(n, v.Sp)
 	case *ast.MatchStmt:
 		n := New("match").Child(b.wrap("subject", b.expr(v.Subject)))
+		subject := b.staticType(v.Subject)
 		for _, arm := range v.Arms {
-			n.Child(b.armNode(arm))
+			n.Child(b.armNode(arm, subject))
 		}
 		return b.at(n, v.Sp)
 	case *ast.SelectStmt:
@@ -759,10 +771,11 @@ func (b *builder) forNode(v *ast.ForStmt) *Node {
 	return b.at(n, v.Sp)
 }
 
-// armNode renders one match arm.
-func (b *builder) armNode(arm *ast.MatchArm) *Node {
+// armNode renders one match arm. The subject type is the one the pattern is
+// read against, which is what tells a bare name from a variant.
+func (b *builder) armNode(arm *ast.MatchArm, subject *types.Type) *Node {
 	n := New("arm")
-	n.Child(b.wrap("pat", b.pattern(arm.Pattern)))
+	n.Child(b.wrap("pat", b.pattern(arm.Pattern, subject)))
 	if arm.Guard != nil {
 		n.Child(b.wrap("guard", b.expr(arm.Guard)))
 	}
@@ -800,15 +813,17 @@ func nameOr(id *ast.Ident) string {
 	return id.Name
 }
 
-// pattern renders a match pattern.
-func (b *builder) pattern(p ast.Pattern) *Node {
+// pattern renders a match pattern. The subject type is the one the pattern is
+// read against: a bare name is a variant of it when the type declares one, and
+// a binding otherwise.
+func (b *builder) pattern(p ast.Pattern, subject *types.Type) *Node {
 	switch v := p.(type) {
 	case nil:
 		return nil
 	case *ast.WildcardPattern:
 		return b.at(New("pat-wild"), v.Sp)
 	case *ast.BindPattern:
-		if b.cpkg.PatternVariants[v] {
+		if b.namesVariant(v, subject) {
 			return b.at(New("pat-variant", v.Name.Name), v.Sp)
 		}
 		n := New("pat-bind", v.Name.Name, b.symID(v.Name))
@@ -821,19 +836,19 @@ func (b *builder) pattern(p ast.Pattern) *Node {
 	case *ast.VariantPattern:
 		n := New("pat-variant", v.Name.Name)
 		for _, sub := range v.Payload {
-			n.Child(b.pattern(sub))
+			n.Child(b.pattern(sub, subject))
 		}
 		return b.at(n, v.Sp)
 	case *ast.TuplePattern:
 		n := New("pat-tuple")
 		for _, sub := range v.Elems {
-			n.Child(b.pattern(sub))
+			n.Child(b.pattern(sub, subject))
 		}
 		return b.at(n, v.Sp)
 	case *ast.OrPattern:
 		n := New("pat-or")
 		for _, sub := range v.Patterns {
-			n.Child(b.pattern(sub))
+			n.Child(b.pattern(sub, subject))
 		}
 		return b.at(n, v.Sp)
 	case *ast.RangePattern:
@@ -844,6 +859,24 @@ func (b *builder) pattern(p ast.Pattern) *Node {
 	}
 	b.fail(p, "pattern "+nodeName(p))
 	return nil
+}
+
+// namesVariant reports whether a bare pattern name names a variant of the type
+// the match subject has. The syntax alone cannot tell a variant from a
+// binding, so the matched type decides: a name the type declares as a variant
+// is the variant, even when the package also has a function of that name.
+func (b *builder) namesVariant(v *ast.BindPattern, subject *types.Type) bool {
+	if v.Name == nil {
+		return false
+	}
+	if b.cpkg.PatternVariants[v] {
+		return true
+	}
+	if subject == nil || subject.Kind != types.KindEnum {
+		return false
+	}
+	d := b.cpkg.Decl(subject)
+	return d != nil && d.Variant(v.Name.Name) != nil
 }
 
 // staticType returns the static type of an expression, or nil when the

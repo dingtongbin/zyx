@@ -1,0 +1,13 @@
+true
+true
+true
+false
+true
+equal
+nan is not equal to itself
+3
+true
+true
+true
+n=3 byte=7 many=4000000000
+bad(2)

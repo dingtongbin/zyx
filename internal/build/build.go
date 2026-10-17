@@ -428,28 +428,62 @@ type Result struct {
 	Text []byte
 	// Diags holds every diagnostic the package reported.
 	Diags []diag.Diagnostic
+	// Report holds the diagnostics as the command line prints them, so a
+	// result that came from the cache replays them byte for byte.
+	Report []byte
+}
+
+// Exports returns the hash of the package's export interface, or the empty
+// string when the package produced no tree.
+func (r *Result) Exports() string {
+	if r == nil || r.IR == nil {
+		return ""
+	}
+	return r.IR.Exports
 }
 
 // A Session runs the front end over a module tree.
 type Session struct {
 	// Loader collects the packages.
 	Loader *Loader
+	// Cache reuses the front-end product of a package. A nil cache runs the
+	// front end every time.
+	Cache *FrontEndCache
 }
 
 // FrontEnd runs the front end over the entry package and everything it
 // imports, in dependency order, and returns one result per package. A
 // package whose earlier stage failed keeps its diagnostics and stops there,
 // so the importer sees a missing interface rather than a cascade.
+//
+// A session with a cache reads the product of a package whose inputs did not
+// change: the tree comes back from the text the front end wrote, and the
+// diagnostics come back as they were printed. A run whose packages all find
+// their entry therefore skips the front end entirely, which is what makes a
+// warm build the same bytes as a cold one.
 func (s *Session) FrontEnd(entry string) ([]*Result, error) {
 	g, err := s.Loader.Load(entry)
 	if err != nil {
 		return nil, err
+	}
+	packages := make(map[string]*Package, len(g.Order))
+	for _, pkg := range g.Order {
+		packages[pkg.ImportPath] = pkg
+	}
+	if s.Cache != nil {
+		if out, ok := s.frontEndCached(g, packages); ok {
+			return out, nil
+		}
 	}
 	resolveIfaces := map[string]*resolve.Interface{}
 	checkIfaces := map[string]*check.Interface{}
 	out := make([]*Result, 0, len(g.Order))
 	for _, pkg := range g.Order {
 		res := s.frontEndPackage(pkg, resolveIfaces, checkIfaces)
+		res.Report = renderReport(res.Diags)
+		if s.Cache != nil {
+			s.storeResult(pkg, packages, res)
+		}
 		out = append(out, res)
 		if res.Resolved != nil {
 			resolveIfaces[pkg.ImportPath] = res.Resolved.Interface
@@ -459,6 +493,89 @@ func (s *Session) FrontEnd(entry string) ([]*Result, error) {
 		}
 	}
 	return out, nil
+}
+
+// frontEndCached answers the whole run from the cache, and reports whether
+// every package's entry was there. A package whose entry is missing makes the
+// run the front end's own: a package's analysis needs the interfaces of the
+// packages it imports, and an entry holds a tree rather than an interface.
+func (s *Session) frontEndCached(g *Graph, packages map[string]*Package) ([]*Result, bool) {
+	f := s.Cache
+	f.begin()
+	out := make([]*Result, 0, len(g.Order))
+	for _, pkg := range g.Order {
+		key := f.key(pkg, s.Loader.Target.Triple, transitiveImports(pkg, packages))
+		text, report, ok := f.lookup(key)
+		if !ok {
+			return nil, false
+		}
+		res := &Result{Package: pkg, Text: text, Report: report}
+		if len(text) != 0 {
+			file, err := zyxc.Parse(text)
+			if err != nil {
+				// A damaged entry is a miss: the run builds the tree again,
+				// and the entry is replaced by what that run produced.
+				return nil, false
+			}
+			res.IR = file
+		}
+		f.hits++
+		f.exports[pkg.ImportPath] = res.Exports()
+		out = append(out, res)
+	}
+	return out, true
+}
+
+// storeResult publishes one package's product. A key that already has an entry
+// is left alone: an unchanged package is not written again, so a downstream
+// entry keeps the exports hash the interface it was built against has.
+func (s *Session) storeResult(pkg *Package, packages map[string]*Package, res *Result) {
+	f := s.Cache
+	key := f.key(pkg, s.Loader.Target.Triple, transitiveImports(pkg, packages))
+	f.misses++
+	diags := make([]string, 0, len(res.Diags))
+	for _, d := range res.Diags {
+		diags = append(diags, d.RenderString())
+	}
+	f.store(key, res.Text, res.Report, diags)
+	f.exports[pkg.ImportPath] = res.Exports()
+}
+
+// renderReport renders the diagnostics the way the command line prints them,
+// ordered by source position so that two runs of the same program report the
+// same bytes.
+func renderReport(diags []diag.Diagnostic) []byte {
+	if len(diags) == 0 {
+		return nil
+	}
+	sorted := make([]diag.Diagnostic, len(diags))
+	copy(sorted, diags)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		afi, ali, aci := position(sorted[i])
+		bfi, bli, bci := position(sorted[j])
+		if afi != bfi {
+			return afi < bfi
+		}
+		if ali != bli {
+			return ali < bli
+		}
+		return aci < bci
+	})
+	var b []byte
+	for _, d := range sorted {
+		b = append(b, d.RenderString()...)
+	}
+	return b
+}
+
+// position returns the source position of a diagnostic, and zeroes for one
+// that covers a whole build rather than one place in a file.
+func position(d diag.Diagnostic) (file string, line, col int) {
+	if !d.Span.IsValid() {
+		return "", 0, 0
+	}
+	line, col = d.Span.StartPos()
+	return d.Span.File.Name(), line, col
 }
 
 // frontEndPackage runs every front-end stage over one package.

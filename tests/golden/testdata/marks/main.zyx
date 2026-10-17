@@ -1,0 +1,36 @@
+package main
+
+import "std/fmt"
+
+// A program that exercises the memory marks and the layout: two deferred
+// calls, a region, a spawned coroutine, and a panic. Its .zyxc holds the
+// defer-site, defers, region, and coroutine marks, and its IR holds the
+// struct layout the backend settled.
+
+func note(tag: str) {
+    fmt.Println(tag)
+}
+
+func work(flag: bool) {
+    defer note("first")
+    defer note("second")
+    if flag {
+        fmt.Println("body")
+        return
+    }
+    fmt.Println("fell through")
+}
+
+func boom() {
+    defer note("unwound")
+    panic("bang")
+}
+
+func main() {
+    work(true)
+    work(false)
+    region {
+        spawn boom()
+    }
+    fmt.Println("survived")
+}

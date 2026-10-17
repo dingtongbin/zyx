@@ -352,3 +352,19 @@ func (s *Session) IRText(entry, pkg string, results []*Result) ([]byte, error) {
 	}
 	return llvmgen.Generate(prog, pkg, s.Loader.Target)
 }
+
+// MonoText returns the intermediate form of one package after
+// monomorphization: the same format the front end writes, with every generic
+// definition replaced by the instances the program uses, one per signature
+// and in source order.
+func (s *Session) MonoText(entry, pkg string, results []*Result) ([]byte, error) {
+	prog, err := s.monoProgram(entry, results)
+	if err != nil {
+		return nil, err
+	}
+	file := prog.Files[pkg]
+	if file == nil {
+		return nil, fmt.Errorf("package %s has no tree", pkg)
+	}
+	return zyxc.Format(file), nil
+}

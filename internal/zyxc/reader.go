@@ -21,9 +21,9 @@ func Parse(data []byte) (*File, error) {
 		return nil, errf("a file needs the header lines")
 	}
 	f := &File{}
-	version, ok := strings.CutPrefix(lines[0], "zyx ")
+	version, ok := strings.CutPrefix(lines[0], "zyxc ")
 	if !ok {
-		return nil, errf("the first line must be zyx <version>")
+		return nil, errf("the first line must be zyxc <version>")
 	}
 	n, err := strconv.Atoi(version)
 	if err != nil || n != FormatVersion {
@@ -167,7 +167,7 @@ func parseLine(line string) (*Node, error) {
 // argument is one token, quoted when it holds a space, so an argument that
 // carries a type text keeps its comma.
 func cutMarks(line string) (string, []Mark, error) {
-	idx := strings.Index(line, " marks {")
+	idx := markerOutside(line, " marks {", true)
 	if idx < 0 {
 		return line, nil, nil
 	}
@@ -194,6 +194,28 @@ func cutMarks(line string) (string, []Mark, error) {
 		marks = append(marks, Mark{Name: name, Arg: arg})
 	}
 	return head, marks, nil
+}
+
+// markerOutside returns where a marker stands in a line, looking only outside
+// the quoted tokens: a payload token may hold any text, including the marker
+// itself, and the section it opens would otherwise be read from there.
+func markerOutside(line, marker string, last bool) int {
+	found := -1
+	inQuote := false
+	for i := 0; i < len(line); i++ {
+		switch c := line[i]; {
+		case c == '\\' && inQuote && i+1 < len(line):
+			i++
+		case c == '"':
+			inQuote = !inQuote
+		case !inQuote && strings.HasPrefix(line[i:], marker):
+			found = i
+			if !last {
+				return i
+			}
+		}
+	}
+	return found
 }
 
 // splitMarkParts splits a marks section on the commas between marks. A comma
@@ -261,7 +283,7 @@ func oneToken(text string) (string, error) {
 
 // cutPos splits the trailing `pos <position>` section off a line.
 func cutPos(line string) (string, string, error) {
-	idx := strings.LastIndex(line, " pos ")
+	idx := markerOutside(line, " pos ", true)
 	if idx < 0 {
 		return line, "", nil
 	}
@@ -270,7 +292,7 @@ func cutPos(line string) (string, string, error) {
 
 // cutFrom splits the trailing `from <id>` section off a line.
 func cutFrom(line string) (string, string) {
-	idx := strings.LastIndex(line, " from ")
+	idx := markerOutside(line, " from ", true)
 	if idx < 0 {
 		return line, ""
 	}
@@ -294,10 +316,18 @@ func splitTokens(line string) ([]string, error) {
 				b.WriteByte('\r')
 			case 't':
 				b.WriteByte('\t')
+			case '0':
+				b.WriteByte(0)
 			case '\\':
 				b.WriteByte('\\')
 			case '"':
 				b.WriteByte('"')
+			case 'u':
+				size, err := readUnicodeEscape(line[i+1:], &b)
+				if err != nil {
+					return nil, err
+				}
+				i += size
 			default:
 				return nil, errf("unknown escape \\%c", line[i])
 			}
@@ -325,4 +355,25 @@ func splitTokens(line string) ([]string, error) {
 		out = append(out, b.String())
 	}
 	return out, nil
+}
+
+// readUnicodeEscape reads the `{<hex>}` part of a \u escape and writes the
+// code point it names. It answers how many bytes of the rest it consumed.
+func readUnicodeEscape(rest string, b *strings.Builder) (int, error) {
+	if rest == "" || rest[0] != '{' {
+		return 0, errf("a \\u escape is written \\u{<hex>}")
+	}
+	end := strings.IndexByte(rest, '}')
+	if end < 0 {
+		return 0, errf("a \\u escape is not closed")
+	}
+	digits := rest[1:end]
+	value, err := strconv.ParseUint(digits, 16, 32)
+	if err != nil {
+		return 0, errf("\\u{%s} is not a code point", digits)
+	}
+	b.WriteRune(rune(value))
+	// The digits, the braces, and the escape letter are consumed; the caller
+	// advances past what is left.
+	return end + 1, nil
 }

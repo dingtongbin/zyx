@@ -64,6 +64,10 @@ type generator struct {
 type pendingRelease struct {
 	typ  *types.Type
 	slot string
+	// depth is how many loops enclosed the object when it was created. An
+	// object created outside a loop is read again on the loop's later
+	// rounds, so its release may not be emitted while that loop is open.
+	depth int
 }
 
 // A funcState carries the state of one function's emission.
@@ -90,6 +94,11 @@ type funcState struct {
 	// function, because a release must land in the function that made the
 	// object.
 	pending []pendingRelease
+	// created records how many loops enclosed each binding when it was
+	// created. A name that reads a binding created outside a loop names an
+	// object the loop still reads on its later rounds, so the release waits
+	// for the loop to end.
+	created map[string]int
 	// frameBytes is how much stack the function's locals take, which is what
 	// the prologue check asks the runtime to commit when the frame reaches
 	// below what is committed.
@@ -320,7 +329,10 @@ func (g *generator) foreignDeclaration(module string, n *zyxc.Node) {
 	switch n.Kind {
 	case "func":
 		g.foreignFunc(module, n)
-	case "var":
+	case "var", "const":
+		// A top-level binding occupies a symbol in the module that defines
+		// it, and the storage it takes is the module's own: a reference from
+		// this one is a name the link resolves, so it is declared here.
 		for i := 0; i+1 < len(n.Payload); i += 2 {
 			g.foreignGlobal(module, n, n.Payload[i+1], n.Payload[i])
 		}
@@ -358,7 +370,8 @@ func (g *generator) foreignFunc(module string, n *zyxc.Node) {
 // foreignGlobal declares a top-level binding of another package, and takes
 // its initializer when this module is the one that runs the initializers.
 // A binding the package keeps to itself is not declared at all: the front end
-// does not let another package name it.
+// does not let another package name it. The storage is declared the way the
+// defining module writes it, which is what lets the two meet at the link.
 func (g *generator) foreignGlobal(module string, n *zyxc.Node, id, name string) {
 	if !exported(name) {
 		return
@@ -371,7 +384,7 @@ func (g *generator) foreignGlobal(module string, n *zyxc.Node, id, name string) 
 		return
 	}
 	g.m.declared[id] = true
-	fmt.Fprintf(&g.m.funcs, "@%s = external global %s\n", llvmName(id), g.llType(typ))
+	fmt.Fprintf(&g.m.funcs, "@%s = external global %s\n", llvmName(id), g.llPass(typ))
 }
 
 // declareZyx declares a function of this program, which the module calls

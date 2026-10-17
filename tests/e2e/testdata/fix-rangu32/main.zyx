@@ -1,0 +1,50 @@
+package main
+
+import "std/fmt"
+
+// A range counts from its lower bound to its upper one whatever integer type
+// the bounds have. The walk counts in a pointer-wide integer, so the count and
+// the element have to agree on one type rather than mixing the two.
+
+func main() {
+    var n: u32 = 3
+    var total: u32 = 0
+    for _ in 0 .. n {
+        total += 1
+    }
+    fmt.PrintI64(i64(total))
+    fmt.PrintNl()
+
+    var lo: u32 = 1
+    var hi: u32 = 4
+    var sum: u32 = 0
+    for i in lo .. hi {
+        sum += i
+    }
+    fmt.PrintI64(i64(sum))
+    fmt.PrintNl()
+
+    var small: u8 = 2
+    var bytes: u32 = 0
+    for k in 0 .. small {
+        bytes += u32(k) + 1
+    }
+    fmt.PrintI64(i64(bytes))
+    fmt.PrintNl()
+
+    var count: i64 = 3
+    var signed: i64 = 0
+    for i in 0 .. count {
+        signed += i
+    }
+    fmt.PrintI64(signed)
+    fmt.PrintNl()
+
+    // A range that counts down is empty, and one whose bounds are equal too.
+    var none: u32 = 0
+    for _ in 0 .. none {
+        total += 100
+    }
+    fmt.PrintI64(i64(total))
+    fmt.PrintNl()
+}

@@ -1,0 +1,34 @@
+package main
+
+import "std/fmt"
+
+// One generic function used twice with the same type argument and once with
+// another, and one generic struct used with two. The instance set therefore
+// has to be deduplicated by signature and kept in the order the uses appear.
+
+func Pick < T: Eq > (a: T, b: T, first: bool) -> T {
+    if first {
+        return a
+    }
+    return b
+}
+
+struct Box<T> {
+    item: T
+    func Get() -> T {
+        return self.item
+    }
+}
+
+func main() {
+    fmt.PrintI64(Pick(1, 2, true))
+    fmt.PrintNl()
+    fmt.Println(Pick("left", "right", false))
+    fmt.PrintI64(Pick(3, 4, false))
+    fmt.PrintNl()
+    var boxed: Box<i64> = Box { item: 5 }
+    fmt.PrintI64(boxed.Get())
+    fmt.PrintNl()
+    var words: Box<str> = Box { item: "boxed" }
+    fmt.Println(words.Get())
+}

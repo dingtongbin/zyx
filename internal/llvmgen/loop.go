@@ -114,21 +114,32 @@ func loopLabel(n *zyxc.Node, bindings int) string {
 }
 
 // forRange lowers a for-in over a range, which counts from the lower bound to
-// the upper one.
+// the upper one. The walk counts in the pointer-width integer, so the bounds
+// are read in it and every element comes back in the range's own type: a range
+// whose bounds are narrower than a pointer still compares and subtracts in one
+// integer type, which is what the language requires of it.
 func (g *generator) forRange(module string, n *zyxc.Node, iter *zyxc.Node, bind loopBind) {
 	lo := g.load(g.expr(module, g.wrapped(iter, "lo"), nil))
 	hi := g.load(g.expr(module, g.wrapped(iter, "hi"), nil))
 	if lo == nil || hi == nil {
 		return
 	}
-	// The bounds carry the element type, which the range yields.
 	bind.typ = lo.typ
+	start := g.cast(lo, types.Int64)
+	end := g.cast(hi, types.Int64)
+	if start == nil || end == nil {
+		return
+	}
 	count := g.newReg()
-	g.emit("  %s = sub %s %s, %s", count, lo.ll, hi.text, lo.text)
-	g.forWalk(module, n, bind, &value{text: count, ll: lo.ll, typ: types.Int64}, func(index string) *value {
-		reg := g.newReg()
-		g.emit("  %s = add %s %s, %s", reg, lo.ll, lo.text, index)
-		return &value{text: reg, ll: lo.ll, typ: bind.typ}
+	g.emit("  %s = sub i64 %s, %s", count, end.text, start.text)
+	g.forWalk(module, n, bind, &value{text: count, ll: "i64", typ: types.Int64}, func(index string) *value {
+		at := g.newReg()
+		g.emit("  %s = add i64 %s, %s", at, start.text, index)
+		element := g.cast(&value{text: at, ll: "i64", typ: types.Int64}, bind.typ)
+		if element == nil {
+			return nil
+		}
+		return element
 	}, nil)
 }
 
@@ -138,6 +149,16 @@ func (g *generator) forRange(module string, n *zyxc.Node, iter *zyxc.Node, bind 
 // modification count: a modification the body makes is noticed even on the
 // last round, because the loop has not ended until it takes that edge.
 func (g *generator) forWalk(module string, n *zyxc.Node, bind loopBind, length *value, element func(index string) *value, guard func()) {
+	condLabel := g.newLabel("forin.cond")
+	bodyLabel := g.newLabel("forin.body")
+	stepLabel := g.newLabel("forin.step")
+	endLabel := g.newLabel("forin.end")
+	// The loop covers every block it emits, from the first to the last, so
+	// the release of an object the loop still reads waits until the loop is
+	// left instead of landing inside it.
+	g.fn.loops = append(g.fn.loops, loopInfo{label: loopLabel(n, 4), breakTo: endLabel, continueTo: stepLabel})
+	defer func() { g.fn.loops = g.fn.loops[:len(g.fn.loops)-1] }()
+
 	indexSlot := g.alloca(types.Int64)
 	g.emit("  store i64 0, ptr %s", indexSlot)
 	lengthSlot := g.alloca(types.Int64)
@@ -145,10 +166,6 @@ func (g *generator) forWalk(module string, n *zyxc.Node, bind loopBind, length *
 
 	valueSlot := g.declareLoopVar(bind)
 
-	condLabel := g.newLabel("forin.cond")
-	bodyLabel := g.newLabel("forin.body")
-	stepLabel := g.newLabel("forin.step")
-	endLabel := g.newLabel("forin.end")
 	g.terminator("  br label %%%s", condLabel)
 	g.label(condLabel)
 	index := g.newReg()
@@ -166,9 +183,7 @@ func (g *generator) forWalk(module string, n *zyxc.Node, bind loopBind, length *
 		}
 		g.storeInto(valueSlot, bind.typ, elem, false)
 	}
-	g.fn.loops = append(g.fn.loops, loopInfo{label: loopLabel(n, 4), breakTo: endLabel, continueTo: stepLabel})
 	g.stmt(module, g.wrapped(n, "body"))
-	g.fn.loops = g.fn.loops[:len(g.fn.loops)-1]
 	if !g.fn.terminated {
 		g.terminator("  br label %%%s", stepLabel)
 	}
@@ -194,6 +209,7 @@ func (g *generator) declareLoopVar(bind loopBind) string {
 	slot := g.alloca(bind.typ)
 	if bind.symbol != "" {
 		g.fn.vars[bind.symbol] = &varSlot{alloca: slot, typ: bind.typ}
+		g.rememberBinding(bind.symbol)
 	}
 	return slot
 }
@@ -273,14 +289,17 @@ func (g *generator) forStr(module string, n *zyxc.Node, seq *value, bind loopBin
 	bind.typ = types.Char
 	seq = g.load(seq)
 	ptr, length := g.splitFat(seq)
-	atSlot := g.alloca(types.Usize)
-	g.emit("  store %s 0, ptr %s", g.ptrInt(), atSlot)
-	valueSlot := g.declareLoopVar(bind)
-
 	condLabel := g.newLabel("forstr.cond")
 	bodyLabel := g.newLabel("forstr.body")
 	stepLabel := g.newLabel("forstr.step")
 	endLabel := g.newLabel("forstr.end")
+	g.fn.loops = append(g.fn.loops, loopInfo{label: loopLabel(n, 4), breakTo: endLabel, continueTo: stepLabel})
+	defer func() { g.fn.loops = g.fn.loops[:len(g.fn.loops)-1] }()
+
+	atSlot := g.alloca(types.Usize)
+	g.emit("  store %s 0, ptr %s", g.ptrInt(), atSlot)
+	valueSlot := g.declareLoopVar(bind)
+
 	g.terminator("  br label %%%s", condLabel)
 	g.label(condLabel)
 	at := g.newReg()
@@ -297,9 +316,7 @@ func (g *generator) forStr(module string, n *zyxc.Node, seq *value, bind loopBin
 	if valueSlot != "" {
 		g.storeInto(valueSlot, types.Char, &value{text: rune, ll: "i32", typ: types.Char}, false)
 	}
-	g.fn.loops = append(g.fn.loops, loopInfo{label: loopLabel(n, 4), breakTo: endLabel, continueTo: stepLabel})
 	g.stmt(module, g.wrapped(n, "body"))
-	g.fn.loops = g.fn.loops[:len(g.fn.loops)-1]
 	if !g.fn.terminated {
 		g.terminator("  br label %%%s", stepLabel)
 	}
@@ -320,6 +337,8 @@ func (g *generator) forIterate(module string, n *zyxc.Node, next func() string, 
 	bodyLabel := g.newLabel("foriter.body")
 	latchLabel := g.newLabel("foriter.latch")
 	endLabel := g.newLabel("foriter.end")
+	g.fn.loops = append(g.fn.loops, loopInfo{label: loopLabel(n, 4), breakTo: endLabel, continueTo: latchLabel})
+	defer func() { g.fn.loops = g.fn.loops[:len(g.fn.loops)-1] }()
 	g.terminator("  br label %%%s", condLabel)
 	g.label(condLabel)
 	more := next()
@@ -328,9 +347,7 @@ func (g *generator) forIterate(module string, n *zyxc.Node, next func() string, 
 	g.terminator("  br i1 %s, label %%%s, label %%%s", cond, bodyLabel, endLabel)
 	g.label(bodyLabel)
 	bind()
-	g.fn.loops = append(g.fn.loops, loopInfo{label: loopLabel(n, 4), breakTo: endLabel, continueTo: latchLabel})
 	g.stmt(module, g.wrapped(n, "body"))
-	g.fn.loops = g.fn.loops[:len(g.fn.loops)-1]
 	if !g.fn.terminated {
 		g.terminator("  br label %%%s", latchLabel)
 	}

@@ -27,7 +27,7 @@ func (s *Session) check(args []string) int {
 	if err != nil {
 		return s.usageError(err)
 	}
-	session := &build.Session{Loader: s.loader(m, o)}
+	session := s.session(m, o)
 	reported := map[string]bool{}
 	failed := false
 	for _, path := range paths {
@@ -48,7 +48,9 @@ func (s *Session) check(args []string) int {
 
 // reportOnce prints the diagnostics of the packages that have not been
 // reported yet, so that a run over several targets reports a shared
-// dependency once. It reports whether any diagnostic is an error.
+// dependency once. It reports whether any diagnostic is an error. The text
+// comes from the result, so a cached package reports what the run that built
+// it reported.
 func (s *Session) reportOnce(results []*build.Result, reported map[string]bool) bool {
 	failed := false
 	for _, res := range results {
@@ -56,8 +58,9 @@ func (s *Session) reportOnce(results []*build.Result, reported map[string]bool) 
 			continue
 		}
 		reported[res.Package.ImportPath] = true
-		if s.report(res.Diags) {
+		if len(res.Report) != 0 {
 			failed = true
+			fmt.Fprint(s.Stderr, string(res.Report))
 		}
 	}
 	return failed

@@ -1,0 +1,53 @@
+package main
+
+import "std/fmt"
+
+// `!=` on two floats is the true inequality, so a value that is not equal to
+// anything, a NaN included, answers true; every comparison that is ordered
+// answers false for one.
+
+func main() {
+    var nan: f64 = 0.0 / 0.0
+    fmt.PrintBool(nan != nan)
+    fmt.PrintNl()
+    var inf: f64 = 1.0 / 0.0
+    fmt.PrintBool(inf * 0.0 != 0.0)
+    fmt.PrintNl()
+    fmt.PrintBool(1.0 != 2.0)
+    fmt.PrintNl()
+    fmt.PrintBool(nan == nan)
+    fmt.PrintNl()
+    fmt.PrintBool(nan != 1.0)
+    fmt.PrintNl()
+    var x: f64 = 1.0
+    if !(x == x) {
+        fmt.Println("not equal")
+    } else {
+        fmt.Println("equal")
+    }
+    if !(nan == nan) {
+        fmt.Println("nan is not equal to itself")
+    }
+
+    // An integer written where a float is wanted, and float literals whose
+    // text has an exponent, are constants LLVM accepts.
+    fmt.PrintF64(f64(3))
+    fmt.PrintNl()
+    var big: f64 = 100000000000000000000.0
+    fmt.PrintBool(big > 1.0)
+    fmt.PrintNl()
+    var tiny: f64 = 1e-7
+    fmt.PrintBool(tiny > 0.0)
+    fmt.PrintNl()
+    var small: f32 = 2.5
+    fmt.PrintBool(f64(small) == 2.5)
+    fmt.PrintNl()
+
+    // An interpolated integer narrower than the writer's parameter is
+    // widened, whatever width it is.
+    var n: i32 = 3
+    var byte: u8 = 7
+    var many: u64 = 4000000000
+    fmt.Println(f"n={n} byte={byte} many={many}")
+    fmt.Println(f"bad({f64(2)})")
+}

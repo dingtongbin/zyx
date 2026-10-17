@@ -1,0 +1,29 @@
+package main
+
+import "std/fmt"
+
+// A slice of a str is a view of the same bytes rather than a copy, which is
+// what lets the split family answer views of the buffer they were given. The
+// text the slices came from keeps its own bytes.
+
+func head(text: str) -> str {
+    return text[0 .. 3]
+}
+
+func main() {
+    var text: str = "hello, world"
+    var head_: str = text[0 .. 5]
+    var middle: str = text[5 .. 7]
+    var tail: str = text[7 .. 12]
+    fmt.Println(head_)
+    fmt.Println(middle)
+    fmt.Println(tail)
+    fmt.PrintU64(u64(head_.Len()))
+    fmt.PrintNl()
+    fmt.Println(text)
+    var empty: str = text[3 .. 3]
+    fmt.PrintU64(u64(empty.Len()))
+    fmt.PrintNl()
+    fmt.Println(head(text))
+    fmt.Println(head("abcdef"))
+}

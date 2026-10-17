@@ -18,11 +18,20 @@ func (g *generator) stmt(module string, n *zyxc.Node) {
 	g.flushReleases(mark)
 }
 
-// flushReleases releases the objects a statement finished with.
+// flushReleases releases the objects a statement finished with. An object a
+// loop still reads is held back: its release is emitted once control has left
+// every loop the object was created outside of.
 func (g *generator) flushReleases(from int) {
-	pending := g.fn.pending[from:]
-	g.fn.pending = g.fn.pending[:from]
-	for _, p := range pending {
+	if from > len(g.fn.pending) {
+		from = len(g.fn.pending)
+	}
+	kept, rest := g.fn.pending[:from], g.fn.pending[from:]
+	g.fn.pending = kept
+	for _, p := range rest {
+		if p.depth < len(g.fn.loops) {
+			g.fn.pending = append(g.fn.pending, p)
+			continue
+		}
 		g.release(p.typ, p.slot)
 	}
 }
@@ -126,6 +135,7 @@ func (g *generator) bind(module string, n *zyxc.Node) {
 	}
 	if id != "" {
 		g.fn.vars[id] = &varSlot{alloca: slot, typ: typ}
+		g.rememberBinding(id)
 	}
 }
 
@@ -158,6 +168,7 @@ func (g *generator) bindTuple(module string, n *zyxc.Node) {
 		g.storeInto(slot, typ, g.tupleElement(v, elem, typ), false)
 		if name != "_" && symbol != "" {
 			g.fn.vars[symbol] = &varSlot{alloca: slot, typ: typ}
+			g.rememberBinding(symbol)
 		}
 	}
 }
@@ -279,6 +290,10 @@ func (g *generator) forStmt(module string, n *zyxc.Node) {
 	bodyLabel := g.newLabel("for.body")
 	latchLabel := g.newLabel("for.latch")
 	endLabel := g.newLabel("for.end")
+	// The loop covers every block it emits, from the first to the last, so a
+	// release of an object the loop reads waits until the loop is left.
+	g.fn.loops = append(g.fn.loops, loopInfo{label: loopLabel(n, 0), breakTo: endLabel, continueTo: latchLabel})
+	defer func() { g.fn.loops = g.fn.loops[:len(g.fn.loops)-1] }()
 	g.terminator("  br label %%%s", condLabel)
 	g.label(condLabel)
 	cond := g.wrapped(n, "cond")
@@ -291,9 +306,7 @@ func (g *generator) forStmt(module string, n *zyxc.Node) {
 		g.terminator("  br label %%%s", bodyLabel)
 	}
 	g.label(bodyLabel)
-	g.fn.loops = append(g.fn.loops, loopInfo{label: loopLabel(n, 0), breakTo: endLabel, continueTo: latchLabel})
 	g.stmt(module, g.wrapped(n, "body"))
-	g.fn.loops = g.fn.loops[:len(g.fn.loops)-1]
 	if !g.fn.terminated {
 		g.terminator("  br label %%%s", latchLabel)
 	}
