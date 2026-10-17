@@ -207,9 +207,16 @@ func quote(token, reserved string) string {
 }
 
 // needsQuoting reports whether a token is not a bare word: an empty token, a
-// byte the format reserves, a control byte, or a character that separates one
-// token from another in the section the token stands in.
+// byte the format reserves, a control byte, a character that separates one token
+// from another in the section the token stands in, or a word the reader takes for
+// structure. A name a program wrote may be any word at all — a parameter named
+// `from` is a parameter — so a token that reads as a section marker is quoted,
+// and the reader then reads it as a payload token rather than as structure.
 func needsQuoting(token, reserved string) bool {
+	switch token {
+	case "pos", "from", "marks":
+		return true
+	}
 	for i := 0; i < len(token); i++ {
 		c := token[i]
 		if c <= ' ' || c == '"' || c == '\\' || c == 0x7f || strings.IndexByte(reserved, c) >= 0 {
