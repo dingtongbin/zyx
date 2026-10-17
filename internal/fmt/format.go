@@ -25,7 +25,7 @@ func Source(file *source.File) []byte {
 // A printer accumulates the canonical text.
 type printer struct {
 	buf strings.Builder
-	// indent is the current indentation depth in two-space steps.
+	// indent is the current indentation depth in four-space steps.
 	indent int
 	// lineStart marks a line that holds nothing yet.
 	lineStart bool
@@ -33,6 +33,10 @@ type printer struct {
 	prev *token.Token
 	// prevText is the text of the last token written.
 	prevText string
+	// prevContent is the kind of the last token written that was not a line
+	// break, comments included. It tells whether a comment run sits directly
+	// above a declaration and whether a brace has just opened.
+	prevContent token.Kind
 	// angles counts the open type-argument brackets, inside which `<`, `>`,
 	// and `,` attach to their neighbours.
 	angles int
@@ -47,14 +51,24 @@ type printer struct {
 	// literal separates nothing, and a line break inside a block separates
 	// statements.
 	braces []bool
-	// line is the source line the last written token started on.
+	// indents records, for every open brace, whether it raised the
+	// indentation. A brace that holds something indents its members, and the
+	// closing brace returns to the level that opened it.
+	indents []bool
+	// line is the source line the last written token ended on.
 	line int
+	// blank marks output that already ends with a blank line, so a second
+	// one is never written.
+	blank bool
 	// emptyBody marks an opening brace whose body holds nothing, which the
 	// format keeps on one line.
 	emptyBody bool
 	// lastDecl is the last top-level declaration keyword written, which
 	// decides where a blank line separates declarations.
 	lastDecl token.Kind
+	// attach marks that the last token was a unary operator, so the token
+	// after it attaches to its operand.
+	attach bool
 	// pending marks a line deferNewline left open, which a comment on the
 	// same line is written into before it ends.
 	pending bool
@@ -90,62 +104,34 @@ func (p *printer) token(toks []token.Token, i int) {
 		return
 	}
 	if t.Kind == token.Comment {
-		if p.pending && line == p.line {
-			// The comment stands on the line the printer has not ended yet,
-			// which is where the program wrote it.
-			p.pending = false
-		} else {
-			p.flushPending()
-		}
-		// A comment at the top level opens the run that belongs to the
-		// declaration below it, so the blank line goes before the run, and
-		// only when the comment starts a line of its own.
-		if p.lineStart && p.separates() && p.indent == 0 && p.lastDecl != token.Invalid &&
-			(p.prev == nil || p.prev.Kind != token.Comment) {
-			p.blankLine()
-		}
-		if !p.lineStart {
-			p.space()
-		}
-		p.write(text)
-		if !t.Block {
-			// A line comment ends the line it is written on; a block comment
-			// ends where its closing marker is, so the line goes on.
-			p.newline()
-		}
-		p.prev = &toks[i]
-		p.prevText = text
-		p.line = line
+		p.writeComment(toks, i, text, line)
 		return
 	}
 	p.flushPending()
+	p.breakTo(line)
 
-	// A blank line in the source stays a blank line, and a top-level
-	// declaration is separated from the one before it by one blank line.
-	if p.separates() && p.indent == 0 {
-		switch {
-		case p.prev == nil:
-		case p.line > 0 && line > p.line+1:
-			p.blankLine()
-		case isDeclKeyword(t.Kind) && p.lineStart && p.lastDecl != token.Invalid &&
-			(p.prev == nil || !p.prev.Doc) &&
-			!(p.lastDecl == token.Import && t.Kind == token.Import):
-			// A doc comment belongs to the declaration it precedes, so no
-			// blank line is written between them.
-			p.blankLine()
-		}
+	// The source's blank lines survive, one at most, and never at the start
+	// or the end of a brace. A top-level declaration is separated from the
+	// one before it by a blank line; a comment run directly above it belongs
+	// to it, so no blank line goes between the run and the declaration.
+	p.blankIfSource(line, t.Kind == token.RBrace)
+	if p.separates() && p.indent == 0 && p.lineStart &&
+		isDeclKeyword(t.Kind) && p.lastDecl != token.Invalid &&
+		p.prevContent != token.Comment && !sameRun(p.lastDecl, t.Kind) {
+		p.blankLine()
 	}
-	if t.Kind == token.RBrace && p.inBlock() && !p.emptyBody {
-		// The line is ended after the brace, and after any comment the
-		// program wrote beside it, which the switch below defers.
+	if t.Kind == token.RBrace && p.indented() {
+		// The closing brace returns to the level that opened its body.
 		if p.indent > 0 {
 			p.indent--
 		}
-	} else if p.needsSpace(toks, i, text) {
+	}
+	if p.needsSpace(toks, i) {
 		p.space()
 	}
 	p.write(text)
 
+	closes := false
 	switch t.Kind {
 	case token.LParen, token.LBrack:
 		p.brackets++
@@ -154,36 +140,9 @@ func (p *printer) token(toks []token.Token, i int) {
 			p.brackets--
 		}
 	case token.LBrace:
-		block := p.opensBlock(toks, i)
-		p.braces = append(p.braces, block)
-		if !block {
-			break
-		}
-		if nextSignificant(toks, i) == token.RBrace {
-			// An empty body is written on one line.
-			p.emptyBody = true
-			p.space()
-			break
-		}
-		p.indent++
-		p.deferNewline()
+		p.pushBrace(toks, i)
 	case token.RBrace:
-		block := p.inBlock()
-		if n := len(p.braces); n > 0 {
-			p.braces = p.braces[:n-1]
-		}
-		if !block {
-			break
-		}
-		if p.emptyBody {
-			p.emptyBody = false
-			break
-		}
-		if i+1 < len(toks) && toks[i+1].Kind == token.Else {
-			p.space()
-			break
-		}
-		p.deferNewline()
+		p.popBrace(toks, i)
 	case token.Semicolon:
 		// A semicolon between statements ends a line; one inside brackets
 		// separates the parts of a type or a literal, which stay together.
@@ -198,19 +157,118 @@ func (p *printer) token(toks []token.Token, i int) {
 		if p.angles > 0 {
 			p.angles--
 			p.closedArgs = p.angles == 0
+			closes = p.closedArgs
+		}
+	case token.Shr:
+		// A `>>` closes two type argument lists when two are open, and is a
+		// shift otherwise.
+		if p.angles >= 2 {
+			p.angles -= 2
+			p.closedArgs = p.angles == 0
+			closes = p.closedArgs
 		}
 	}
 
-	if t.Kind != token.Gt {
+	if !closes {
 		// The mark lasts for the token that follows the closing bracket.
 		p.closedArgs = false
 	}
+	p.attach = t.Kind == token.Minus && opensExpression(p.prevKind())
 	p.prev = &toks[i]
 	p.prevText = text
 	p.line = line
+	p.prevContent = t.Kind
 	if p.indent == 0 && isDeclKeyword(t.Kind) {
 		p.lastDecl = t.Kind
 	}
+}
+
+// writeComment writes one comment where the program wrote it. A line comment
+// ends the line it stands on; a block comment does not, so the line goes on
+// past its closing marker.
+func (p *printer) writeComment(toks []token.Token, i int, text string, line int) {
+	t := toks[i]
+	if p.pending && line == p.line {
+		// The comment stands on the line the printer has not ended yet,
+		// which is where it was written.
+		p.pending = false
+	} else {
+		p.flushPending()
+		p.breakTo(line)
+	}
+	p.blankIfSource(line, false)
+	// A comment at the top level opens the run that belongs to the
+	// declaration below it, so the blank line goes before the run, and only
+	// when the comment starts a line of its own.
+	if p.lineStart && p.separates() && p.indent == 0 && p.lastDecl != token.Invalid &&
+		p.prevContent != token.Comment {
+		p.blankLine()
+	}
+	if !p.lineStart {
+		p.space()
+	}
+	p.write(text)
+	if !t.Block {
+		p.newline()
+	}
+	p.prev = &toks[i]
+	p.prevText = text
+	p.line = commentEnd(t, line)
+	p.prevContent = token.Comment
+}
+
+// commentEnd returns the last line a comment covers. A block comment spans
+// several lines, so a blank line after it is measured from where it ends.
+func commentEnd(t token.Token, start int) int {
+	if !t.Block || t.Span.File == nil {
+		return start
+	}
+	end, _ := t.Span.File.LineCol(t.Span.End)
+	return end
+}
+
+// pushBrace records an opening brace. A body that holds something raises the
+// indentation, and a statement block ends its line there.
+func (p *printer) pushBrace(toks []token.Token, i int) {
+	block := p.opensBlock(toks, i)
+	p.braces = append(p.braces, block)
+	if nextSignificant(toks, i) == token.RBrace {
+		// An empty body is written on one line.
+		p.indents = append(p.indents, false)
+		if block {
+			p.emptyBody = true
+			p.space()
+		}
+		return
+	}
+	p.indents = append(p.indents, true)
+	p.indent++
+	if block {
+		p.deferNewline()
+	}
+}
+
+// popBrace leaves an opening brace and resets the marks it set. The line is
+// ended after the brace, unless an `else` the format keeps beside it follows.
+func (p *printer) popBrace(toks []token.Token, i int) {
+	block := p.inBlock()
+	if n := len(p.braces); n > 0 {
+		p.braces = p.braces[:n-1]
+	}
+	if n := len(p.indents); n > 0 {
+		p.indents = p.indents[:n-1]
+	}
+	if !block {
+		return
+	}
+	if p.emptyBody {
+		p.emptyBody = false
+		return
+	}
+	if i+1 < len(toks) && toks[i+1].Kind == token.Else {
+		return
+	}
+	p.deferNewline()
 }
 
 // isDeclKeyword reports whether a token opens a top-level declaration.
@@ -224,10 +282,31 @@ func isDeclKeyword(k token.Kind) bool {
 	return false
 }
 
+// sameRun reports whether two declaration keywords open a run of declarations
+// the format keeps together without a blank line between them: consecutive
+// imports, and consecutive constants, variables, or type aliases. A blank line
+// the source wrote inside a run is still kept.
+func sameRun(prev, next token.Kind) bool {
+	if prev != next {
+		return false
+	}
+	switch next {
+	case token.Import, token.Const, token.Var, token.Type:
+		return true
+	}
+	return false
+}
+
 // inBlock reports whether the innermost open brace is a statement block.
 func (p *printer) inBlock() bool {
 	n := len(p.braces)
 	return n > 0 && p.braces[n-1]
+}
+
+// indented reports whether the innermost open brace raised the indentation.
+func (p *printer) indented() bool {
+	n := len(p.indents)
+	return n > 0 && p.indents[n-1]
 }
 
 // nextSignificant returns the kind of the next token that carries text,
@@ -258,20 +337,37 @@ func (p *printer) separates() bool {
 }
 
 // opensBlock reports whether a brace opens a statement block rather than an
-// aggregate literal. A literal follows a type name; a token that can only
-// stand before a body makes the brace a body even when the token before it is
-// a type name, which is how a result type of a user-declared type is told
+// aggregate literal. A literal follows the name of a type; a token that can
+// only stand before a body makes the brace a body even when the token before it
+// is a type name, which is how a result type of a user-declared type is told
 // from a construction.
 func (p *printer) opensBlock(toks []token.Token, i int) bool {
 	if i == 0 {
 		return true
 	}
-	prev := toks[i-1]
-	if !opensAType(prev.Kind, prev.Span.Text()) {
+	j := i - 1
+	if toks[j].Kind == token.Gt {
+		// The brace follows the closing bracket of a type argument list, so
+		// the type name stands before the list. Step back over it.
+		depth := 0
+		for ; j >= 0; j-- {
+			switch toks[j].Kind {
+			case token.Gt:
+				depth++
+			case token.Lt:
+				depth--
+			}
+			if depth == 0 {
+				break
+			}
+		}
+		j--
+	}
+	if j < 0 || !opensAType(toks[j].Kind, toks[j].Span.Text()) {
 		return true
 	}
-	if i >= 2 {
-		switch toks[i-2].Kind {
+	if j >= 1 {
+		switch toks[j-1].Kind {
 		case token.Struct, token.Enum, token.Interface, token.Impl, token.Extern, token.Union,
 			token.Arrow, token.Is, token.For:
 			return true
@@ -281,8 +377,13 @@ func (p *printer) opensBlock(toks []token.Token, i int) bool {
 }
 
 // needsSpace reports whether a space separates a token from the one before.
-func (p *printer) needsSpace(toks []token.Token, i int, text string) bool {
+func (p *printer) needsSpace(toks []token.Token, i int) bool {
 	if p.lineStart || p.prev == nil {
+		return false
+	}
+	if p.attach && toks[i].Kind != token.Minus {
+		// The token is the operand of a unary operator, which attaches to
+		// it. Two minus signs keep their space so they read as two.
 		return false
 	}
 	kind := toks[i].Kind
@@ -293,7 +394,8 @@ func (p *printer) needsSpace(toks []token.Token, i int, text string) bool {
 	if noSpaceBefore(kind) {
 		return false
 	}
-	if p.angles > 0 && (kind == token.Lt || kind == token.Gt || kind == token.Comma) {
+	if p.angles > 0 && (kind == token.Lt || kind == token.Gt || kind == token.Comma ||
+		(kind == token.Shr && p.angles >= 2)) {
 		return false
 	}
 	if p.angles > 0 && p.prev.Kind == token.Lt {
@@ -311,7 +413,7 @@ func (p *printer) needsSpace(toks []token.Token, i int, text string) bool {
 		switch p.prev.Kind {
 		case token.Ident, token.RParen, token.RBrack, token.Func, token.SelfUpper:
 			return false
-		case token.Gt:
+		case token.Gt, token.Shr:
 			if p.closedArgs {
 				return false
 			}
@@ -327,12 +429,7 @@ func (p *printer) needsSpace(toks []token.Token, i int, text string) bool {
 		case token.Ident, token.RParen, token.RBrack, token.SelfUpper:
 			return false
 		}
-	case token.Minus:
-		if opensExpression(p.prev.Kind) {
-			return false
-		}
 	}
-	_ = text
 	return true
 }
 
@@ -344,6 +441,30 @@ func (p *printer) prevKind() token.Kind {
 	return p.prev.Kind
 }
 
+// breakTo ends the current line when a token stands on a later source line
+// than the last token written. The lexer folds a line break into a preceding
+// continuation token such as `>` or `,`, so the line structure is read from
+// the token positions rather than from a line-break token.
+func (p *printer) breakTo(line int) {
+	if p.emptyBody || p.lineStart || line <= p.line {
+		return
+	}
+	p.newline()
+}
+
+// blankIfSource writes at most one blank line for the break the source held
+// before this token. A blank line is never written after an opening brace or
+// before a closing one.
+func (p *printer) blankIfSource(line int, closing bool) {
+	if !p.lineStart || p.buf.Len() == 0 || p.line == 0 {
+		return
+	}
+	if line <= p.line+1 || closing || p.prevContent == token.LBrace {
+		return
+	}
+	p.blankLine()
+}
+
 // write appends text, starting a line at the current indentation.
 func (p *printer) write(text string) {
 	if p.lineStart {
@@ -352,6 +473,7 @@ func (p *printer) write(text string) {
 		}
 		p.lineStart = false
 	}
+	p.blank = false
 	p.buf.WriteString(text)
 }
 
@@ -374,6 +496,7 @@ func (p *printer) newline() {
 	p.buf.WriteByte('\n')
 	p.lineStart = true
 	p.pending = false
+	p.blank = false
 }
 
 // deferNewline ends the current line, unless a comment the program wrote on
@@ -394,13 +517,17 @@ func (p *printer) flushPending() {
 	p.pending = false
 	p.buf.WriteByte('\n')
 	p.lineStart = true
+	p.blank = false
 }
 
-// blankLine writes one empty line, which separates top-level declarations.
+// blankLine writes one empty line. It separates top-level declarations and
+// keeps the blank lines the source held, and a second one in a row is never
+// written.
 func (p *printer) blankLine() {
-	if p.buf.Len() == 0 {
+	if p.buf.Len() == 0 || p.blank {
 		return
 	}
 	p.buf.WriteByte('\n')
 	p.lineStart = true
+	p.blank = true
 }

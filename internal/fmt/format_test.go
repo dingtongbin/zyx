@@ -177,3 +177,79 @@ func TestFormatKeepsABlockComment(t *testing.T) {
 		t.Errorf("format is not idempotent:\n--- first ---\n%s\n--- second ---\n%s", got, again)
 	}
 }
+
+// checkFormat reports whether src formats to want and whether formatting the
+// result again leaves it alone. The format is idempotent, so both runs must
+// equal the expected text.
+func checkFormat(t *testing.T, name, src, want string) {
+	t.Helper()
+	once := format(src)
+	if once != want {
+		t.Errorf("%s: format =\n%s\nwant\n%s", name, once, want)
+	}
+	if twice := format(once); twice != want {
+		t.Errorf("%s: second format =\n%s\nwant\n%s", name, twice, want)
+	}
+}
+
+// TestFormatKeepsStructFieldsOnTheirLines checks that every field of a struct
+// declaration stays on the line the program wrote it on. A field whose type
+// ends in a type argument list once joined the field after it, because the
+// lexer folds the line break into the `>` that closes the list.
+func TestFormatKeepsStructFieldsOnTheirLines(t *testing.T) {
+	src := "package main\n\nstruct Node {\n    counts: Array<u32>\n    symbols: Array<u32>\n" +
+		"    left: i32\n    right: i32\n}\n"
+	checkFormat(t, "struct fields", src, src)
+}
+
+// TestFormatKeepsAMultiLineLiteral checks that a struct literal the program
+// wrote across lines stays across lines, with its members indented under the
+// statement that opened it and the closing brace back at that level.
+func TestFormatKeepsAMultiLineLiteral(t *testing.T) {
+	src := "package main\n\nstruct Node {\n    counts: Array<u32>\n    left: i32\n}\n\n" +
+		"func make_node() -> Node {\n    return Node {\n        counts: new Array<u32>(0),\n" +
+		"        left: 0,\n    }\n}\n"
+	checkFormat(t, "multi-line literal", src, src)
+}
+
+// TestFormatKeepsACommentAboveItsDeclaration checks that a comment directly
+// above a declaration stays attached to it: the format does not put a blank
+// line between the two.
+func TestFormatKeepsACommentAboveItsDeclaration(t *testing.T) {
+	src := "package main\n\n// f does nothing.\nfunc f() {}\n"
+	want := "package main\n\n// f does nothing.\nfunc f() { }\n"
+	checkFormat(t, "documented declaration", src, want)
+}
+
+// TestFormatKeepsAnElseBesideItsBrace checks that `else` is written beside the
+// closing brace, with one space between them and none doubled.
+func TestFormatKeepsAnElseBesideItsBrace(t *testing.T) {
+	src := "package main\n\nfunc f(n: i64) -> i64 {\n    if n > 0 {\n        return 1\n" +
+		"    } else {\n        return -1\n    }\n}\n"
+	checkFormat(t, "else", src, src)
+}
+
+// TestFormatAttachesAUnaryMinus checks that a unary minus attaches to its
+// operand while the space before it follows the token on its left, so a
+// literal and a returned value read the same as they were written.
+func TestFormatAttachesAUnaryMinus(t *testing.T) {
+	src := "package main\n\nfunc f() -> i64 {\n    var low: i64 = -9223372036854775808\n" +
+		"    var pair = (-1, -2)\n    return -low\n}\n"
+	checkFormat(t, "unary minus", src, src)
+}
+
+// TestFormatClosesNestedTypeArguments checks that `>>` closes two type
+// argument lists as tightly as one `>` closes one, and that a call attaches to
+// the list it follows.
+func TestFormatClosesNestedTypeArguments(t *testing.T) {
+	src := "package main\n\nvar rows: Array<Node<u32>>\nvar made = new Array<Node<u32>>(0)\n"
+	checkFormat(t, "nested type arguments", src, src)
+}
+
+// TestFormatKeepsABlankLineInsideABlock checks that a single blank line the
+// program wrote inside a block stays, while a second one in a row is dropped.
+func TestFormatKeepsABlankLineInsideABlock(t *testing.T) {
+	src := "package main\n\nfunc f() {\n    var x = 1\n\n\n    var y = 2\n}\n"
+	want := "package main\n\nfunc f() {\n    var x = 1\n\n    var y = 2\n}\n"
+	checkFormat(t, "blank line in a block", src, want)
+}
