@@ -1,0 +1,524 @@
+package http
+
+// The bytes of a message as they travel over a connection: reading a start
+// line, the header fields, and a body whose framing the fields give, and
+// writing them back the same way.
+//
+// A reader holds the bytes of a connection that the message being read has not
+// consumed, so a message that arrives in several reads is assembled without
+// losing the start of the next one.
+
+import "std/net"
+
+// max_line is the most bytes a start line or one header field may take. A
+// longer one is refused rather than buffered without bound.
+const max_line: usize = 8192
+
+// read_size is how many bytes one read of a connection asks for.
+const read_size: usize = 8192
+
+// max_chunk is the largest chunk this implementation reads, so the hexadecimal
+// count of a chunk line cannot overflow while it is parsed.
+const max_chunk: i64 = 1099511627776
+
+// read_conn reads at most max bytes into b, as a failure of this package.
+func read_conn(conn: net.Conn, b: Buf, max: usize) -> Result<usize, Error> {
+    match conn.Read(b, max) {
+        Ok(n) => {
+            return Result.Ok(n)
+        }
+        Err(e) => {
+            return Result.Err(error_of_net(e))
+        }
+    }
+}
+
+// write_conn writes every byte of b, as a failure of this package.
+func write_conn(conn: net.Conn, b: [u8]) -> Result<(), Error> {
+    match conn.WriteAll(b) {
+        Ok(_) => {
+            return Result.Ok()
+        }
+        Err(e) => {
+            return Result.Err(error_of_net(e))
+        }
+    }
+}
+
+// dial_conn connects to an address, as a failure of this package.
+func dial_conn(addr: str) -> Result<net.Conn, Error> {
+    match net.Dial("tcp", addr) {
+        Ok(conn) => {
+            return Result.Ok(conn)
+        }
+        Err(e) => {
+            return Result.Err(error_of_net(e))
+        }
+    }
+}
+
+// listen_conn listens on an address, as a failure of this package.
+func listen_conn(addr: str) -> Result<net.Listener, Error> {
+    match net.Listen("tcp", addr) {
+        Ok(listener) => {
+            return Result.Ok(listener)
+        }
+        Err(e) => {
+            return Result.Err(error_of_net(e))
+        }
+    }
+}
+
+// A message_reader holds a connection and the bytes read from it that the
+// message being read has not consumed.
+struct message_reader {
+    conn: net.Conn
+    buf: Buf
+}
+
+// new_reader builds a reader over a connection.
+func new_reader(conn: net.Conn) -> message_reader {
+    return message_reader { conn: conn, buf: new Buf(0) }
+}
+
+// fill reads one more block from the connection and answers whether it read
+// anything. A read of nothing is the end of the stream.
+func fill(r: message_reader) -> Result<bool, Error> {
+    var n = try read_conn(r.conn, r.buf, read_size)
+    if n == 0 {
+        return Result.Ok(false)
+    }
+    return Result.Ok(true)
+}
+
+// find_crlf answers where a carriage return and a line feed stand together at
+// or after from, or nothing.
+func find_crlf(b: Buf, from: usize) -> Option<usize> {
+    var view = b.Bytes()
+    var n = b.Len()
+    var i = from
+    for i + 1 < n {
+        if view[i] == cr && view[i + 1] == lf {
+            return Option.Some(i)
+        }
+        i += 1
+    }
+    return Option.None
+}
+
+// take_line answers the bytes before the break at at and consumes the bytes of
+// the line and its break from the buffer.
+func take_line(b: Buf, at: usize) -> str {
+    var out = new Buf(at)
+    copy_range(out, b.Bytes(), 0, at)
+    b.Consume(at + 2)
+    return out.Str()
+}
+
+// read_line reads one line of bytes without its break. The end of the stream
+// before the line is a failure.
+func read_line(r: message_reader) -> Result<str, Error> {
+    var text = ""
+    var got = false
+    for !got {
+        match find_crlf(r.buf, 0) {
+            Some(at) => {
+                text = take_line(r.buf, at)
+                got = true
+            }
+            None => {
+                if r.buf.Len() > max_line {
+                    return Result.Err(protocol_error("a line is too long"))
+                }
+                var more = try fill(r)
+                if !more {
+                    return Result.Err(eof_error("the stream ended in a line"))
+                }
+            }
+        }
+    }
+    return Result.Ok(text)
+}
+
+// read_exact reads exactly n bytes into out.
+func read_exact(r: message_reader, out: Buf, n: usize) -> Result<(), Error> {
+    var need = n
+    for need > 0 {
+        if r.buf.Len() == 0 {
+            var more = try fill(r)
+            if !more {
+                return Result.Err(eof_error("the stream ended before the body was complete"))
+            }
+        }
+        var take = r.buf.Len()
+        if take > need {
+            take = need
+        }
+        copy_range(out, r.buf.Bytes(), 0, take)
+        r.buf.Consume(take)
+        need -= take
+    }
+    return Result.Ok()
+}
+
+// read_to_end reads until the stream ends and appends what it read to out.
+func read_to_end(r: message_reader, out: Buf) -> Result<(), Error> {
+    for {
+        if r.buf.Len() > 0 {
+            var have = r.buf.Len()
+            copy_range(out, r.buf.Bytes(), 0, have)
+            r.buf.Consume(have)
+        }
+        var more = try fill(r)
+        if !more {
+            break
+        }
+    }
+    return Result.Ok()
+}
+
+// read_fields reads header fields until an empty line and adds each to h. A
+// field that is not `name: value` is refused, and so is a line that continues
+// a field, which HTTP/1.1 no longer allows.
+func read_fields(r: message_reader, h: Header) -> Result<(), Error> {
+    var line = try read_line(r)
+    for line.Len() > 0 {
+        if line[0] == sp || line[0] == ht {
+            return Result.Err(protocol_error("a header field begins with white space"))
+        }
+        match index_byte(line, colon) {
+            Some(at) => {
+                if at == 0 {
+                    return Result.Err(protocol_error("a header field has no name"))
+                }
+                h.Add(line[0 .. at], trim_ascii(line[at + 1 .. line.Len()]))
+            }
+            None => {
+                return Result.Err(protocol_error("a header field has no colon"))
+            }
+        }
+        line = try read_line(r)
+    }
+    return Result.Ok()
+}
+
+// has_chunked reports whether a header names the chunked transfer coding.
+func has_chunked(h: Header) -> bool {
+    match h.Get("Transfer-Encoding") {
+        Some(v) => {
+            return token_has(v, "chunked")
+        }
+        None => {
+            return false
+        }
+    }
+}
+
+// content_length answers the count a header field names, or -1 when no field
+// names one or the field is not a count. A caller reads -1 by the rule of the
+// message it is reading.
+func content_length(h: Header) -> i64 {
+    match h.Get("Content-Length") {
+        Some(v) => {
+            return parse_decimal(v)
+        }
+        None => {
+            return - 1
+        }
+    }
+}
+
+// read_body reads the body a message's fields say it carries. head says the
+// message answers a HEAD request, which carries no body whatever its fields
+// say; status excludes the statuses whose responses carry none; and
+// is_response says whether the message is a response, whose body without a
+// length runs to the end of the stream, while a request without one has no
+// body at all. The answer is whether the connection may carry another message.
+func read_body(r: message_reader, h: Header, out: Buf, head: bool, status: i32, is_response: bool) -> Result<bool, Error> {
+    if head || bodyless(status) {
+        return Result.Ok(true)
+    }
+    if has_chunked(h) {
+        try read_chunks(r, out)
+        return Result.Ok(true)
+    }
+    var n = content_length(h)
+    if n < 0 {
+        if !is_response {
+            return Result.Ok(true)
+        }
+        try read_to_end(r, out)
+        return Result.Ok(false)
+    }
+    try read_exact(r, out, usize(n))
+    return Result.Ok(true)
+}
+
+// read_chunks reads a chunked body into out and consumes the trailer fields.
+func read_chunks(r: message_reader, out: Buf) -> Result<(), Error> {
+    for {
+        var line = try read_line(r)
+        var size = chunk_size(line)
+        if size < 0 {
+            return Result.Err(protocol_error("a chunk size is not a hexadecimal number"))
+        }
+        if size == 0 {
+            try skip_trailers(r)
+            break
+        }
+        try read_exact(r, out, usize(size))
+        var end = try read_line(r)
+        if end.Len() != 0 {
+            return Result.Err(protocol_error("a chunk did not end with a line break"))
+        }
+    }
+    return Result.Ok()
+}
+
+// chunk_size answers the hexadecimal count a chunk line names before any chunk
+// extension, or -1 when the line names none.
+func chunk_size(line: str) -> i64 {
+    var v: i64 = 0
+    var any = false
+    var i: usize = 0
+    for i < line.Len() {
+        var b = line[i]
+        if b == semi {
+            break
+        }
+        var d = hex_digit(b)
+        if d < 0 {
+            return - 1
+        }
+        v = v * 16 + d
+        if v > max_chunk {
+            return - 1
+        }
+        any = true
+        i += 1
+    }
+    if !any {
+        return - 1
+    }
+    return v
+}
+
+// skip_trailers reads and discards the fields that follow the last chunk.
+func skip_trailers(r: message_reader) -> Result<(), Error> {
+    var line = try read_line(r)
+    for line.Len() > 0 {
+        line = try read_line(r)
+    }
+    return Result.Ok()
+}
+
+// split_spaces answers the parts of a line between its spaces. Each part has
+// bytes of its own, so the line it came from may be given up.
+func split_spaces(line: str) -> Array<str> {
+    var out = new Array<str>(0)
+    var start: usize = 0
+    var i: usize = 0
+    for i < line.Len() {
+        if line[i] == sp {
+            out.Push(copy_str(line, start, i))
+            start = i + 1
+        }
+        i += 1
+    }
+    out.Push(copy_str(line, start, line.Len()))
+    return out
+}
+
+// keeps_alive reports whether a message with the given version and fields
+// leaves its connection open for another message.
+func keeps_alive(version: str, h: Header) -> bool {
+    var close = false
+    var keep = false
+    match h.Get("Connection") {
+        Some(v) => {
+            close = token_has(v, "close")
+            keep = token_has(v, "keep-alive")
+        }
+        None => { }
+    }
+    if close {
+        return false
+    }
+    if version == "HTTP/1.0" {
+        return keep
+    }
+    return true
+}
+
+// An inbound is a request and whether its connection may carry another. The
+// two travel together because a reader must know both before the request is
+// handed on.
+struct inbound {
+    req: Request
+    keep: bool
+}
+
+// An outbound is a response and whether its connection may carry another
+// request.
+struct outbound {
+    resp: Response
+    keep: bool
+}
+
+// read_request reads one request and answers it with whether its connection
+// may carry another request.
+func read_request(r: message_reader) -> Result<inbound, Error> {
+    var line = try read_line(r)
+    var parts = split_spaces(line)
+    if parts.Len() != 3 {
+        return Result.Err(protocol_error("the request line does not hold a method, a target, and a version"))
+    }
+    var h = new Header()
+    try read_fields(r, h)
+    var body = new Buf(0)
+    var reusable = try read_body(r, h, body, false, 200, false)
+    var req = Request { Method: parts[0], URL: parts[1], Header: h, Body: body }
+    return Result.Ok(inbound { req: req, keep: keeps_alive(parts[2], h) && reusable })
+}
+
+// read_response reads one response and answers it with whether its connection
+// may carry another request. head says the request was a HEAD, whose response
+// carries no body whatever its fields say.
+func read_response(r: message_reader, head: bool) -> Result<outbound, Error> {
+    var line = try read_line(r)
+    var parts = split_spaces(line)
+    if parts.Len() < 3 {
+        return Result.Err(protocol_error("the status line does not hold a version, a status, and a reason"))
+    }
+    var status = parse_decimal(parts[1])
+    if status < 0 || status > 999 {
+        return Result.Err(protocol_error("the status is not a number"))
+    }
+    var h = new Header()
+    try read_fields(r, h)
+    var body = new Buf(0)
+    var reusable = try read_body(r, h, body, head, i32(status), true)
+    var resp = Response { Status: i32(status), Header: h, Body: body }
+    return Result.Ok(outbound { resp: resp, keep: keeps_alive(parts[0], h) && reusable })
+}
+
+// reserved_request_field reports whether a field is one the client writes
+// itself rather than taking from a request's header.
+func reserved_request_field(name: str) -> bool {
+    if fold_equal(name, "Host") {
+        return true
+    }
+    if fold_equal(name, "Content-Length") {
+        return true
+    }
+    if fold_equal(name, "Transfer-Encoding") {
+        return true
+    }
+    if fold_equal(name, "Connection") {
+        return true
+    }
+    return false
+}
+
+// reserved_response_field reports whether a field is one the server writes
+// itself rather than taking from a response's header.
+func reserved_response_field(name: str) -> bool {
+    if fold_equal(name, "Content-Length") {
+        return true
+    }
+    if fold_equal(name, "Transfer-Encoding") {
+        return true
+    }
+    if fold_equal(name, "Connection") {
+        return true
+    }
+    return false
+}
+
+// write_request writes a request whose target on the wire is path and whose
+// Host field is host.
+func write_request(conn: net.Conn, req: Request, host: str, path: str) -> Result<(), Error> {
+    var head = new Buf(0)
+    head.WriteStr(req.Method)
+    head.WriteByte(sp)
+    head.WriteStr(path)
+    head.WriteStr(" HTTP/1.1")
+    head.WriteByte(cr)
+    head.WriteByte(lf)
+    head.WriteStr("Host: ")
+    head.WriteStr(host)
+    head.WriteByte(cr)
+    head.WriteByte(lf)
+    var n = req.Body.Len()
+    for e in req.Header.Entries() {
+        if reserved_request_field(e.0) {
+            continue
+        }
+        head.WriteStr(e.0)
+        head.WriteStr(": ")
+        head.WriteStr(e.1)
+        head.WriteByte(cr)
+        head.WriteByte(lf)
+    }
+    if n > 0 {
+        head.WriteStr("Content-Length: ")
+        head.WriteStr(f"{i64(n)}")
+        head.WriteByte(cr)
+        head.WriteByte(lf)
+    }
+    head.WriteByte(cr)
+    head.WriteByte(lf)
+    try write_conn(conn, head.Bytes())
+    if n > 0 {
+        try write_conn(conn, req.Body.Bytes())
+    }
+    return Result.Ok()
+}
+
+// write_response writes a response over a connection. keep says whether the
+// connection may carry another request, and head says the request was a HEAD,
+// whose response carries the header fields a GET would but no body.
+func write_response(conn: net.Conn, resp: Response, keep: bool, head: bool) -> Result<(), Error> {
+    var status = resp.Status
+    if status == 0 {
+        status = 200
+    }
+    var head_buf = new Buf(0)
+    head_buf.WriteStr("HTTP/1.1 ")
+    head_buf.WriteStr(f"{i64(status)}")
+    head_buf.WriteByte(sp)
+    head_buf.WriteStr(reason(status))
+    head_buf.WriteByte(cr)
+    head_buf.WriteByte(lf)
+    for e in resp.Header.Entries() {
+        if reserved_response_field(e.0) {
+            continue
+        }
+        head_buf.WriteStr(e.0)
+        head_buf.WriteStr(": ")
+        head_buf.WriteStr(e.1)
+        head_buf.WriteByte(cr)
+        head_buf.WriteByte(lf)
+    }
+    var carries = !bodyless(status)
+    if carries {
+        head_buf.WriteStr("Content-Length: ")
+        head_buf.WriteStr(f"{i64(resp.Body.Len())}")
+        head_buf.WriteByte(cr)
+        head_buf.WriteByte(lf)
+    }
+    if keep {
+        head_buf.WriteStr("Connection: keep-alive")
+    } else {
+        head_buf.WriteStr("Connection: close")
+    }
+    head_buf.WriteByte(cr)
+    head_buf.WriteByte(lf)
+    head_buf.WriteByte(cr)
+    head_buf.WriteByte(lf)
+    try write_conn(conn, head_buf.Bytes())
+    if carries && !head && resp.Body.Len() > 0 {
+        try write_conn(conn, resp.Body.Bytes())
+    }
+    return Result.Ok()
+}

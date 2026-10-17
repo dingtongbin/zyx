@@ -1,0 +1,151 @@
+package http
+
+// The server: it listens on an address, accepts connections, and answers the
+// requests each connection carries on a coroutine of its own. A handler runs
+// once for each request and writes the answer into the response it is given.
+
+import "std/net"
+import "std/sync"
+
+// A Handler answers one request. It reads the request, writes the status, the
+// header fields, and the body of the answer into resp, and returns when the
+// answer is complete. The server gives the response a status of 200 before the
+// call, which the handler may replace.
+interface Handler {
+    func Serve(req: Request, resp: Response)
+}
+
+// A Server answers requests on every connection it accepts. One coroutine
+// serves each connection, and the region inside ListenAndServe owns them all,
+// so the server is up until Close is called.
+//
+// A connection is closed by exactly one of two places: the coroutine that
+// serves it, when it ends on its own, or Close, which closes every connection
+// it holds. The two decide under the one lock, and the entry in the open map
+// is the decision, so a connection that was closed from one place is never
+// closed from the other. The listener is closed with a swap, so it too is
+// closed exactly once.
+struct Server {
+    handler: Handler
+    listener: Option<net.Listener>
+    ready: sync.Atomic<i64>
+    closed: sync.Atomic<i64>
+    lclosed: sync.Atomic<i64>
+    next: sync.Atomic<i64>
+    open: sync.Mutex<Map<i64, net.Conn>>
+
+    // init builds a server that answers each request with handler.
+    func init(handler: Handler) -> Self {
+        return Server {
+            handler: handler,
+            listener: Option.None,
+            ready: new sync.Atomic<i64>(0),
+            closed: new sync.Atomic<i64>(0),
+            lclosed: new sync.Atomic<i64>(0),
+            next: new sync.Atomic<i64>(0),
+            open: new sync.Mutex<Map<i64, net.Conn>>(new Map<i64, net.Conn>()),
+        }
+    }
+
+    // ListenAndServe listens on addr and answers requests until Close is
+    // called. Each accepted connection is served on a coroutine the region of
+    // this call owns.
+    func ListenAndServe(addr: str) -> Result<(), Error> {
+        var listener = try listen_conn(addr)
+        self.listener = Option.Some(listener)
+        self.ready.Store(1)
+        if self.closed.Load() != 0 {
+            close_listener(self.lclosed, listener)
+            return Result.Ok()
+        }
+        region {
+            for {
+                match listener.Accept() {
+                    Ok(conn) => {
+                        var id = self.next.Add(1)
+                        self.open.Lock()
+                        self.open.Data.Insert(id, conn)
+                        self.open.Unlock()
+                        spawn serve_connection(conn, self, id)
+                    }
+                    Err(_) => {
+                        break
+                    }
+                }
+            }
+        }
+        close_listener(self.lclosed, listener)
+        return Result.Ok()
+    }
+
+    // Close stops the server: it stops accepting and closes every connection
+    // it holds, which wakes every coroutine waiting on one. It is idempotent.
+    func Close() {
+        if self.closed.Swap(1) != 0 {
+            return
+        }
+        if self.ready.Load() != 0 {
+            match self.listener {
+                Some(listener) => {
+                    close_listener(self.lclosed, listener)
+                }
+                None => { }
+            }
+        }
+        self.open.Lock()
+        for conn in self.open.Data.Values() {
+            conn.Close()
+        }
+        self.open.Data.Clear()
+        self.open.Unlock()
+    }
+
+    impl SyncSafe { }
+}
+
+// close_listener closes a listener, and the swap decides which of two callers
+// does it. Close and ListenAndServe may both reach the end of the server, and
+// the handle must be closed exactly once.
+func close_listener(guard: sync.Atomic<i64>, listener: net.Listener) {
+    if guard.Swap(1) == 0 {
+        listener.Close()
+    }
+}
+
+// serve_connection answers the requests one connection carries and closes it
+// when no more may follow. The connection is given up here only when its
+// entry is still in the server's map; Close takes that entry when it closes,
+// so the connection is closed exactly once.
+func serve_connection(conn: net.Conn, s: Server, id: i64) {
+    var r = new_reader(conn)
+    for {
+        if s.closed.Load() != 0 {
+            break
+        }
+        match read_request(r) {
+            Ok(pair) => {
+                var resp = Response { Status: 200, Header: new Header(), Body: new Buf(0) }
+                s.handler.Serve(pair.req, resp)
+                match write_response(conn, resp, pair.keep, pair.req.Method == "HEAD") {
+                    Ok(_) => { }
+                    Err(_) => {
+                        break
+                    }
+                }
+                if !pair.keep {
+                    break
+                }
+            }
+            Err(_) => {
+                break
+            }
+        }
+    }
+    s.open.Lock()
+    var ours = s.open.Data.Contains(id)
+    s.open.Data.Remove(id)
+    s.open.Unlock()
+    if ours {
+        conn.Close()
+    }
+}

@@ -1,0 +1,32 @@
+server is up: true
+hello status: 200
+hello body: hello world
+hello content-type: text/plain
+hello x-made-by: server
+missing status: 404
+missing body: not found
+created status: 201
+created location: /created/1
+created body: made
+none status: 204
+none body is empty: true
+echo status: 200
+echo body: ping body
+echo method: POST
+echo saw type: text/plain
+echo header kept both values: true
+keep-alive reuse: true
+unknown path status: 400
+unknown path body: bad request
+server closed: true
+request after close fails: true
+ftp url is refused: true
+relative url is refused: true
+closed port is refused: true
+a name is found without regard to case: true
+every value of a name is kept: true
+set replaces the first value where it stands: true
+set removes the other values of the name: true
+del removes every value of a name: true
+del leaves the other names: true
+entries keep the order they were added in: true

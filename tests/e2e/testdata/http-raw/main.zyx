@@ -1,0 +1,397 @@
+package main
+
+// The framing edges of std/http, over loopback only. A raw peer writes the
+// bytes of a response the client could not ask an http server for, and a raw
+// peer writes the bytes of a request no http client writes, so the two
+// implementations are checked against the bytes of the protocol rather than
+// against each other alone: a chunked body, a body with a length, a body that
+// runs to the end of the stream, a response that carries no body, a chunk
+// with an extension and a trailer, and a request that asks the connection to
+// close.
+//
+// The port belongs to the machine and the moment, so it never enters what is
+// printed.
+
+import "std/fmt"
+import "std/http"
+import "std/net"
+import "std/time"
+
+// PAUSE is how long the program waits before it lets a raw peer serve.
+const PAUSE: Duration = dur.ms(20)
+
+func pick_port() -> i32 {
+    var port = 20000 + i32(time.UnixMilli() % 20000)
+    var tries: i32 = 0
+    for tries < 64 {
+        match net.Listen("tcp", f"127.0.0.1:{i64(port)}") {
+            Ok(listener) => {
+                listener.Close()
+                return port
+            }
+            Err(_) => {
+                port += 1
+            }
+        }
+        tries += 1
+    }
+    return port
+}
+
+// put writes a text to a connection and ignores a failure, because the peer
+// here is a test that only needs the bytes to go out.
+func put(conn: net.Conn, s: str) {
+    match conn.WriteStr(s) {
+        Ok(_) => { }
+        Err(_) => { }
+    }
+}
+
+// index_sub answers where a text first stands in another, or -1.
+func index_sub(s: str, sub: str) -> i64 {
+    if sub.Len() > s.Len() {
+        return - 1
+    }
+    var i: usize = 0
+    for i + sub.Len() <= s.Len() {
+        var k: usize = 0
+        var same = true
+        for k < sub.Len() {
+            if s[i + k] != sub[k] {
+                same = false
+                break
+            }
+            k += 1
+        }
+        if same {
+            return i64(i)
+        }
+        i += 1
+    }
+    return - 1
+}
+
+// drain reads a request until the blank line that ends its header fields.
+func drain(conn: net.Conn) {
+    var buf = new Buf(0)
+    for {
+        if index_sub(buf.Str(), "\r\n\r\n") >= 0 {
+            return
+        }
+        var n: usize = 0
+        match conn.Read(buf, 4096) {
+            Ok(v) => {
+                n = v
+            }
+            Err(_) => {
+                return
+            }
+        }
+        if n == 0 {
+            return
+        }
+    }
+}
+
+// serve_raw accepts one connection, reads its request, writes a fixed
+// response, and closes.
+func serve_raw(l: net.Listener, response: str) {
+    match l.Accept() {
+        Ok(conn) => {
+            drain(conn)
+            put(conn, response)
+            conn.Close()
+        }
+        Err(_) => { }
+    }
+}
+
+func raw_chunked(l: net.Listener) {
+    serve_raw(l, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")
+}
+
+func raw_length(l: net.Listener) {
+    serve_raw(l, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Raw: yes\r\nConnection: close\r\n\r\nabcde")
+}
+
+func raw_close(l: net.Listener) {
+    serve_raw(l, "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nuntil the end")
+}
+
+func raw_none(l: net.Listener) {
+    serve_raw(l, "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+}
+
+func raw_ext(l: net.Listener) {
+    serve_raw(l, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3;a=b\r\nxyz\r\n0\r\nX-Trailer: seen\r\n\r\n")
+}
+
+// say prints a label and a text.
+func say(label: str, value: str) {
+    fmt.Print(label)
+    fmt.Println(value)
+}
+
+// say_bool prints a label and a switch.
+func say_bool(label: str, value: bool) {
+    fmt.Print(label)
+    fmt.PrintBool(value)
+    fmt.PrintNl()
+}
+
+// say_status prints a label and a status number.
+func say_status(label: str, value: i32) {
+    fmt.Print(label)
+    fmt.PrintI64(i64(value))
+    fmt.PrintNl()
+}
+
+// print_status prints a label and a status number read from a raw reply.
+func print_status(label: str, value: i64) {
+    fmt.Print(label)
+    fmt.PrintI64(value)
+    fmt.PrintNl()
+}
+
+// A reply is the status, the header block, and the body a raw client read from
+// a raw request.
+struct reply {
+    status: i64
+    head: str
+    text: str
+}
+
+// raw_request sends a request over a connection and answers the status and the
+// body of the response, which is read until the server closes.
+func raw_request(addr: str, request: str) -> reply {
+    match net.Dial("tcp", addr) {
+        Ok(conn) => {
+            put(conn, request)
+            var buf = new Buf(0)
+            for {
+                var n: usize = 0
+                match conn.Read(buf, 4096) {
+                    Ok(v) => {
+                        n = v
+                    }
+                    Err(_) => {
+                        n = 0
+                    }
+                }
+                if n == 0 {
+                    break
+                }
+            }
+            conn.Close()
+            var text = buf.Str()
+            var at = index_sub(text, "\r\n\r\n")
+            if at < 0 {
+                return reply { status: - 1, head: text, text: "" }
+            }
+            var head = text[0 .. usize(at)]
+            var body = text[usize(at) + 4 .. text.Len()]
+            return reply { status: status_of(head), head: head, text: body }
+        }
+        Err(e) => {
+            return reply { status: - 2, head: "", text: e.Msg }
+        }
+    }
+}
+
+// status_of reads the status number of a status line.
+func status_of(head: str) -> i64 {
+    var at = index_sub(head, " ")
+    if at < 0 {
+        return - 1
+    }
+    var rest = head[usize(at) + 1 .. head.Len()]
+    var end = index_sub(rest, " ")
+    if end < 0 {
+        return - 1
+    }
+    var digits = rest[0 .. usize(end)]
+    var v: i64 = 0
+    var i: usize = 0
+    for i < digits.Len() {
+        var b = digits[i]
+        if b < 48 || b > 57 {
+            return - 1
+        }
+        v = v * 10 + i64(b - 48)
+        i += 1
+    }
+    return v
+}
+
+// echo answers every request with its own body and names the method it saw; a
+// request for the fixed path answers with a body of its own, which lets a HEAD
+// request show that the length is declared and the body is not sent.
+struct echo {
+    impl http.Handler {
+        func Serve(req: http.Request, resp: http.Response) {
+            resp.Header.Set("X-Saw-Method", req.Method)
+            if req.URL == "/fixed" {
+                resp.Body.WriteStr("fixed body")
+            } else {
+                resp.Body.Write(req.Body.Bytes())
+            }
+        }
+    }
+}
+
+// serve answers requests until the server is closed.
+func serve(addr: str, s: http.Server) {
+    match s.ListenAndServe(addr) {
+        Ok(_) => { }
+        Err(_) => { }
+    }
+}
+
+func main() {
+    var cli = new http.Client()
+
+    // A chunked body.
+    var p1 = pick_port()
+    match net.Listen("tcp", f"127.0.0.1:{i64(p1)}") {
+        Ok(l) => {
+            var addr = f"127.0.0.1:{i64(p1)}"
+            region {
+                spawn raw_chunked(l)
+                time.Sleep(PAUSE)
+                match cli.Get(f"http://{addr}/x") {
+                    Ok(resp) => {
+                        say_status("chunked status: ", resp.Status)
+                        say("chunked body: ", resp.Body.Str())
+                    }
+                    Err(e) => {
+                        say("chunked failed: ", e.Msg)
+                    }
+                }
+            }
+            l.Close()
+        }
+        Err(_) => { }
+    }
+
+    // A body with a length, and a header the client reads back.
+    var p2 = pick_port()
+    match net.Listen("tcp", f"127.0.0.1:{i64(p2)}") {
+        Ok(l) => {
+            var addr = f"127.0.0.1:{i64(p2)}"
+            region {
+                spawn raw_length(l)
+                time.Sleep(PAUSE)
+                match cli.Get(f"http://{addr}/x") {
+                    Ok(resp) => {
+                        say_status("length status: ", resp.Status)
+                        say("length body: ", resp.Body.Str())
+                        say("length header: ", resp.Header.Get("X-Raw").UnwrapOr("-"))
+                    }
+                    Err(e) => {
+                        say("length failed: ", e.Msg)
+                    }
+                }
+            }
+            l.Close()
+        }
+        Err(_) => { }
+    }
+
+    // A body that runs to the end of the stream.
+    var p3 = pick_port()
+    match net.Listen("tcp", f"127.0.0.1:{i64(p3)}") {
+        Ok(l) => {
+            var addr = f"127.0.0.1:{i64(p3)}"
+            region {
+                spawn raw_close(l)
+                time.Sleep(PAUSE)
+                match cli.Get(f"http://{addr}/x") {
+                    Ok(resp) => {
+                        say_status("close-delimited status: ", resp.Status)
+                        say("close-delimited body: ", resp.Body.Str())
+                    }
+                    Err(e) => {
+                        say("close-delimited failed: ", e.Msg)
+                    }
+                }
+            }
+            l.Close()
+        }
+        Err(_) => { }
+    }
+
+    // A response that carries no body.
+    var p4 = pick_port()
+    match net.Listen("tcp", f"127.0.0.1:{i64(p4)}") {
+        Ok(l) => {
+            var addr = f"127.0.0.1:{i64(p4)}"
+            region {
+                spawn raw_none(l)
+                time.Sleep(PAUSE)
+                match cli.Get(f"http://{addr}/x") {
+                    Ok(resp) => {
+                        say_status("no-body status: ", resp.Status)
+                        say_bool("no-body body is empty: ", resp.Body.Len() == 0)
+                    }
+                    Err(e) => {
+                        say("no-body failed: ", e.Msg)
+                    }
+                }
+            }
+            l.Close()
+        }
+        Err(_) => { }
+    }
+
+    // A chunk with an extension and a trailer field.
+    var p5 = pick_port()
+    match net.Listen("tcp", f"127.0.0.1:{i64(p5)}") {
+        Ok(l) => {
+            var addr = f"127.0.0.1:{i64(p5)}"
+            region {
+                spawn raw_ext(l)
+                time.Sleep(PAUSE)
+                match cli.Get(f"http://{addr}/x") {
+                    Ok(resp) => {
+                        say_status("chunk-ext status: ", resp.Status)
+                        say("chunk-ext body: ", resp.Body.Str())
+                    }
+                    Err(e) => {
+                        say("chunk-ext failed: ", e.Msg)
+                    }
+                }
+            }
+            l.Close()
+        }
+        Err(_) => { }
+    }
+
+    // The server side reads a chunked request, reads a request with a length,
+    // answers a HEAD request with no body, and closes when asked.
+    var addr = f"127.0.0.1:{i64(pick_port())}"
+    var srv = new http.Server(echo { })
+    region {
+        spawn serve(addr, srv)
+        time.Sleep(PAUSE)
+
+        var chunked = raw_request(addr, "POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")
+        print_status("server chunked status: ", chunked.status)
+        say("server chunked body: ", chunked.text)
+
+        var sized = raw_request(addr, "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 6\r\nConnection: close\r\n\r\nabcdef")
+        print_status("server length status: ", sized.status)
+        say("server length body: ", sized.text)
+
+        var head = raw_request(addr, "HEAD /x HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        print_status("server head status: ", head.status)
+        say_bool("server head body is empty: ", head.text.Len() == 0)
+
+        var fixed = raw_request(addr, "HEAD /fixed HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        print_status("server head-fixed status: ", fixed.status)
+        say_bool("server head-fixed declares the length: ", index_sub(fixed.head, "Content-Length: 10") >= 0)
+        say_bool("server head-fixed sends no body: ", fixed.text.Len() == 0)
+
+        srv.Close()
+        say_bool("server closed: ", true)
+    }
+}

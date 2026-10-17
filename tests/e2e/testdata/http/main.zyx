@@ -1,0 +1,283 @@
+package main
+
+// The http package over loopback: one server answers one client on the same
+// machine, and every line this program prints is the same wherever it runs.
+// The port belongs to the machine and the moment, so it never enters what is
+// printed, and no name has to be looked up.
+
+import "std/fmt"
+import "std/http"
+import "std/net"
+import "std/time"
+
+// PAUSE is how long the program waits before it asks again whether the server
+// is up.
+const PAUSE: Duration = dur.ms(5)
+
+// pick_port answers a loopback port that is free at the moment. A port already
+// taken is passed over, because which port the program gets is not part of
+// what it prints.
+func pick_port() -> i32 {
+    var port = 20000 + i32(time.UnixMilli() % 20000)
+    var tries: i32 = 0
+    for tries < 64 {
+        match net.Listen("tcp", f"127.0.0.1:{i64(port)}") {
+            Ok(listener) => {
+                listener.Close()
+                return port
+            }
+            Err(_) => {
+                port += 1
+            }
+        }
+        tries += 1
+    }
+    return port
+}
+
+// serve answers requests until the server is closed.
+func serve(addr: str, s: http.Server) {
+    match s.ListenAndServe(addr) {
+        Ok(_) => { }
+        Err(_) => { }
+    }
+}
+
+// app answers a handful of paths, enough to walk the client and the server
+// over a request that has a body, a response that has none, a header the
+// handler sets, and a status other than the default.
+struct app {
+    impl http.Handler {
+        func Serve(req: http.Request, resp: http.Response) {
+            if req.URL == "/hello" {
+                resp.Header.Set("Content-Type", "text/plain")
+                resp.Header.Set("X-Made-By", "server")
+                resp.Body.WriteStr("hello world")
+            } else if req.URL == "/missing" {
+                resp.Status = 404
+                resp.Body.WriteStr("not found")
+            } else if req.URL == "/echo" {
+                resp.Header.Set("X-Method", req.Method)
+                resp.Header.Set("X-Saw-Type", req.Header.Get("Content-Type").UnwrapOr("none"))
+                resp.Header.Add("X-Saw-Type", "again")
+                resp.Body.Write(req.Body.Bytes())
+            } else if req.URL == "/none" {
+                resp.Status = 204
+            } else if req.URL == "/created" {
+                resp.Status = 201
+                resp.Header.Set("Location", "/created/1")
+                resp.Body.WriteStr("made")
+            } else {
+                resp.Status = 400
+                resp.Body.WriteStr("bad request")
+            }
+        }
+    }
+}
+
+// say_bool prints a label and a switch.
+func say_bool(label: str, value: bool) {
+    fmt.Print(label)
+    fmt.PrintBool(value)
+    fmt.PrintNl()
+}
+
+// say prints a label and a text.
+func say(label: str, value: str) {
+    fmt.Print(label)
+    fmt.Println(value)
+}
+
+// say_status prints a label and a status number.
+func say_status(label: str, value: i32) {
+    fmt.Print(label)
+    fmt.PrintI64(i64(value))
+    fmt.PrintNl()
+}
+
+func main() {
+    var port = pick_port()
+    var addr = f"127.0.0.1:{i64(port)}"
+    var base = f"http://{addr}"
+    var srv = new http.Server(app { })
+
+    region {
+        spawn serve(addr, srv)
+
+        var cli = new http.Client()
+
+        // Wait for the server to answer; the first request may arrive before
+        // its listener is bound.
+        var ready = false
+        var tries: i32 = 0
+        for tries < 200 && !ready {
+            match cli.Get(f"{base}/hello") {
+                Ok(_) => {
+                    ready = true
+                }
+                Err(_) => {
+                    time.Sleep(PAUSE)
+                }
+            }
+            tries += 1
+        }
+        say_bool("server is up: ", ready)
+
+        // A GET whose answer the handler builds.
+        match cli.Get(f"{base}/hello") {
+            Ok(resp) => {
+                say_status("hello status: ", resp.Status)
+                say("hello body: ", resp.Body.Str())
+                say("hello content-type: ", resp.Header.Get("content-type").UnwrapOr("-"))
+                say("hello x-made-by: ", resp.Header.Get("X-Made-By").UnwrapOr("-"))
+            }
+            Err(e) => {
+                say("hello failed: ", e.Msg)
+            }
+        }
+
+        // A status other than the default.
+        match cli.Get(f"{base}/missing") {
+            Ok(resp) => {
+                say_status("missing status: ", resp.Status)
+                say("missing body: ", resp.Body.Str())
+            }
+            Err(e) => {
+                say("missing failed: ", e.Msg)
+            }
+        }
+
+        match cli.Get(f"{base}/created") {
+            Ok(resp) => {
+                say_status("created status: ", resp.Status)
+                say("created location: ", resp.Header.Get("Location").UnwrapOr("-"))
+                say("created body: ", resp.Body.Str())
+            }
+            Err(e) => {
+                say("created failed: ", e.Msg)
+            }
+        }
+
+        // A response that carries no body.
+        match cli.Get(f"{base}/none") {
+            Ok(resp) => {
+                say_status("none status: ", resp.Status)
+                say_bool("none body is empty: ", resp.Body.Len() == 0)
+            }
+            Err(e) => {
+                say("none failed: ", e.Msg)
+            }
+        }
+
+        // A request that carries a body and a content type.
+        var body = new Buf(0)
+        body.WriteStr("ping body")
+        match cli.Post(f"{base}/echo", body.Bytes(), "text/plain") {
+            Ok(resp) => {
+                say_status("echo status: ", resp.Status)
+                say("echo body: ", resp.Body.Str())
+                say("echo method: ", resp.Header.Get("X-Method").UnwrapOr("-"))
+                say("echo saw type: ", resp.Header.Get("X-Saw-Type").UnwrapOr("-"))
+                say_bool("echo header kept both values: ", resp.Header.Len() >= 3)
+            }
+            Err(e) => {
+                say("echo failed: ", e.Msg)
+            }
+        }
+
+        // A second request on the same client reuses the connection the first
+        // one left, and answers the same way.
+        var ok = true
+        var i: i32 = 0
+        for i < 3 {
+            match cli.Get(f"{base}/hello") {
+                Ok(resp) => {
+                    if resp.Body.Str() != "hello world" {
+                        ok = false
+                    }
+                }
+                Err(_) => {
+                    ok = false
+                }
+            }
+            i += 1
+        }
+        say_bool("keep-alive reuse: ", ok)
+
+        // A status line a client reads with a body it did not write itself.
+        match cli.Get(f"{base}/nowhere") {
+            Ok(resp) => {
+                say_status("unknown path status: ", resp.Status)
+                say("unknown path body: ", resp.Body.Str())
+            }
+            Err(e) => {
+                say("unknown path failed: ", e.Msg)
+            }
+        }
+
+        srv.Close()
+        say_bool("server closed: ", true)
+
+        // A server that is closed refuses no more requests because the port is
+        // not listening, which a client reports as a refused connection.
+        match cli.Get(f"{base}/hello") {
+            Ok(resp) => {
+                say_bool("request after close fails: ", false)
+            }
+            Err(_) => {
+                say_bool("request after close fails: ", true)
+            }
+        }
+    }
+
+    // A URL that names no http address is refused before any connection is
+    // made.
+    var cli2 = new http.Client()
+    match cli2.Get("ftp://127.0.0.1/x") {
+        Ok(resp) => {
+            say_bool("ftp url is refused: ", false)
+        }
+        Err(e) => {
+            say_bool("ftp url is refused: ", i32(e.Kind) == i32(http.ErrorKind.Invalid))
+        }
+    }
+    match cli2.Get("127.0.0.1/x") {
+        Ok(resp) => {
+            say_bool("relative url is refused: ", false)
+        }
+        Err(e) => {
+            say_bool("relative url is refused: ", i32(e.Kind) == i32(http.ErrorKind.Invalid))
+        }
+    }
+
+    // A connection to a port nothing listens on is refused.
+    var closed_port = pick_port()
+    var closed_addr = f"127.0.0.1:{i64(closed_port)}"
+    match cli2.Get(f"http://{closed_addr}/hello") {
+        Ok(resp) => {
+            say_bool("closed port is refused: ", false)
+        }
+        Err(e) => {
+            say_bool("closed port is refused: ", i32(e.Kind) == i32(http.ErrorKind.Refused))
+        }
+    }
+
+    // The header type itself: a name is compared without regard to case, Set
+    // replaces a value where it stands, Add keeps every value, Del removes
+    // them, and Entries keeps the order.
+    var h = new http.Header()
+    h.Add("A", "1")
+    h.Add("B", "2")
+    h.Add("a", "3")
+    say_bool("a name is found without regard to case: ", h.Get("A").UnwrapOr("-") == "1")
+    say_bool("every value of a name is kept: ", h.Len() == 3)
+    h.Set("A", "9")
+    say_bool("set replaces the first value where it stands: ", h.Entries()[0].1 == "9")
+    say_bool("set removes the other values of the name: ", h.Len() == 2)
+    h.Del("b")
+    say_bool("del removes every value of a name: ", h.Get("B").IsNone())
+    say_bool("del leaves the other names: ", h.Get("A").UnwrapOr("-") == "9")
+    h.Set("C", "3")
+    var entries = h.Entries()
+    say_bool("entries keep the order they were added in: ", entries[0].0 == "A" && entries[1].0 == "C")
+}

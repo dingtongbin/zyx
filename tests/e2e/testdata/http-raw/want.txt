@@ -1,0 +1,21 @@
+chunked status: 200
+chunked body: hello world
+length status: 200
+length body: abcde
+length header: yes
+close-delimited status: 200
+close-delimited body: until the end
+no-body status: 204
+no-body body is empty: true
+chunk-ext status: 200
+chunk-ext body: xyz
+server chunked status: 200
+server chunked body: hello world
+server length status: 200
+server length body: abcdef
+server head status: 200
+server head body is empty: true
+server head-fixed status: 200
+server head-fixed declares the length: true
+server head-fixed sends no body: true
+server closed: true
