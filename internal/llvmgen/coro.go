@@ -87,6 +87,7 @@ func (g *generator) spawn(module string, n *zyxc.Node) *value {
 
 	thunk := g.spawnThunk(sym, ptypes, blockLL, result)
 	handle := g.newReg()
+	tier := g.stackTier(sym)
 	if watched {
 		// The supervisor is a function value, so the code it carries and the
 		// receiver it carries are what the runtime calls.
@@ -98,13 +99,13 @@ func (g *generator) spawn(module string, n *zyxc.Node) *value {
 		g.emit("  %s = extractvalue %s %s, 0", code, watch.ll, watch.text)
 		recv := g.newReg()
 		g.emit("  %s = extractvalue %s %s, 1", recv, watch.ll, watch.text)
-		g.declareRuntime("zyxrt_coro_spawn_watched", "ptr", "ptr", "ptr", "ptr", "ptr")
-		g.emit("  %s = call ptr @zyxrt_coro_spawn_watched(ptr @%s, ptr %s, ptr %s, ptr %s)",
-			handle, thunk, base, code, recv)
+		g.declareRuntime("zyxrt_coro_spawn_watched", "ptr", "ptr", "ptr", "ptr", "ptr", "i32")
+		g.emit("  %s = call ptr @zyxrt_coro_spawn_watched(ptr @%s, ptr %s, ptr %s, ptr %s, i32 %d)",
+			handle, thunk, base, code, recv, tier)
 		return &value{text: handle, ll: "ptr", typ: types.JoinHandle.Instantiate(result)}
 	}
-	g.declareRuntime("zyxrt_coro_spawn", "ptr", "ptr", "ptr")
-	g.emit("  %s = call ptr @zyxrt_coro_spawn(ptr @%s, ptr %s)", handle, thunk, base)
+	g.declareRuntime("zyxrt_coro_spawn", "ptr", "ptr", "ptr", "i32")
+	g.emit("  %s = call ptr @zyxrt_coro_spawn(ptr @%s, ptr %s, i32 %d)", handle, thunk, base, tier)
 	return &value{text: handle, ll: "ptr", typ: types.JoinHandle.Instantiate(result)}
 }
 

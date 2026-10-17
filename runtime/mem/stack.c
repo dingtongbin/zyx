@@ -22,21 +22,30 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The stack a new coroutine is committed up front: enough that its first frames
-   need no growth, and little enough that a program with many coroutines pays
-   for the stack they use rather than for the stack they might use. It has to
-   cover the margin the prologue check keeps, which is what the first few frames
-   of a coroutine are measured with, so a coroutine that does what its body says
-   and no more never grows its stack at all. */
-#define ZYXXRT_STACK_WARM (32u * 1024u)
+/* What a coroutine of each tier commits up front, how far it reaches when it
+   needs more, and the room kept below the frame that asked, so that the frames
+   of the functions between one check and the check of what it calls are paid for
+   out of it. A packed coroutine is one that is expected to use a few kilobytes
+   and to call only C whose frames are small; a full one may reach any library,
+   so it starts with room and grows in larger steps. */
+#define ZYXXRT_STACK_PACKED_WARM (8u * 1024u)
+#define ZYXXRT_STACK_PACKED_STEP (4u * 1024u)
+#define ZYXXRT_STACK_PACKED_MARGIN (4u * 1024u)
+#define ZYXXRT_STACK_FULL_WARM (32u * 1024u)
+#define ZYXXRT_STACK_FULL_STEP (64u * 1024u)
+#define ZYXXRT_STACK_FULL_MARGIN (32u * 1024u)
 
-/* What a growth commits on top of the frame that asked for it, so the next few
-   descents cost nothing, and the room kept below that frame: the frames of the
-   functions between one check and the check of what it calls are paid for out
-   of the margin, so it covers the prologue of any callee and leaves room for
-   the report a stack that runs out makes. */
-#define ZYXXRT_STACK_STEP (64u * 1024u)
-#define ZYXXRT_STACK_MARGIN (32u * 1024u)
+static size_t tier_warm(int tier) {
+  return tier == ZYXXRT_STACK_FULL ? ZYXXRT_STACK_FULL_WARM : ZYXXRT_STACK_PACKED_WARM;
+}
+
+static size_t tier_step(int tier) {
+  return tier == ZYXXRT_STACK_FULL ? ZYXXRT_STACK_FULL_STEP : ZYXXRT_STACK_PACKED_STEP;
+}
+
+static size_t tier_margin(int tier) {
+  return tier == ZYXXRT_STACK_FULL ? ZYXXRT_STACK_FULL_MARGIN : ZYXXRT_STACK_PACKED_MARGIN;
+}
 
 /* How many slots one run holds at least, and how much one run holds at most
    before another is asked for, which is what makes the cost of a coroutine its
@@ -100,6 +109,30 @@ typedef struct zyxrt_slot {
 
 static zyxrt_slot *free_slots;
 
+/* The free list is shared by every lane: a coroutine may be started on one
+   thread and released by another, so what hands a slot out and takes one back
+   is a short critical section. What is committed for the stacks of coroutines is
+   counted, because that is the number a program that keeps many of them alive
+   watches. */
+static _Atomic int slot_lock;
+static _Atomic size_t committed_stacks;
+
+static void slot_hold(void) {
+  int expected = 0;
+  while (!atomic_compare_exchange_weak_explicit(&slot_lock, &expected, 1,
+                                                memory_order_acquire, memory_order_relaxed)) {
+    expected = 0;
+  }
+}
+
+static void slot_drop(void) { atomic_store_explicit(&slot_lock, 0, memory_order_release); }
+
+size_t zyxrt_stack_committed(void) {
+  return atomic_load_explicit(&committed_stacks, memory_order_relaxed);
+}
+
+static void slot_commit(void *want, void *old_limit);
+
 /* slot_guard makes the page below a slot inaccessible, which is where a stack
    that runs past its reservation without a check faults. */
 static void slot_guard(void *stack, size_t size) {
@@ -113,11 +146,15 @@ static void slot_guard(void *stack, size_t size) {
 
 /* stack_run reserves a run of slots and puts each of them on the free list. The
    run holds enough slots that asking for a reservation is worth doing: a slot
-   the size the language promises would fill a small run in three of them. */
-static void stack_run(size_t size) {
+   the size the language promises would fill a small run in three of them. What
+   each slot is committed to is what the tier asks, which is what a program of
+   many coroutines pays for each of them. */
+static void stack_run(size_t size, int tier) {
   size_t page = zyxrt_system_page();
   size_t slot = size + page;
   size_t wanted = ZYXXRT_ARENA_SLOTS;
+  size_t warm = tier_warm(tier);
+  if (warm > size) warm = size;
   if (slot * wanted < ZYXXRT_ARENA_BYTES) {
     wanted = ZYXXRT_ARENA_BYTES / slot + 1;
   }
@@ -129,10 +166,10 @@ static void stack_run(size_t size) {
     wanted = 1;
     if (base == NULL) return;
   }
-  size_t warm = size < ZYXXRT_STACK_WARM ? size : ZYXXRT_STACK_WARM;
   for (size_t i = 0; i < wanted; i++) {
     char *stack = base + i * slot + page;
     if (!arena_commit(stack + size - warm, warm)) continue;
+    atomic_fetch_add_explicit(&committed_stacks, warm, memory_order_relaxed);
     slot_guard(stack, size);
     zyxrt_slot *s = (zyxrt_slot *)(stack + size - sizeof(zyxrt_slot));
     s->next = free_slots;
@@ -141,53 +178,83 @@ static void stack_run(size_t size) {
   }
 }
 
-void *zyxrt_stack_map(size_t size, void **limit) {
-  if (free_slots == NULL) {
-    stack_run(size);
-    if (free_slots == NULL) {
+void *zyxrt_stack_map(size_t size, int tier, void **limit) {
+  size_t warm = tier_warm(tier);
+  char *stack;
+  char *warm_limit;
+  zyxrt_slot *s;
+  slot_hold();
+  s = free_slots;
+  if (s != NULL) free_slots = s->next;
+  slot_drop();
+  if (s == NULL) {
+    stack_run(size, tier);
+    slot_hold();
+    s = free_slots;
+    if (s != NULL) free_slots = s->next;
+    slot_drop();
+    if (s == NULL) {
       *limit = NULL;
       return NULL;
     }
   }
-  zyxrt_slot *s = free_slots;
-  free_slots = s->next;
-  *limit = s->limit;
+  if (warm > size) warm = size;
+  stack = (char *)s - (size - sizeof(zyxrt_slot));
+  warm_limit = stack + size - warm;
+  if ((char *)s->limit > warm_limit) {
+    /* The slot was carved for a smaller window, so what this tier asks for is
+       committed now. */
+    slot_commit(warm_limit, s->limit);
+    *limit = warm_limit;
+  } else {
+    *limit = s->limit;
+  }
   /* The link lives at the top of the slot, which is where the stack begins. */
   s->next = NULL;
   s->limit = NULL;
-  return (char *)s - (size - sizeof(zyxrt_slot));
+  return stack;
 }
 
 void zyxrt_stack_unmap(void *stack, size_t size, void *limit) {
   zyxrt_slot *s = (zyxrt_slot *)((char *)stack + size - sizeof(zyxrt_slot));
   s->limit = limit;
+  slot_hold();
   s->next = free_slots;
   free_slots = s;
+  slot_drop();
 }
 
 /* slot_commit commits more of a slot, which is what a frame that reaches below
    what is committed needs. */
 static void slot_commit(void *want, void *old_limit) {
-  if (!arena_commit(want, (char *)old_limit - (char *)want)) {
+  size_t bytes = (char *)old_limit - (char *)want;
+  if (!arena_commit(want, bytes)) {
     zyxrt_panic("stack overflow", 14);
   }
+  atomic_fetch_add_explicit(&committed_stacks, bytes, memory_order_relaxed);
 }
 
 void zyxrt_stack_grow(void *low) {
   zyxrt_coro *c = zyxrt_sched_current();
-  if (c == NULL || c->stack == NULL) return;
-  uintptr_t lowest = (uintptr_t)c->stack;
-  uintptr_t frame = (uintptr_t)low;
+  size_t margin;
+  size_t step;
+  uintptr_t lowest;
+  uintptr_t frame;
   uintptr_t want;
+  if (c == NULL || c->stack == NULL) return;
+  margin = tier_margin(c->stack_tier);
+  step = tier_step(c->stack_tier);
+  lowest = (uintptr_t)c->stack;
+  frame = (uintptr_t)low;
   if (frame >= (uintptr_t)c->stack_limit) return;
-  if (frame < lowest + ZYXXRT_STACK_MARGIN) {
+  if (frame < lowest + margin) {
     /* The frame reaches the end of what the language promised this coroutine,
        so the stack has run out. What is committed is above it, which is where
        the report runs. */
     zyxrt_panic("stack overflow", 14);
   }
-  want = frame - ZYXXRT_STACK_MARGIN;
-  if (want > lowest + ZYXXRT_STACK_STEP) want -= ZYXXRT_STACK_STEP;
+  want = frame - margin;
+  if (want > lowest + step) want -= step;
   /* Everything above the committed low end is committed already, so the run the
      frame needs is covered by committing up to where the committed part began. */
   slot_commit((void *)want, c->stack_limit);
@@ -214,7 +281,7 @@ size_t zyxrt_stack_size(void) {
   if (configured != NULL && configured[0] != '\0') {
     char *end = NULL;
     unsigned long long value = strtoull(configured, &end, 10);
-    if (end != configured && value >= ZYXXRT_STACK_WARM) {
+    if (end != configured && value >= ZYXXRT_STACK_FULL_WARM) {
       chosen = (size_t)value;
       return chosen;
     }

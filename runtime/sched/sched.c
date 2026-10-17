@@ -533,11 +533,11 @@ static void free_coro(zyxrt_coro *c) {
   free(c);
 }
 
-void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg) {
-  return zyxrt_coro_spawn_watched(fn, arg, NULL, NULL);
+void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg, int tier) {
+  return zyxrt_coro_spawn_watched(fn, arg, NULL, NULL, tier);
 }
 
-void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, void *watch_recv) {
+void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, void *watch_recv, int tier) {
   zyxrt_coro *c = (zyxrt_coro *)calloc(1, sizeof(zyxrt_coro));
   if (!c) zyxrt_panic("out of memory", 13);
   zyxrt_lock_init(&c->lock);
@@ -545,8 +545,9 @@ void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, voi
   c->arg = arg;
   c->watch = watch;
   c->watch_recv = watch_recv;
+  c->stack_tier = tier;
   c->stack_size = zyxrt_stack_size();
-  c->stack = zyxrt_stack_map(c->stack_size, &c->stack_limit);
+  c->stack = zyxrt_stack_map(c->stack_size, tier, &c->stack_limit);
   if (!c->stack) zyxrt_panic("out of memory", 13);
   c->ctx = zyxrt_ctx_new(c->stack, c->stack_size);
   /* The region the spawner is running in waits for this coroutine before it

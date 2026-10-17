@@ -15,7 +15,7 @@ int zyxrt_run_main(zyxrt_main_fn fn, void *arg) {
   zyxrt_wheel_init();
   zyxrt_preempt_start();
   zyxrt_sched_init();
-  zyxrt_coro *root = zyxrt_coro_spawn((zyxrt_fn)fn, arg);
+  zyxrt_coro *root = zyxrt_coro_spawn((zyxrt_fn)fn, arg, ZYXXRT_STACK_FULL);
   root->root = 1;
   /* The calling thread is a scheduler thread, so it runs coroutines rather
      than watching them. It returns when the work is over, which is when every

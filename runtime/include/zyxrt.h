@@ -214,11 +214,23 @@ typedef void (*zyxrt_fn)(void *arg);
 /* zyxrt_watch_fn is a supervisor: it takes the receiver of the function value
    the program wrote and the exception the coroutine raised. */
 typedef void (*zyxrt_watch_fn)(void *recv, void *panic);
-void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg);
+/* The stack a coroutine starts on. A coroutine whose body can reach only the
+   runtime's own C, and the operations the language itself performs, starts on a
+   small stack that commits little and grows as it is used; one that can reach C
+   of unknown depth starts on the full one. A tier changes how much a coroutine
+   commits before it runs, not what it can do: a stack that turns out to be too
+   small grows, so a coroutine of the wrong tier is slower and not wrong. */
+#define ZYXXRT_STACK_PACKED 0
+#define ZYXXRT_STACK_FULL 1
+void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg, int tier);
 /* zyxrt_coro_spawn_watched starts a coroutine and binds a supervisor to it.
    The supervisor runs when the coroutine raises, before the coroutine's
    region is released, so the exception it is given is still valid. */
-void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, void *watch_recv);
+void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, void *watch_recv, int tier);
+/* zyxrt_stack_committed answers how many bytes of coroutine stacks the program
+   has committed, which is what a program that keeps many coroutines alive
+   watches: every live coroutine holds the stack its tier gave it. */
+size_t zyxrt_stack_committed(void);
 /* zyxrt_coro_join waits for a coroutine and reports how it ended. It returns
    the value the coroutine recorded and writes the exception it raised to
    *panic, or NULL when it completed. The coroutine is released when the

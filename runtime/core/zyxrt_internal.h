@@ -157,6 +157,9 @@ typedef struct zyxrt_coro {
      at, and which the prologue check of every function compares a frame with.
      It is per coroutine rather than per thread because the stack is. */
   void *stack_limit;
+  /* tier is the stack the coroutine was started on, which decides how much it
+     commits and how far a growth step reaches. */
+  int stack_tier;
   /* wait_next links a coroutine into a ready queue. */
   struct zyxrt_coro *wait_next;
   /* waiters holds the waiters blocked on this one. They are woken when it
@@ -210,7 +213,9 @@ void zyxrt_ctx_bounds_coro(zyxrt_coro *c);
    which calls zyxrt_stack_grow with the low end of the frame about to be used.
    Either way the reservation is the promise the language makes, so a frame that
    would pass its low end is a panic rather than a fault. */
-void *zyxrt_stack_map(size_t size, void **limit);
+/* zyxrt_stack_map hands out a coroutine stack of the reserved size, committed
+   as far down as the tier asks, and answers how far down that is. */
+void *zyxrt_stack_map(size_t size, int tier, void **limit);
 void zyxrt_stack_unmap(void *stack, size_t size, void *limit);
 /* zyxrt_stack_grow commits more of the running coroutine's stack, because a
    frame whose low end is the given address is about to be used. It answers

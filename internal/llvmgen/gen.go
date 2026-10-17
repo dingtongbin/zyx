@@ -53,6 +53,11 @@ type generator struct {
 	labels int
 	// thunks counts the coroutine entry points emitted.
 	thunks int
+	// bodyIndex holds every function the program defines, by symbol, and deepC
+	// answers, per symbol, whether the function can reach C of unknown depth.
+	// Both are what decides the stack a coroutine starts on.
+	bodyIndex map[string]*zyxc.Node
+	deepC     map[string]bool
 }
 
 // A pendingRelease is one object the analysis marked as no longer used.
