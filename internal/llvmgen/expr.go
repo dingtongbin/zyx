@@ -298,6 +298,14 @@ func (g *generator) name(module string, n *zyxc.Node) *value {
 		return &value{text: slot.alloca, ll: g.llPass(slot.typ), typ: slot.typ, lvalue: true}
 	}
 	if decl := g.tab.decl(id); decl != nil {
+		if decl.Kind == "func" && !g.cABIFunc(id) {
+			// A function named where a value is expected answers its value: the
+			// thunk that drops the receiver a value carries, and no receiver.
+			// A function that crosses the C boundary is not lowered here yet,
+			// because its value needs a thunk that passes arguments the way the
+			// C ABI does and calls the symbol under the name the C side defines.
+			return g.functionValue(id, g.funcType(decl))
+		}
 		typ := g.bindingType(module, decl, id)
 		if typ == nil {
 			g.fail(fmt.Errorf("llvmgen: the type of %s is not settled", n.Payload[0]))
