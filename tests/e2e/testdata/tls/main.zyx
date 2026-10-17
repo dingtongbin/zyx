@@ -1,0 +1,289 @@
+package main
+
+// TLS over loopback connections this program sets up itself. The server
+// answers with a certificate and a key that the program writes into a
+// temporary directory of its own, and the client checks that certificate
+// against the one it trusts and the name the certificate carries.
+//
+// The two ends of a greeting must make progress at the same time, so the
+// server runs in a coroutine of its own. The listener is a value that holds a
+// listener of the stream package, so it stays inside that coroutine: what
+// crosses the boundary is the port the server answered on and the channels
+// that order the two ends, and what the client did is printed only after the
+// server has said what it did.
+//
+// Nothing here depends on the machine or the moment: the material is written
+// where the system keeps temporary files, and the port is chosen while the
+// program runs and is never printed.
+
+import "std/fs"
+import "std/fmt"
+import "std/os"
+import "std/tls"
+
+import c "pems.h"
+
+// Mode is the permission bits of the directory this run makes, written as the
+// number rather than as an octal literal.
+const Mode: u32 = 493
+
+// kind_name names a failure kind, because an f-string writes a primitive type
+// or a text and the package's kind is an enumeration of its own.
+func kind_name(k: tls.ErrorKind) -> str {
+    match k {
+        NotFound => { return "NotFound" }
+        Permission => { return "Permission" }
+        Exists => { return "Exists" }
+        NotDir => { return "NotDir" }
+        IsDir => { return "IsDir" }
+        Invalid => { return "Invalid" }
+        Closed => { return "Closed" }
+        Timeout => { return "Timeout" }
+        Interrupted => { return "Interrupted" }
+        WouldBlock => { return "WouldBlock" }
+        Eof => { return "Eof" }
+        AddrInUse => { return "AddrInUse" }
+        AddrNotAvailable => { return "AddrNotAvailable" }
+        Refused => { return "Refused" }
+        Reset => { return "Reset" }
+        Unreachable => { return "Unreachable" }
+        Other => { return "Other" }
+    }
+}
+
+// failure writes one failure of a TLS call as text. The text of a failure the
+// library reported belongs to the version of the library the program was
+// linked with, so only the kind, the number of the check that refused a
+// certificate, and whether there is a text are written.
+func failure(what: str, e: tls.Error) -> str {
+    var has = "no"
+    if e.Msg.Len() > 0 {
+        has = "yes"
+    }
+    return f"{what}: {kind_name(e.Kind)} code {i64(e.Errno % 256)} message {has}"
+}
+
+// stream_failure writes one failure of a stream call as text. The number the
+// system reported belongs to the system, so it is left out.
+func stream_failure(what: str, e: tls.Error) -> str {
+    var has = "no"
+    if e.Msg.Len() > 0 {
+        has = "yes"
+    }
+    return f"{what}: {kind_name(e.Kind)} message {has}"
+}
+
+// join2 joins two parts of a path.
+func join2(a: str, b: str) -> str {
+    var parts = new Array<str>(0)
+    parts.Push(a)
+    parts.Push(b)
+    return fs.Join(parts)
+}
+
+// serve listens at the first of a few ports of the loopback address that is
+// free and tells the other end which one answered. A port that is already
+// answered for is tried past; any other failure is reported, and the closing
+// of the channel says that no port was found. The port is never printed, so
+// nothing the program prints depends on which one answered.
+func serve(cert: str, key: str, count: i32, ports: chan<i32>, scene: chan<i32>, closed: chan<i32>) {
+    var server = new tls.Config()
+    server.CertFile = cert
+    server.KeyFile = key
+    server.MinVersion = 2
+
+    var tries: i32 = 0
+    var found = false
+    for tries < 20 && !found {
+        var port = 34800 + tries
+        var attempt = tls.Listen("tcp", f"127.0.0.1:{i64(port)}", server)
+        match attempt {
+            Ok(l) => {
+                found = true
+                ports.Send(port)
+                var at: i32 = 0
+                for at < count {
+                    serve_one(l)
+                    scene.Send(1)
+                    at += 1
+                }
+                l.Close()
+                l.Close()
+                // The port is free again, and the caller is told so before it
+                // asks for a connection that is now refused.
+                closed.Send(1)
+            }
+            Err(e) => {
+                match e.Kind {
+                    AddrInUse => { tries += 1 }
+                    _ => {
+                        fmt.Println(failure("listen", e))
+                        tries = 20
+                    }
+                }
+            }
+        }
+    }
+    if !found {
+        fmt.Println("no port of the loopback address was free")
+        ports.Close()
+        closed.Send(1)
+    }
+}
+
+// serve_one accepts one connection, reads a message, and answers it. A
+// connection whose greeting the client refused is reported without the text of
+// the failure, which belongs to the version of the library.
+func serve_one(l: tls.Listener) {
+    var accepted = l.Accept()
+    match accepted {
+        Err(_) => { fmt.Println("the server refused the greeting") }
+        Ok(conn) => {
+            var b = new Buf(0)
+            match conn.Read(b, 4096) {
+                Ok(n) => {
+                    fmt.Println(f"server read {n} {b.Str()}")
+                    match conn.WriteStr("pong") {
+                        Ok(wrote) => { fmt.Println(f"server wrote {wrote}") }
+                        Err(_) => { fmt.Println("the server could not write") }
+                    }
+                }
+                Err(_) => { fmt.Println("the server could not read") }
+            }
+            conn.Close()
+        }
+    }
+}
+
+// client runs the client side of one scenario and prints what it did once the
+// server has said what it did. The scenario names the configuration the client
+// is given.
+func client(port: i32, cert: str, name: str, scene: chan<i32>) {
+    var out = new Buf(0)
+    fmt.Fprintln(out, f"client scenario {name}")
+    var cfg = new tls.Config()
+    if name == "verified" {
+        cfg.CaFile = cert
+        cfg.ServerName = "localhost"
+    } else if name == "unchecked" {
+        cfg.ServerName = "localhost"
+        cfg.InsecureSkipVerify = true
+    } else {
+        cfg.CaFile = cert
+        cfg.ServerName = "other.example"
+    }
+    var connected = tls.Dial("tcp", f"127.0.0.1:{i64(port)}", cfg)
+    match connected {
+        Err(e) => { fmt.Fprintln(out, failure("client dial", e)) }
+        Ok(conn) => {
+            match conn.WriteStr("ping") {
+                Ok(n) => { fmt.Fprintln(out, f"client wrote {n}") }
+                Err(e) => { fmt.Fprintln(out, failure("client write", e)) }
+            }
+            var b = new Buf(0)
+            match conn.Read(b, 4096) {
+                Ok(n) => { fmt.Fprintln(out, f"client read {n} {b.Str()}") }
+                Err(e) => { fmt.Fprintln(out, failure("client read", e)) }
+            }
+            var local = "no"
+            if conn.LocalAddr().Len() > 0 {
+                local = "yes"
+            }
+            var remote = "no"
+            if conn.RemoteAddr().Len() > 0 {
+                remote = "yes"
+            }
+            fmt.Fprintln(out, f"client addresses {local} {remote}")
+            conn.Shutdown(1)
+            fmt.Fprintln(out, "client shut the writing side")
+            match conn.WriteStr("after") {
+                Ok(_) => { fmt.Fprintln(out, "the writing side took bytes after it was shut") }
+                Err(e) => { fmt.Fprintln(out, failure("client write after shutdown", e)) }
+            }
+            conn.Shutdown(0)
+            var drained = new Buf(0)
+            match conn.Read(drained, 4096) {
+                Ok(n) => { fmt.Fprintln(out, f"client read after shutting the reading side {n}") }
+                Err(e) => { fmt.Fprintln(out, failure("client read after shutdown", e)) }
+            }
+            conn.Close()
+            conn.Close()
+        }
+    }
+    var answer = scene.Recv()
+    if !answer.1 {
+        fmt.Fprintln(out, "the server did not answer")
+    }
+    fmt.Print(out.Str())
+}
+
+// scenario runs the client side of one scenario in a coroutine of its own and
+// waits for it, so one scenario is over before the next begins.
+func scenario(port: i32, cert: str, name: str, scene: chan<i32>) {
+    region {
+        var handle = spawn client(port, cert, name, scene)
+        match handle.Join() {
+            Ok(_) => {}
+            Err(_) => { fmt.Println("the client coroutine raised") }
+        }
+    }
+}
+
+func run(root: str, cert: str, key: str) {
+    var ports = new chan<i32>(1)
+    var scene = new chan<i32>(1)
+    var closed = new chan<i32>(1)
+    region {
+        spawn serve(cert, key, 3, ports, scene, closed)
+        var announcement = ports.Recv()
+        if !announcement.1 {
+            fmt.Println("the server found no port")
+            return
+        }
+        var port = announcement.0
+        // The client trusts the certificate of the server and asks for the
+        // name the certificate carries, which is the name it is checked
+        // against.
+        scenario(port, cert, "verified", scene)
+        // A client that was told to check none needs no certificate to trust,
+        // and asks for the host all the same.
+        scenario(port, cert, "unchecked", scene)
+        // The name of the certificate is not the one the client asked for, so
+        // the greeting is refused.
+        scenario(port, cert, "wrong name", scene)
+        // The listener is gone, so a connection to the port it answered on is
+        // refused by the system, and that failure is the one this package hands
+        // on from the stream package.
+        var finished = closed.Recv()
+        if !finished.1 {
+            fmt.Println("the server never closed its listener")
+        }
+        var late = new tls.Config()
+        late.ServerName = "localhost"
+        late.InsecureSkipVerify = true
+        match tls.Dial("tcp", f"127.0.0.1:{i64(port)}", late) {
+            Ok(_) => { fmt.Println("the closed port took a connection") }
+            Err(e) => { fmt.Println(stream_failure("client dial after the server stopped", e)) }
+        }
+    }
+}
+
+func main() {
+    var parts = new Array<str>(0)
+    parts.Push(fs.TempDir())
+    parts.Push(f"zyx-tls-{i64(os.Getpid())}")
+    var root = fs.Join(parts)
+    fs.RemoveAll(root)
+    match fs.Mkdir(root, Mode) {
+        Ok(_) => {}
+        Err(_) => { fmt.Println("could not make the directory") }
+    }
+    var cert = join2(root, "cert.pem")
+    var key = join2(root, "key.pem")
+    if c.zyxtest_write_material(cert, key) != 0 {
+        fmt.Println("could not write the material")
+    } else {
+        run(root, cert, key)
+    }
+    fs.RemoveAll(root)
+}

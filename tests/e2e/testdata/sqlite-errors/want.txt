@@ -1,0 +1,29 @@
+open below a missing directory: NotFound code 14
+open a directory: NotFound code 14
+open a file that is not a database: Invalid code 26
+syntax: Invalid code 1
+two statements: Invalid the text holds more than one statement
+after two statements tables 0
+trailing comment: ran
+empty: Invalid the text holds no statement
+comment only: Invalid the text holds no statement
+extra parameter: Invalid code 25
+array parameter: Invalid parameter 1 is an array or a map, which a column cannot hold
+map parameter: Invalid parameter 1 is an array or a map, which a column cannot hold
+after refused statements table c
+after refused statements tables 1
+first changed 1
+duplicate key: Invalid code 19
+duplicate name: Invalid code 19
+missing value: Invalid code 19
+kept 1
+columns 1
+first row false
+closed row false
+closed columns 0
+closed exec: Closed the handle is closed
+closed query: Closed the handle is closed
+quiet columns 0
+quiet row false
+quiet insert row false
+quiet value 7

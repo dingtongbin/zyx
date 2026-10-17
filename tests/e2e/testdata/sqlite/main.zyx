@@ -1,0 +1,235 @@
+package main
+
+// The database package over a file of its own: the connection, the statements
+// that change rows, the rows that read typed values back, a statement that
+// answers no rows, a transaction that is rolled back, and the same file
+// opened again to read what the first connection wrote.
+//
+// A value of the language crosses into a column as the value SQLite keeps, so
+// a number bound as a value is a double and a column of a whole number reads
+// back as one. A failure SQLite reported carries the text of the library
+// version the program was linked with, which is not the same everywhere, so
+// only its kind and its primary result code are printed; a failure the
+// package itself reported has no result code and carries text of its own.
+//
+// The database is one file, named relatively in the directory the program runs
+// in, so the name is never printed and the file is removed before the program
+// ends.
+
+import "std/fs"
+import "std/fmt"
+import "std/os"
+import "std/sqlite"
+
+// kind_name names a failure kind, because an f-string writes a primitive type
+// or a text and the package's kind is an enumeration of its own.
+func kind_name(k: sqlite.ErrorKind) -> str {
+    match k {
+        NotFound => { return "NotFound" }
+        Permission => { return "Permission" }
+        Exists => { return "Exists" }
+        NotDir => { return "NotDir" }
+        IsDir => { return "IsDir" }
+        Invalid => { return "Invalid" }
+        Closed => { return "Closed" }
+        Timeout => { return "Timeout" }
+        Interrupted => { return "Interrupted" }
+        WouldBlock => { return "WouldBlock" }
+        Eof => { return "Eof" }
+        AddrInUse => { return "AddrInUse" }
+        AddrNotAvailable => { return "AddrNotAvailable" }
+        Refused => { return "Refused" }
+        Reset => { return "Reset" }
+        Unreachable => { return "Unreachable" }
+        Other => { return "Other" }
+    }
+}
+
+// report prints one failure in the form that does not depend on the version of
+// SQLite the program was linked with.
+func report(what: str, e: sqlite.Error) {
+    if e.Errno == 0 {
+        fmt.Println(f"{what}: {kind_name(e.Kind)} {e.Msg}")
+    } else {
+        fmt.Println(f"{what}: {kind_name(e.Kind)} code {i64(e.Errno % 256)}")
+    }
+}
+
+// params1 builds the parameters of a statement that takes one value, and
+// params2 the parameters of one that takes two. They are built by pushing
+// rather than written as a literal, because a literal of an array of an
+// enumerated type does not read back yet.
+func params1(v: Value) -> Array<Value> {
+    var out = new Array<Value>(0)
+    out.Push(v)
+    return out
+}
+
+func params2(a: Value, b: Value) -> Array<Value> {
+    var out = new Array<Value>(0)
+    out.Push(a)
+    out.Push(b)
+    return out
+}
+
+// database_path names the file this run uses. A database is one file by
+// design, and the program runs in a directory of its own, so the name is
+// relative: nothing outside that directory is touched, and the name is never
+// printed. The number of the process keeps two runs of this program apart.
+func database_path() -> str {
+    return f"zyxsqlite-{i64(os.Getpid())}.db"
+}
+
+// remove_database removes the database a name stands for and the files SQLite
+// keeps beside it, so the directory is left as it was.
+func remove_database(path: str) {
+    fs.RemoveAll(path)
+    fs.RemoveAll(f"{path}-journal")
+    fs.RemoveAll(f"{path}-wal")
+    fs.RemoveAll(f"{path}-shm")
+}
+
+// write opens a table and writes the two rows the reads below work on.
+func write(db: sqlite.Db) -> Result<(), sqlite.Error> {
+    var none = new Array<Value>(0)
+    var made = try db.Exec("CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT, height REAL, note TEXT, visits INTEGER)", none)
+    fmt.Println(f"create changed {made}")
+
+    var first = new Array<Value>(0)
+    first.Push(Value.Num(1.0))
+    first.Push(Value.Str("Ada"))
+    first.Push(Value.Num(1.75))
+    first.Push(Value.Null)
+    first.Push(Value.Num(3.0))
+    var one = try db.Exec("INSERT INTO people (id, name, height, note, visits) VALUES (?, ?, ?, ?, ?)", first)
+    fmt.Println(f"insert changed {one}")
+
+    var second = new Array<Value>(0)
+    second.Push(Value.Num(2.0))
+    second.Push(Value.Str("O'Brien; DROP TABLE people"))
+    second.Push(Value.Num(2.5))
+    second.Push(Value.Str("second"))
+    second.Push(Value.Bool(true))
+    var two = try db.Exec("INSERT INTO people (id, name, height, note, visits) VALUES (?, ?, ?, ?, ?)", second)
+    fmt.Println(f"insert changed {two}")
+    return Result.Ok()
+}
+
+// read reads back what was written: every kind of value, the names of the
+// result columns, and a statement that answers no rows.
+func read(db: sqlite.Db) -> Result<(), sqlite.Error> {
+    var none = new Array<Value>(0)
+    var rows = try db.Query("SELECT id, name, height, note, visits FROM people ORDER BY id", none)
+    var names = rows.Columns()
+    fmt.Println(f"columns {names.Len()}")
+    for name in names {
+        fmt.Println(f"column {name}")
+    }
+    var at: i64 = 0
+    for rows.Next() {
+        at += 1
+        var note = "none"
+        if !rows.Null(3) {
+            note = rows.Text(3)
+        }
+        fmt.Println(f"row {at} id {rows.Int(0)} name {rows.Text(1)} height {rows.Float(2)} note {note} visits {rows.Int(4)} null {rows.Null(3)}")
+    }
+    fmt.Println(f"rows {at}")
+    rows.Close()
+
+    var missing = try db.Query("SELECT id, name FROM people WHERE id = ?", params1(Value.Num(999.0)))
+    fmt.Println(f"missing columns {missing.Columns().Len()}")
+    fmt.Println(f"missing row {missing.Next()}")
+    fmt.Println(f"missing row again {missing.Next()}")
+    missing.Close()
+
+    // A text column read as a number and a whole number read as a float are
+    // the conversions SQLite makes, which the calls expose rather than hide.
+    var mixed = try db.Query("SELECT name, id FROM people WHERE id = ?", params1(Value.Num(1.0)))
+    if mixed.Next() {
+        fmt.Println(f"text as int {mixed.Int(0)}")
+        fmt.Println(f"int as float {mixed.Float(1)}")
+        fmt.Println(f"int as text {mixed.Text(1)}")
+    }
+    mixed.Close()
+
+    var total = try db.Query("SELECT count(*) FROM people", none)
+    var counted: i64 = 0
+    if total.Next() {
+        counted = total.Int(0)
+    }
+    total.Close()
+    fmt.Println(f"counted {counted}")
+    return Result.Ok()
+}
+
+// change changes rows: an update, a transaction that is rolled back, and a
+// delete, each answering the number of rows it changed.
+func change(db: sqlite.Db) -> Result<(), sqlite.Error> {
+    var none = new Array<Value>(0)
+    var updated = try db.Exec("UPDATE people SET visits = ? WHERE id = ?", params2(Value.Num(9.0), Value.Num(2.0)))
+    fmt.Println(f"update changed {updated}")
+
+    try db.Exec("BEGIN", none)
+    try db.Exec("INSERT INTO people (id, name) VALUES (3, 'rollback')", none)
+    try db.Exec("ROLLBACK", none)
+    var after = try db.Query("SELECT count(*) FROM people", none)
+    var left: i64 = 0
+    if after.Next() {
+        left = after.Int(0)
+    }
+    after.Close()
+    fmt.Println(f"after rollback {left}")
+
+    var visits = try db.Query("SELECT visits FROM people WHERE id = ?", params1(Value.Num(2.0)))
+    var seen: i64 = 0
+    if visits.Next() {
+        seen = visits.Int(0)
+    }
+    visits.Close()
+    fmt.Println(f"visits {seen}")
+
+    var removed = try db.Exec("DELETE FROM people WHERE id = ?", params1(Value.Num(2.0)))
+    fmt.Println(f"delete changed {removed}")
+    return Result.Ok()
+}
+
+// again reads the same file through a second connection, which is what a
+// database in a file means.
+func again(path: str) -> Result<(), sqlite.Error> {
+    var db = try sqlite.Open(path)
+    var none = new Array<Value>(0)
+    var rows = try db.Query("SELECT name FROM people ORDER BY id", none)
+    var kept = 0
+    for rows.Next() {
+        kept += 1
+        fmt.Println(f"kept {rows.Text(0)}")
+    }
+    fmt.Println(f"kept rows {kept}")
+    rows.Close()
+    var empty = try db.Query("SELECT name FROM people WHERE id = ?", params1(Value.Num(2.0)))
+    fmt.Println(f"kept after delete {empty.Next()}")
+    empty.Close()
+    db.Close()
+    return Result.Ok()
+}
+
+func run(path: str) -> Result<(), sqlite.Error> {
+    var db = try sqlite.Open(path)
+    try write(db)
+    try read(db)
+    try change(db)
+    db.Close()
+    try again(path)
+    return Result.Ok()
+}
+
+func main() {
+    var path = database_path()
+    remove_database(path)
+    match run(path) {
+        Ok(_) => {}
+        Err(e) => { report("failed", e) }
+    }
+    remove_database(path)
+}

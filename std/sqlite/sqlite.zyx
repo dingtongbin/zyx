@@ -1,1 +1,356 @@
 package sqlite
+
+// The embedded database: the connection a program opens on a file, the
+// statements it runs through it, and the rows those statements answer.
+//
+// Every call is a thin binding of SQLite, so a value keeps the meaning SQLite
+// gives it: a number of the language crosses as a double, and a column that
+// holds a whole number reads back through Int. A connection is serialized by
+// SQLite, so two coroutines may use one connection, but one statement must be
+// stepped by one coroutine at a time.
+
+import c "zyxsqlite.h" {
+    fast zyxsqlite_error_kind, zyxsqlite_error_number, zyxsqlite_error_message
+    fast zyxsqlite_changes
+    fast zyxsqlite_column_count, zyxsqlite_column_null
+    fast zyxsqlite_column_int, zyxsqlite_column_float
+}
+
+// ErrorKind is what went wrong. Every system package reports failures in this
+// shape, so one program reads them the same way wherever they come from.
+
+enum ErrorKind {
+    NotFound
+    Permission
+    Exists
+    NotDir
+    IsDir
+    Invalid
+    Closed
+    Timeout
+    Interrupted
+    WouldBlock
+    Eof
+    AddrInUse
+    AddrNotAvailable
+    Refused
+    Reset
+    Unreachable
+    Other
+}
+
+// Error is one failure of a call. Errno is the result code SQLite reported,
+// which names the constraint that was broken, or zero when the failure is not
+// one SQLite names, and Msg is the text it gave.
+
+struct Error {
+    Kind: ErrorKind
+    Errno: i32
+    Msg: str
+
+    impl Show {
+        func Show(w: Buf) {
+            w.WriteStr(f"sqlite: {self.Msg}")
+        }
+    }
+}
+
+// error_of builds the failure a C call just reported.
+func error_of() -> Error {
+    return Error {
+        Kind: error_kind(c.zyxsqlite_error_kind())
+        Errno: c.zyxsqlite_error_number()
+        Msg: message_of()
+    }
+}
+
+// error_kind maps the number a C call reports onto the kind of failure it is.
+// The numbers are the ones the package's own header defines.
+func error_kind(code: i32) -> ErrorKind {
+    match code {
+        1 => { return ErrorKind.NotFound }
+        2 => { return ErrorKind.Permission }
+        3 => { return ErrorKind.Exists }
+        4 => { return ErrorKind.NotDir }
+        5 => { return ErrorKind.IsDir }
+        6 => { return ErrorKind.Invalid }
+        7 => { return ErrorKind.Closed }
+        8 => { return ErrorKind.Timeout }
+        9 => { return ErrorKind.Interrupted }
+        10 => { return ErrorKind.WouldBlock }
+        11 => { return ErrorKind.Eof }
+        _ => { return ErrorKind.Other }
+    }
+}
+
+// message_of answers the text of the failure the last call reported.
+func message_of() -> str {
+    var text = new Buf(0)
+    c.zyxsqlite_error_message(text)
+    return text.Str()
+}
+
+// closed_error is the failure of a call on a handle that was closed.
+func closed_error() -> Error {
+    return Error { Kind: ErrorKind.Closed, Errno: 0, Msg: "the handle is closed" }
+}
+
+// Db is a connection to a database. It is a reference: a copy names the same
+// connection, and nothing runs when the last name goes away, so a program
+// closes what it opened. Its fields are open because another package builds
+// the connection from a handle of its own.
+struct Db {
+    Handle: raw
+    Closed: bool
+
+    // Exec runs the one statement a text holds and answers how many rows it
+    // changed, which is the count SQLite keeps for the statement it ran last.
+    // A text that holds no statement, or more than one, is refused rather
+    // than half run.
+    func Exec(sql: str, params: Array<Value>) -> Result<i64, Error> {
+        if self.Closed {
+            return Result.Err(closed_error())
+        }
+        var compiled = statement_of(self.Handle, sql)
+        if compiled.IsErr() {
+            return Result.Err(compiled.Err().Unwrap())
+        }
+        var stmt = compiled.Ok().Unwrap()
+        var given = bind_params(stmt, params)
+        if given.IsErr() {
+            var e = given.Err().Unwrap()
+            c.zyxsqlite_finalize(stmt)
+            return Result.Err(e)
+        }
+        var run = run_to_end(stmt)
+        if run.IsErr() {
+            var e = run.Err().Unwrap()
+            c.zyxsqlite_finalize(stmt)
+            return Result.Err(e)
+        }
+        var changed = c.zyxsqlite_changes(self.Handle)
+        c.zyxsqlite_finalize(stmt)
+        return Result.Ok(changed)
+    }
+
+    // Query runs the one statement a text holds up to its first row and
+    // answers the rows it goes on to produce. The statement is stepped by
+    // whoever reads the rows, so the rows are closed before the connection is.
+    func Query(sql: str, params: Array<Value>) -> Result<Rows, Error> {
+        if self.Closed {
+            return Result.Err(closed_error())
+        }
+        var compiled = statement_of(self.Handle, sql)
+        if compiled.IsErr() {
+            return Result.Err(compiled.Err().Unwrap())
+        }
+        var stmt = compiled.Ok().Unwrap()
+        var given = bind_params(stmt, params)
+        if given.IsErr() {
+            var e = given.Err().Unwrap()
+            c.zyxsqlite_finalize(stmt)
+            return Result.Err(e)
+        }
+        return Result.Ok(Rows { Stmt: stmt, Closed: false, Current: false, Done: false })
+    }
+
+    // Close gives the connection up. It is idempotent: a connection already
+    // closed is left alone, and a call on it afterwards is refused. A
+    // statement that is still open is released with it.
+    func Close() {
+        if self.Closed {
+            return
+        }
+        c.zyxsqlite_close(self.Handle)
+        self.Closed = true
+    }
+}
+
+// Open opens the database a path names, making the file if it is not there.
+// The path ":memory:" names a database that lives only while the connection
+// does.
+func Open(path: str) -> Result<Db, Error> {
+    var handle = c.zyxsqlite_open(path)
+    if c.zyxsqlite_error_kind() != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok(Db { Handle: handle, Closed: false })
+}
+
+// statement_of compiles the one statement a text holds, answering the failure
+// SQLite reported when it cannot.
+func statement_of(db: raw, sql: str) -> Result<raw, Error> {
+    var stmt = c.zyxsqlite_prepare(db, sql)
+    if c.zyxsqlite_error_kind() != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok(stmt)
+}
+
+// bind_params gives a statement the values of a call. A parameter is counted
+// from one, in the order the statement writes its placeholders, and a value
+// the call did not give stays as SQLite left it.
+func bind_params(stmt: raw, params: Array<Value>) -> Result<(), Error> {
+    var at: i32 = 1
+    for v in params {
+        var bound = bind_one(stmt, at, v)
+        if bound.IsErr() {
+            return Result.Err(bound.Err().Unwrap())
+        }
+        at += 1
+    }
+    return Result.Ok()
+}
+
+// bind_one gives one parameter a value. A value of a kind that is a collection
+// has no column to stand for it, so it is refused rather than encoded.
+func bind_one(stmt: raw, at: i32, v: Value) -> Result<(), Error> {
+    match v {
+        Null => { return bind_result(c.zyxsqlite_bind_null(stmt, at)) }
+        Bool(b) => {
+            if b {
+                return bind_result(c.zyxsqlite_bind_int(stmt, at, 1))
+            }
+            return bind_result(c.zyxsqlite_bind_int(stmt, at, 0))
+        }
+        Num(x) => { return bind_result(c.zyxsqlite_bind_float(stmt, at, x)) }
+        Str(s) => { return bind_result(c.zyxsqlite_bind_text(stmt, at, s)) }
+        Arr(_) => { return Result.Err(unbindable(at)) }
+        Obj(_) => { return Result.Err(unbindable(at)) }
+    }
+}
+
+// bind_result reads the answer of one binding call.
+func bind_result(code: i32) -> Result<(), Error> {
+    if code != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok()
+}
+
+// unbindable is the failure of a parameter that has no value SQLite can hold.
+func unbindable(at: i32) -> Error {
+    return Error {
+        Kind: ErrorKind.Invalid
+        Errno: 0
+        Msg: f"parameter {i64(at)} is an array or a map, which a column cannot hold"
+    }
+}
+
+// run_to_end steps a statement to its last row, which is what a call that
+// changes rows rather than reads them does.
+func run_to_end(stmt: raw) -> Result<(), Error> {
+    var step = c.zyxsqlite_step(stmt)
+    for step > 0 {
+        step = c.zyxsqlite_step(stmt)
+    }
+    if step < 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok()
+}
+
+// Rows reads the rows one statement answers. It is a reference: a copy names
+// the same rows, and the statement is released when Close is called.
+struct Rows {
+    Stmt: raw
+    Closed: bool
+    Current: bool
+    Done: bool
+
+    // Next runs the statement to its next row and answers whether there is
+    // one. Once it answers false the statement is finished, and calling it
+    // again answers false. A failure while stepping has no answer to travel
+    // through, so it panics with the text SQLite gave.
+    func Next() -> bool {
+        if self.Closed || self.Done {
+            return false
+        }
+        var step = c.zyxsqlite_step(self.Stmt)
+        if step < 0 {
+            self.Done = true
+            panic(f"sqlite: {message_of()}")
+        }
+        if step == 0 {
+            self.Done = true
+            self.Current = false
+            return false
+        }
+        self.Current = true
+        return true
+    }
+
+    // Columns answers the names of the result columns, in the order the
+    // statement writes them. A statement that answers no rows answers no
+    // names.
+    func Columns() -> Array<str> {
+        var out = new Array<str>(0)
+        if self.Closed {
+            return out
+        }
+        var count = c.zyxsqlite_column_count(self.Stmt)
+        var at: i32 = 0
+        for at < count {
+            var text = new Buf(0)
+            c.zyxsqlite_column_name(self.Stmt, at, text)
+            out.Push(text.Str())
+            at += 1
+        }
+        return out
+    }
+
+    // Int answers a result column as a signed integer. A column that holds no
+    // value answers zero, which Null tells apart from a value of zero.
+    func Int(i: usize) -> i64 {
+        self.readable(i)
+        return c.zyxsqlite_column_int(self.Stmt, i32(i))
+    }
+
+    // Float answers a result column as a floating-point number. A column that
+    // holds no value answers zero.
+    func Float(i: usize) -> f64 {
+        self.readable(i)
+        return c.zyxsqlite_column_float(self.Stmt, i32(i))
+    }
+
+    // Text answers a result column as text. A column that holds no value
+    // answers the empty text, and a value of another kind is read the way
+    // SQLite reads it as text.
+    func Text(i: usize) -> str {
+        self.readable(i)
+        var text = new Buf(0)
+        c.zyxsqlite_column_text(self.Stmt, i32(i), text)
+        return text.Str()
+    }
+
+    // Null reports whether a result column holds no value.
+    func Null(i: usize) -> bool {
+        self.readable(i)
+        return c.zyxsqlite_column_null(self.Stmt, i32(i)) != 0
+    }
+
+    // readable refuses a read of a column that is not there, and of rows that
+    // have no current row, because neither has a value to answer with.
+    func readable(i: usize) {
+        if self.Closed {
+            panic("sqlite: the rows are closed")
+        }
+        if !self.Current {
+            panic("sqlite: no row is current")
+        }
+        if i >= usize(c.zyxsqlite_column_count(self.Stmt)) {
+            panic("sqlite: the column is not there")
+        }
+    }
+
+    // Close releases the statement. It is idempotent.
+    func Close() {
+        if self.Closed {
+            return
+        }
+        c.zyxsqlite_finalize(self.Stmt)
+        self.Closed = true
+        self.Current = false
+        self.Done = true
+    }
+}

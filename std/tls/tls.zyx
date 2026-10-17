@@ -1,1 +1,629 @@
 package tls
+
+// TLS over a stream: the configuration a listener and a dialer are given, the
+// listener that accepts secured connections, and the secured connection
+// itself.
+//
+// The session belongs to OpenSSL, and the bytes of the stream travel through
+// it: a call that cannot go on says which direction it waits for, and this
+// package moves the bytes through the stream it was given. So a coroutine
+// parks on the stream the way it parks on any other read or write, and the
+// session is not tied to a socket of the library's own.
+//
+// A server answers with the certificate and the key its configuration names.
+// A client asks for the name its configuration names and checks the
+// certificate of the server against the certificates its configuration trusts,
+// unless it was told to check none.
+
+import "std/net"
+
+import c "zyxtls.h" {
+    fast zyxtls_error_kind, zyxtls_error_number, zyxtls_error_message
+}
+
+// ErrorKind is what went wrong. Every system package reports failures in this
+// shape, so one program reads them the same way wherever they come from.
+
+enum ErrorKind {
+    NotFound
+    Permission
+    Exists
+    NotDir
+    IsDir
+    Invalid
+    Closed
+    Timeout
+    Interrupted
+    WouldBlock
+    Eof
+    AddrInUse
+    AddrNotAvailable
+    Refused
+    Reset
+    Unreachable
+    Other
+}
+
+// Error is one failure of a call. Errno is the number the system reported, the
+// code of the certificate check that refused the peer, or zero when the
+// failure is neither, and Msg is the text that came with it.
+
+struct Error {
+    Kind: ErrorKind
+    Errno: i32
+    Msg: str
+
+    impl Show {
+        func Show(w: Buf) {
+            w.WriteStr(f"tls: {self.Msg}")
+        }
+    }
+}
+
+// error_of builds the failure a C call just reported.
+func error_of() -> Error {
+    var text = new Buf(0)
+    c.zyxtls_error_message(text)
+    return Error {
+        Kind: error_kind(c.zyxtls_error_kind())
+        Errno: c.zyxtls_error_number()
+        Msg: text.Str()
+    }
+}
+
+// error_of_net reads a failure of the stream package as a failure of this one.
+// The two kinds are the one shape every system package reports, so the same
+// variant stands in the same place in both.
+func error_of_net(e: net.Error) -> Error {
+    return Error { Kind: error_kind(i32(e.Kind) + 1), Errno: e.Errno, Msg: e.Msg }
+}
+
+// error_kind maps the number a C call reports onto the kind of failure it is.
+// The numbers are the ones the package's own header defines.
+func error_kind(code: i32) -> ErrorKind {
+    if code == c.ZYXTLS_NOT_FOUND {
+        return ErrorKind.NotFound
+    }
+    if code == c.ZYXTLS_PERMISSION {
+        return ErrorKind.Permission
+    }
+    if code == c.ZYXTLS_EXISTS {
+        return ErrorKind.Exists
+    }
+    if code == c.ZYXTLS_NOT_DIR {
+        return ErrorKind.NotDir
+    }
+    if code == c.ZYXTLS_IS_DIR {
+        return ErrorKind.IsDir
+    }
+    if code == c.ZYXTLS_INVALID {
+        return ErrorKind.Invalid
+    }
+    if code == c.ZYXTLS_CLOSED {
+        return ErrorKind.Closed
+    }
+    if code == c.ZYXTLS_TIMEOUT {
+        return ErrorKind.Timeout
+    }
+    if code == c.ZYXTLS_INTERRUPTED {
+        return ErrorKind.Interrupted
+    }
+    if code == c.ZYXTLS_WOULD_BLOCK {
+        return ErrorKind.WouldBlock
+    }
+    if code == c.ZYXTLS_EOF {
+        return ErrorKind.Eof
+    }
+    if code == c.ZYXTLS_ADDR_IN_USE {
+        return ErrorKind.AddrInUse
+    }
+    if code == c.ZYXTLS_ADDR_NOT_AVAILABLE {
+        return ErrorKind.AddrNotAvailable
+    }
+    if code == c.ZYXTLS_REFUSED {
+        return ErrorKind.Refused
+    }
+    if code == c.ZYXTLS_RESET {
+        return ErrorKind.Reset
+    }
+    if code == c.ZYXTLS_UNREACHABLE {
+        return ErrorKind.Unreachable
+    }
+    return ErrorKind.Other
+}
+
+// closed_error is the failure of a call on a handle that was closed.
+func closed_error() -> Error {
+    return Error { Kind: ErrorKind.Closed, Errno: 0, Msg: "the handle is closed" }
+}
+
+// refused is the failure of a call the package itself refused.
+func refused(msg: str) -> Error {
+    return Error { Kind: ErrorKind.Invalid, Errno: 0, Msg: msg }
+}
+
+// eof_error is the failure of a call whose stream ended before the call did.
+func eof_error() -> Error {
+    return Error { Kind: ErrorKind.Eof, Errno: 0, Msg: "the stream ended before the call did" }
+}
+
+// flag_of turns a yes or a no into the number a C call reads.
+func flag_of(on: bool) -> i32 {
+    if on {
+        return 1
+    }
+    return 0
+}
+
+// Config is what a listener and a dialer are given. A server names the
+// certificate it answers with and the key that belongs to it. A client names
+// the certificates it trusts and the host it connects to, which is the name
+// the server is asked for and the name its certificate is checked against; a
+// client that was told to check none needs neither.
+//
+// MinVersion is the lowest protocol version the connection will speak: zero is
+// the version the library speaks by default, one is TLS 1.2, and two is
+// TLS 1.3.
+
+struct Config {
+    CertFile: str
+    KeyFile: str
+    CaFile: str
+    ServerName: str
+    InsecureSkipVerify: bool
+    MinVersion: i32
+
+    // init builds the configuration a call starts from: nothing named and
+    // nothing asked for.
+    func init() -> Self {
+        return Config {
+            CertFile: ""
+            KeyFile: ""
+            CaFile: ""
+            ServerName: ""
+            InsecureSkipVerify: false
+            MinVersion: 0
+        }
+    }
+}
+
+// A Listener accepts secured connections over a stream listener. It is a
+// reference: a copy names the same listener, and a program closes what it
+// opened.
+
+struct Listener {
+    Inner: net.Listener
+    Ctx: raw
+    Closed: bool
+
+    // Accept waits for a connection, secures it, and answers it. A connection
+    // whose greeting did not finish is given up, and the failure the greeting
+    // met is reported.
+    func Accept() -> Result<Conn, Error> {
+        if self.Closed {
+            return Result.Err(closed_error())
+        }
+        var accepted = self.Inner.Accept()
+        match accepted {
+            Err(e) => { return Result.Err(error_of_net(e)) }
+            Ok(stream) => {
+                var opened = start(stream, self.Ctx, true, "", false)
+                match opened {
+                    Err(e) => {
+                        stream.Close()
+                        return Result.Err(e)
+                    }
+                    Ok(conn) => {
+                        var greeted = handshake(conn)
+                        match greeted {
+                            Ok(_) => { return Result.Ok(conn) }
+                            Err(e) => {
+                                conn.Close()
+                                return Result.Err(e)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Close gives the listener up. Every connection it accepted keeps the
+    // session context it was made from alive, so the context is released here
+    // as well. It is idempotent, and a call afterwards is refused.
+    func Close() {
+        if self.Closed {
+            return
+        }
+        self.Closed = true
+        self.Inner.Close()
+        c.zyxtls_ctx_free(self.Ctx)
+    }
+}
+
+// A Conn is a secured connection over a stream. It is a reference: a copy
+// names the same connection, and a program closes what it opened.
+
+struct Conn {
+    Stream: net.Conn
+    Ssl: raw
+    Closed: bool
+    ReadClosed: bool
+    WriteClosed: bool
+
+    // Read reads at most max bytes into b and answers how many it read. A zero
+    // answer is the end of the session: the peer closed it and there is
+    // nothing left to read. A read with nothing to read parks the calling
+    // coroutine until the peer sends something.
+    func Read(b: Buf, max: usize) -> Result<usize, Error> {
+        if self.Closed {
+            return Result.Err(closed_error())
+        }
+        if self.ReadClosed {
+            return Result.Ok(0)
+        }
+        var step = c.zyxtls_read(self.Ssl, b, max)
+        var waiting = true
+        for waiting {
+            if step >= 0 {
+                waiting = false
+            } else if step == c.ZYXTLS_WANT_READ {
+                // What the session has produced goes out before the stream is
+                // asked for its bytes, because a session that waits for a
+                // reply may still hold the request that would bring it.
+                try flush(self)
+                var arrived = try fill(self)
+                if !arrived {
+                    return Result.Ok(0)
+                }
+                step = c.zyxtls_read(self.Ssl, b, max)
+            } else if step == c.ZYXTLS_WANT_WRITE {
+                try flush(self)
+                step = c.zyxtls_read(self.Ssl, b, max)
+            } else if step == c.ZYXTLS_ENDED {
+                return Result.Ok(0)
+            } else {
+                return Result.Err(error_of())
+            }
+        }
+        return Result.Ok(usize(step))
+    }
+
+    // Write writes the bytes of b and answers how many of them the session
+    // took, which may be fewer than it was given. The bytes are handed to the
+    // stream before the answer, so a peer that is waiting for them is not left
+    // waiting. A full send buffer parks the calling coroutine until there is
+    // room.
+    func Write(b: [u8]) -> Result<usize, Error> {
+        if self.Closed || self.WriteClosed {
+            return Result.Err(closed_error())
+        }
+        var step = c.zyxtls_write(self.Ssl, b)
+        var waiting = true
+        for waiting {
+            if step >= 0 {
+                waiting = false
+            } else if step == c.ZYXTLS_WANT_READ {
+                try flush(self)
+                var arrived = try fill(self)
+                if !arrived {
+                    return Result.Err(eof_error())
+                }
+                step = c.zyxtls_write(self.Ssl, b)
+            } else if step == c.ZYXTLS_WANT_WRITE {
+                try flush(self)
+                step = c.zyxtls_write(self.Ssl, b)
+            } else {
+                return Result.Err(error_of())
+            }
+        }
+        try flush(self)
+        return Result.Ok(usize(step))
+    }
+
+    // WriteStr writes the bytes of s.
+    func WriteStr(s: str) -> Result<usize, Error> {
+        var b = new Buf(0)
+        b.WriteStr(s)
+        return self.Write(b.Bytes())
+    }
+
+    // WriteAll writes every byte of b, waiting for room when the session
+    // cannot take them all at once.
+    func WriteAll(b: [u8]) -> Result<(), Error> {
+        var total = length(b)
+        var done: usize = 0
+        for done < total {
+            var n = try self.Write(b[done .. total])
+            if n == 0 {
+                return Result.Err(eof_error())
+            }
+            done += n
+        }
+        return Result.Ok()
+    }
+
+    // Close gives the connection up. The peer is told that the session is over
+    // when it has not been told, and the session and the stream are then
+    // released. It is idempotent, and a call afterwards is refused.
+    func Close() {
+        if self.Closed {
+            return
+        }
+        self.Closed = true
+        if !self.WriteClosed {
+            self.WriteClosed = true
+            notice(self)
+        }
+        c.zyxtls_conn_free(self.Ssl)
+        self.Stream.Close()
+    }
+
+    // Shutdown closes one direction of the connection. Zero closes the reading
+    // side, so a later read answers that the session ended; one closes the
+    // writing side, which tells the peer that the session is over; and any
+    // other direction closes both. The notice that the session is over is sent
+    // before the answer, so a peer that is waiting for it is not left waiting.
+    func Shutdown(how: i32) {
+        if self.Closed {
+            return
+        }
+        if how != 1 {
+            self.ReadClosed = true
+        }
+        if how != 0 && !self.WriteClosed {
+            self.WriteClosed = true
+            notice(self)
+        }
+    }
+
+    // LocalAddr answers the address of the near end of the stream, and
+    // RemoteAddr the address of the far end.
+    func LocalAddr() -> str {
+        return self.Stream.LocalAddr()
+    }
+
+    func RemoteAddr() -> str {
+        return self.Stream.RemoteAddr()
+    }
+}
+
+// Listen listens on addr for secured connections, which the certificate and
+// the key of the configuration answer for.
+func Listen(network: str, addr: str, cfg: Config) -> Result<Listener, Error> {
+    var ctx = try context(cfg, true)
+    var inner = net.Listen(network, addr)
+    match inner {
+        Ok(l) => { return Result.Ok(Listener { Inner: l, Ctx: ctx, Closed: false }) }
+        Err(e) => {
+            c.zyxtls_ctx_free(ctx)
+            return Result.Err(error_of_net(e))
+        }
+    }
+}
+
+// Dial connects to addr and greets the server it finds there. The name of the
+// configuration is the one the server is asked for and the one its certificate
+// is checked against, and the session that could not be greeted is given up
+// rather than answered.
+func Dial(network: str, addr: str, cfg: Config) -> Result<Conn, Error> {
+    var ctx = try context(cfg, false)
+    var inner = net.Dial(network, addr)
+    match inner {
+        Ok(stream) => {
+            var opened = greet(stream, ctx, cfg)
+            c.zyxtls_ctx_free(ctx)
+            return opened
+        }
+        Err(e) => {
+            c.zyxtls_ctx_free(ctx)
+            return Result.Err(error_of_net(e))
+        }
+    }
+}
+
+// greet builds a client session over a stream and runs its greeting. A stream
+// whose greeting did not finish is given up here, so the connection is owned
+// in one place until it is handed back.
+func greet(stream: net.Conn, ctx: raw, cfg: Config) -> Result<Conn, Error> {
+    var check = !cfg.InsecureSkipVerify
+    var made = start(stream, ctx, false, cfg.ServerName, check)
+    match made {
+        Err(e) => {
+            stream.Close()
+            return Result.Err(e)
+        }
+        Ok(conn) => {
+            var greeted = handshake(conn)
+            match greeted {
+                Ok(_) => { return Result.Ok(conn) }
+                Err(e) => {
+                    conn.Close()
+                    return Result.Err(e)
+                }
+            }
+        }
+    }
+}
+
+// context builds the session context a configuration describes, which is where
+// a certificate or a key that cannot be read is noticed.
+func context(cfg: Config, server: bool) -> Result<raw, Error> {
+    var ctx = c.zyxtls_ctx_new(flag_of(server))
+    if c.zyxtls_error_kind() != 0 {
+        return Result.Err(error_of())
+    }
+    var ready = describe_ctx(ctx, cfg, server)
+    match ready {
+        Ok(_) => { return Result.Ok(ctx) }
+        Err(e) => {
+            c.zyxtls_ctx_free(ctx)
+            return Result.Err(e)
+        }
+    }
+}
+
+// describe_ctx names on a context what the configuration asks for.
+func describe_ctx(ctx: raw, cfg: Config, server: bool) -> Result<(), Error> {
+    if server {
+        if cfg.CertFile == "" {
+            return Result.Err(refused("a server needs the certificate it answers with"))
+        }
+        if cfg.KeyFile == "" {
+            return Result.Err(refused("a server needs the key of its certificate"))
+        }
+        if c.zyxtls_ctx_cert(ctx, cfg.CertFile) != 0 {
+            return Result.Err(error_of())
+        }
+        if c.zyxtls_ctx_key(ctx, cfg.KeyFile) != 0 {
+            return Result.Err(error_of())
+        }
+    } else {
+        if cfg.CaFile != "" {
+            if c.zyxtls_ctx_ca(ctx, cfg.CaFile) != 0 {
+                return Result.Err(error_of())
+            }
+        } else if !cfg.InsecureSkipVerify {
+            return Result.Err(refused("a client that checks certificates needs the certificates it trusts"))
+        }
+    }
+    if cfg.MinVersion != 0 {
+        if c.zyxtls_ctx_min_version(ctx, cfg.MinVersion) != 0 {
+            return Result.Err(error_of())
+        }
+    }
+    return Result.Ok()
+}
+
+// start builds a session over a stream and tells it who it is talking to.
+func start(stream: net.Conn, ctx: raw, server: bool, name: str, check: bool) -> Result<Conn, Error> {
+    var ssl = c.zyxtls_conn_new(ctx, flag_of(server))
+    if c.zyxtls_error_kind() != 0 {
+        return Result.Err(error_of())
+    }
+    var conn = Conn { Stream: stream, Ssl: ssl, Closed: false, ReadClosed: false, WriteClosed: false }
+    var named = describe(conn, server, name, check)
+    match named {
+        Ok(_) => { return Result.Ok(conn) }
+        Err(e) => {
+            c.zyxtls_conn_free(ssl)
+            return Result.Err(e)
+        }
+    }
+}
+
+// describe tells a session who it is talking to. A server has nothing to ask
+// for; a client asks for the name it was given, and asks that the certificate
+// of the peer be checked against that name unless it was told to check none.
+func describe(conn: Conn, server: bool, name: str, check: bool) -> Result<(), Error> {
+    if server || name == "" {
+        return Result.Ok()
+    }
+    if c.zyxtls_conn_sni(conn.Ssl, name) != 0 {
+        return Result.Err(error_of())
+    }
+    if !check {
+        c.zyxtls_conn_trust_none(conn.Ssl)
+        return Result.Ok()
+    }
+    if c.zyxtls_conn_verify(conn.Ssl, name) != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok()
+}
+
+// handshake runs the greeting of a session until it is secured, moving the
+// bytes of the stream in and out as the session asks. What the session has
+// produced goes out before the stream is asked for its bytes, because the
+// first thing a greeting does is build a message and then wait for the answer
+// to it.
+func handshake(conn: Conn) -> Result<(), Error> {
+    var step = c.zyxtls_handshake(conn.Ssl)
+    var waiting = true
+    for waiting {
+        if step == 1 {
+            waiting = false
+        } else if step == c.ZYXTLS_WANT_READ {
+            try flush(conn)
+            var arrived = try fill(conn)
+            if !arrived {
+                return Result.Err(eof_error())
+            }
+            step = c.zyxtls_handshake(conn.Ssl)
+        } else if step == c.ZYXTLS_WANT_WRITE {
+            try flush(conn)
+            step = c.zyxtls_handshake(conn.Ssl)
+        } else {
+            return Result.Err(error_of())
+        }
+    }
+    return Result.Ok()
+}
+
+// notice tells the peer that the session is over and hands the stream whatever
+// telling it produced.
+func notice(conn: Conn) {
+    if c.zyxtls_shutdown(conn.Ssl) < 0 {
+        return
+    }
+    var out = new Buf(0)
+    c.zyxtls_flush(conn.Ssl, out)
+    if out.Len() > 0 {
+        match conn.Stream.WriteAll(out.Bytes()) {
+            Ok(_) => {}
+            Err(_) => {}
+        }
+    }
+}
+
+// flush sends the peer everything the session wants to send.
+func flush(conn: Conn) -> Result<(), Error> {
+    var out = new Buf(0)
+    c.zyxtls_flush(conn.Ssl, out)
+    if out.Len() > 0 {
+        var sent = conn.Stream.WriteAll(out.Bytes())
+        match sent {
+            Ok(_) => { return Result.Ok() }
+            Err(e) => { return Result.Err(error_of_net(e)) }
+        }
+    }
+    return Result.Ok()
+}
+
+// fill gives the session the bytes the stream has for it, and answers whether
+// any arrived. A stream that ended answers no.
+func fill(conn: Conn) -> Result<bool, Error> {
+    var arrived = new Buf(0)
+    var read = conn.Stream.Read(arrived, 65536)
+    match read {
+        Err(e) => { return Result.Err(error_of_net(e)) }
+        Ok(n) => {
+            if n == 0 {
+                return Result.Ok(false)
+            }
+            c.zyxtls_feed(conn.Ssl, arrived.Bytes())
+            return Result.Ok(true)
+        }
+    }
+}
+
+// bytes_of turns a text into the bytes a write takes.
+func bytes_of(s: str) -> [u8] {
+    var out = new Array<u8>(0)
+    var i: usize = 0
+    for i < s.Len() {
+        out.Push(s[i])
+        i += 1
+    }
+    return out[0 .. out.Len()]
+}
+
+// length counts the bytes of a view. A slice carries its length, but the
+// language gives no method for it, so the count is taken by walking once.
+func length(src: [u8]) -> usize {
+    var n: usize = 0
+    for _ in src {
+        n += 1
+    }
+    return n
+}

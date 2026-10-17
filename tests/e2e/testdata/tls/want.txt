@@ -1,0 +1,22 @@
+server read 4 ping
+server wrote 4
+client scenario verified
+client wrote 4
+client read 4 pong
+client addresses yes yes
+client shut the writing side
+client write after shutdown: Closed code 0 message yes
+client read after shutting the reading side 0
+server read 4 ping
+server wrote 4
+client scenario unchecked
+client wrote 4
+client read 4 pong
+client addresses yes yes
+client shut the writing side
+client write after shutdown: Closed code 0 message yes
+client read after shutting the reading side 0
+the server refused the greeting
+client scenario wrong name
+client dial: Invalid code 62 message yes
+client dial after the server stopped: Refused message yes
