@@ -224,8 +224,12 @@ func (g *generator) stackCheck() string {
 	   room a frame needs beyond it: registers the compiler spills, the outgoing
 	   argument area, and the alignment it keeps. What matters is that it is not
 	   smaller than the frame, because the frame's low end is what is compared
-	   and committed for. */
-	frame := g.fn.frameBytes + 4096
+	   and committed for. The room beyond it is small on purpose: it is what a
+	   call needs before the check of the function it calls comes into play, and
+	   every function has one, so a chain that reaches past it grows once and
+	   carries on. A larger number here would make a coroutine commit more than
+	   it uses, which is what a program of many coroutines pays for. */
+	frame := g.fn.frameBytes + 512
 	lowest := g.newReg()
 	lowestPtr := g.newReg()
 	limit := g.newReg()

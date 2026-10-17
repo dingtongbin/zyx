@@ -9,9 +9,9 @@ import (
 )
 
 // packedBytesPerCoroutine is what a coroutine of the packed tier may commit: the
-// window the tier is given plus the step one growth reaches, which is the most a
-// coroutine that turns out to need more than the window pays.
-const packedBytesPerCoroutine = 12 * 1024
+// window the tier is given plus the step one growth reaches, with room to spare
+// over what the corpus measures.
+const packedBytesPerCoroutine = 4 * 1024
 
 // TestPackedCoroutinesAreSmall keeps a hundred thousand coroutines alive at once
 // and holds the runtime to what each of them commits. The same number of bytes

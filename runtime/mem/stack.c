@@ -28,9 +28,9 @@
    out of it. A packed coroutine is one that is expected to use a few kilobytes
    and to call only C whose frames are small; a full one may reach any library,
    so it starts with room and grows in larger steps. */
-#define ZYXXRT_STACK_PACKED_WARM (8u * 1024u)
-#define ZYXXRT_STACK_PACKED_STEP (4u * 1024u)
-#define ZYXXRT_STACK_PACKED_MARGIN (4u * 1024u)
+#define ZYXXRT_STACK_PACKED_WARM (1u * 1024u)
+#define ZYXXRT_STACK_PACKED_STEP (2u * 1024u)
+#define ZYXXRT_STACK_PACKED_MARGIN (1u * 1024u)
 #define ZYXXRT_STACK_FULL_WARM (32u * 1024u)
 #define ZYXXRT_STACK_FULL_STEP (64u * 1024u)
 #define ZYXXRT_STACK_FULL_MARGIN (32u * 1024u)
