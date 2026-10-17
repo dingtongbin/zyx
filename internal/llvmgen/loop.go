@@ -216,18 +216,18 @@ func (g *generator) declareLoopVar(bind loopBind) string {
 
 // forArray walks an Array through the runtime: the length is taken once, as
 // the language requires, and every round checks that the array has not been
-// modified since.
+// modified since. The length and the buffer come from the header beside the
+// array, so a round pays for an address rather than for a call.
 func (g *generator) forArray(module string, n *zyxc.Node, seq *value, bind loopBind) {
 	elem := arg(seq.typ, 0)
 	bind.typ = elem
-	g.declareRuntime("zyxrt_array_len", g.ptrInt(), "ptr")
-	count := g.newReg()
-	g.emit("  %s = call %s @zyxrt_array_len(ptr %s)", count, g.ptrInt(), seq.text)
+	header := g.arrayHeaderOf(seq.text)
+	count := g.arrayLen(header)
+	data := g.arrayData(header)
 	before := g.modGen(seq, "zyxrt_array_mod_gen")
 	g.forWalk(module, n, bind, &value{text: count, ll: g.ptrInt(), typ: types.Usize}, func(index string) *value {
-		g.declareRuntime("zyxrt_array_slot", "ptr", "ptr", g.ptrInt())
 		slot := g.newReg()
-		g.emit("  %s = call ptr @zyxrt_array_slot(ptr %s, %s %s)", slot, seq.text, g.ptrInt(), index)
+		g.emit("  %s = getelementptr inbounds %s, ptr %s, %s %s", slot, g.llType(elem), data, g.ptrInt(), index)
 		return g.inlineObject(slot, elem)
 	}, func() {
 		g.checkModGen(seq, before, "zyxrt_array_mod_gen")

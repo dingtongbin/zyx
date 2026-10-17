@@ -1387,15 +1387,15 @@ func (g *generator) index(module string, n *zyxc.Node) *value {
 			// answers its address: an assignment through it writes the element
 			// itself rather than a copy of it. The address stays valid until
 			// the array is structurally modified, which the language forbids
-			// while a borrow is live.
+			// while a borrow is live. The length and the buffer are read from
+			// the header beside the array rather than through two calls, which
+			// is what keeps a loop over elements out of the runtime.
 			elem := arg(recv.typ, 0)
-			g.declareRuntime("zyxrt_array_len", g.ptrInt(), "ptr")
-			length := g.newReg()
-			g.emit("  %s = call %s @zyxrt_array_len(ptr %s)", length, g.ptrInt(), recv.text)
-			g.guardIndex(idx.text, length)
-			g.declareRuntime("zyxrt_array_slot", "ptr", "ptr", g.ptrInt())
+			header := g.arrayHeaderOf(recv.text)
+			g.guardIndex(idx.text, g.arrayLen(header))
+			data := g.arrayData(header)
 			slot := g.newReg()
-			g.emit("  %s = call ptr @zyxrt_array_slot(ptr %s, %s %s)", slot, recv.text, idx.ll, idx.text)
+			g.emit("  %s = getelementptr inbounds %s, ptr %s, %s %s", slot, g.llType(elem), data, idx.ll, idx.text)
 			return g.inlineObject(slot, elem)
 		case "Map":
 			place, ok := g.mapPlaceOf(module, n, recv.typ)
@@ -1475,17 +1475,12 @@ func (g *generator) sliceExpr(module string, n *zyxc.Node) *value {
 			return nil
 		}
 		// The elements live in the buffer the runtime owns, so the view is
-		// that buffer and a range of it, and the bounds are checked against
-		// the length the runtime reports.
+		// that buffer and a range of it; both are read from the header beside
+		// the array, and the range is checked against the length it holds.
 		elem = arg(recv.typ, 0)
-		g.declareRuntime("zyxrt_array_len", g.ptrInt(), "ptr")
-		length := g.newReg()
-		g.emit("  %s = call %s @zyxrt_array_len(ptr %s)", length, g.ptrInt(), recv.text)
-		g.guardRange(lo.text, hi.text, length)
-		g.declareRuntime("zyxrt_array_slot", "ptr", "ptr", g.ptrInt())
-		first := g.newReg()
-		g.emit("  %s = call ptr @zyxrt_array_slot(ptr %s, %s 0)", first, recv.text, g.ptrInt())
-		base = first
+		header := g.arrayHeaderOf(recv.text)
+		g.guardRange(lo.text, hi.text, g.arrayLen(header))
+		base = g.arrayData(header)
 	}
 	ptr := g.newReg()
 	g.emit("  %s = getelementptr inbounds %s, ptr %s, %s %s", ptr, g.llType(elem), base, lo.ll, lo.text)

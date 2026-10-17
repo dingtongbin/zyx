@@ -27,6 +27,9 @@ type module struct {
 	names map[string]string
 	// strings maps a string literal onto its global name.
 	strs map[string]string
+	// arrayEmpty names the zeroed array header a null container is read
+	// through, once it has been declared.
+	arrayEmpty string
 	// declared records the external symbols already declared.
 	declared map[string]bool
 	// defined records the functions the module defines, by symbol, and the
