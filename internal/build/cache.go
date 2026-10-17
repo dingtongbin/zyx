@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 
 	"zyx/internal/cache"
 )
@@ -92,7 +93,45 @@ func (f *FrontEndCache) key(pkg *Package, target string, imports []string) strin
 		k.Add("exports", path, f.exports[path])
 	}
 	k.Add("mod", f.modHash, "sum", f.sumHash)
+	// The C sources and headers of the package take part in the package as much
+	// as its sources do: a header that does not parse is the front end's failure,
+	// so its bytes decide the product and belong in the key. Everything of the C
+	// family beside them is taken rather than only the headers a source names,
+	// because a header includes others and a header of this package may be read
+	// that way too.
+	for _, input := range cInputs(pkg.Dir) {
+		data, err := os.ReadFile(input)
+		if err != nil {
+			continue
+		}
+		k.Add("c", filepath.ToSlash(strings.TrimPrefix(input, pkg.Dir)), cache.HashBytes(data))
+	}
 	return k.Sum()
+}
+
+// cInputs answers the C sources and headers of a package directory, in a fixed
+// order, so that the same inputs give the same key. A directory that holds none
+// answers none.
+func cInputs(dir string) []string {
+	var out []string
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		name := entry.Name()
+		if strings.HasSuffix(name, ".c") || strings.HasSuffix(name, ".h") {
+			out = append(out, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil
+	}
+	sort.Strings(out)
+	return out
 }
 
 // lookup answers a package's product: the tree's text and the report, when the
