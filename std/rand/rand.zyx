@@ -1,1 +1,105 @@
 package rand
+
+// A random number engine with an explicit seed and no global state. The
+// algorithm is xoshiro256++, written here rather than bound from a C library so
+// that one seed gives one sequence on every platform. The state is four 64-bit
+// words and the seed is spread over them by SplitMix64, so the whole recipe is
+// fixed and reproducible.
+
+import c "zyxrt.h" {
+    fast zyxrt_now, zyxrt_array_swap
+}
+
+struct Rng {
+    s0: u64
+    s1: u64
+    s2: u64
+    s3: u64
+
+    // init builds an engine from a seed. The seed word is mixed into an
+    // initial word and that word is mixed again for each of the four, which is
+    // the recipe the algorithm's authors give.
+    func init(seed: u64) -> Self {
+        var next0, w0 = splitmix(seed)
+        var next1, w1 = splitmix(next0)
+        var next2, w2 = splitmix(next1)
+        var next3, w3 = splitmix(next2)
+        return Rng { s0: w0, s1: w1, s2: w2, s3: w3 }
+    }
+
+    // Next answers the next 64-bit value and advances the engine.
+    func Next() -> u64 {
+        var value = self.s0.wrap_add(self.s3).rotl(23).wrap_add(self.s0)
+        var shifted = self.s1 << 17
+        self.s2 ^= self.s0
+        self.s3 ^= self.s1
+        self.s1 ^= self.s2
+        self.s0 ^= self.s3
+        self.s2 ^= shifted
+        self.s3 = self.s3.rotl(45)
+        return value
+    }
+
+    // NextU32 answers the next value's low 32 bits.
+    func NextU32() -> u32 {
+        return u32(self.Next())
+    }
+
+    // IntRange answers a value in [lo, hi). An empty range faults. A range
+    // whose length is a power of two masks the draws; any other range rejects
+    // the draws that would make some answers more likely than others.
+    func IntRange(lo: i64, hi: i64) -> i64 {
+        if lo >= hi {
+            panic("rand: empty range")
+        }
+        var span = u64(hi - lo)
+        if span & (span - 1) == 0 {
+            return lo + i64(self.Next() & (span - 1))
+        }
+        var limit = ~u64(0) - (~u64(0) % span)
+        var value = self.Next()
+        for value >= limit {
+            value = self.Next()
+        }
+        return lo + i64(value % span)
+    }
+
+    // NextFloat answers a value in [0, 1), made from the high 53 bits so every
+    // value is one a double can hold.
+    func NextFloat() -> f64 {
+        return f64(self.Next() >> 11) * (1.0 / 9007199254740992.0)
+    }
+
+    // NextBool answers one bit, one for true and zero for false.
+    func NextBool() -> bool {
+        return (self.Next() & 1) == 1
+    }
+}
+
+// splitmix mixes one 64-bit word into the next one and a value, which is how a
+// single seed word fills the four the engine starts from.
+func splitmix(x: u64) -> (u64, u64) {
+    var next = x.wrap_add(0x9e3779b97f4a7c15)
+    var z = next
+    z = (z ^ (z >> 30)).wrap_mul(0xbf58476d1ce4e5b9)
+    z = (z ^ (z >> 27)).wrap_mul(0x94d049bb133111eb)
+    return next, z ^ (z >> 31)
+}
+
+// Shuffle reorders a sequence in place, drawing the positions from an engine.
+// The language's methods cannot introduce a type parameter, so this is a free
+// function that names the engine it draws from.
+func Shuffle<T>(rng: Rng, xs: Array<T>) {
+    var i = xs.Len()
+    for i > 1 {
+        var j = usize(rng.IntRange(0, i64(i)))
+        i -= 1
+        c.zyxrt_array_swap(xs, i, j)
+    }
+}
+
+// SeedFromTime answers a seed built from the monotonic clock, for a caller that
+// wants a different sequence each run.
+func SeedFromTime() -> u64 {
+    return c.zyxrt_now()
+}

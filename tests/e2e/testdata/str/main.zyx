@@ -1,0 +1,195 @@
+package main
+
+import "std/fmt"
+import "std/str"
+
+// std/str over real text. The program cannot spell the type `str`: an imported
+// package name wins over the builtin type name and the language has no import
+// aliases, so every string lives in a literal or an inferred local, and no
+// helper takes or returns one.
+
+// show prints the index a search answered, or "none".
+func show(at: Option<usize>) {
+    match at {
+        Some(i) => fmt.PrintI64(i64(i))
+        None => fmt.Print("none")
+    }
+    fmt.PrintNl()
+}
+
+// line_bool prints a boolean and ends the line.
+func line_bool(v: bool) {
+    fmt.PrintBool(v)
+    fmt.PrintNl()
+}
+
+// line_i prints a signed integer and ends the line.
+func line_i(v: i64) {
+    fmt.PrintI64(v)
+    fmt.PrintNl()
+}
+
+func main() {
+    var s = "hello, world"
+    line_i(i64(str.Len(s)))
+    line_i(i64(str.ByteAt(s, 0)))
+    fmt.Print("index-l=")
+    show(str.Index(s, "l"))
+    fmt.Print("index-zz=")
+    show(str.Index(s, "zz"))
+    fmt.Print("index-empty=")
+    show(str.Index(s, ""))
+    fmt.Print("lastindex-l=")
+    show(str.LastIndex(s, "l"))
+    fmt.Print("lastindex-o=")
+    show(str.LastIndex(s, "o"))
+    fmt.Print("indexbyte-comma=")
+    show(str.IndexByte(s, u8(u32(','))))
+    fmt.Print("lastindexbyte-l=")
+    show(str.LastIndexByte(s, u8(u32('l'))))
+    fmt.Print("indexbyte-at=")
+    show(str.IndexByte(s, u8(u32('@'))))
+    line_bool(str.Contains(s, "world"))
+    line_bool(str.Contains(s, "World"))
+    line_bool(str.HasPrefix(s, "hello"))
+    line_bool(str.HasSuffix(s, "world"))
+    line_bool(str.HasSuffix(s, "worl"))
+    line_i(i64(str.Compare("abc", "abd")))
+    line_i(i64(str.Compare("abc", "abc")))
+    line_i(i64(str.Compare("ab", "abc")))
+
+    // A two-byte character counts once and walks by two bytes.
+    var text = "h\u{e9}llo"
+    line_i(i64(str.Len(text)))
+    line_i(i64(str.RuneCount(text)))
+    line_bool(str.Valid(text))
+    var i: usize = 0
+    for i < str.Len(text) {
+        var ch, next = str.RuneAt(text, i)
+        fmt.PrintI64(i64(u32(ch)))
+        fmt.Print(" ")
+        fmt.PrintI64(i64(next))
+        fmt.PrintNl()
+        i = next
+    }
+
+    // Bytes that are not UTF-8 are not rejected: Valid reports them and RuneAt
+    // walks on one byte at a time.
+    var builder = new str.Builder()
+    builder.WriteByte(u8(0xFF))
+    builder.WriteStr("A")
+    var broken = builder.Str()
+    line_i(i64(str.Len(broken)))
+    line_i(i64(str.RuneCount(broken)))
+    line_bool(str.Valid(broken))
+    var broken_ch, broken_next = str.RuneAt(broken, 0)
+    line_i(i64(u32(broken_ch)))
+    line_i(i64(broken_next))
+
+    // Splitting answers the pieces in order, empty fields included.
+    var csv = "a,b,,c"
+    var parts = str.Split(csv, ",")
+    line_i(i64(parts.Len()))
+    for p in parts {
+        fmt.Print("<")
+        fmt.Print(p)
+        fmt.Print(">")
+        fmt.PrintNl()
+    }
+    var head = str.SplitN(csv, ",", 2)
+    line_i(i64(head.Len()))
+    for p in head {
+        fmt.Print("<")
+        fmt.Print(p)
+        fmt.Print(">")
+        fmt.PrintNl()
+    }
+    line_i(i64(str.SplitN(csv, ",", 1).Len()))
+    line_i(i64(str.SplitN(csv, ",", 0).Len()))
+    var named = str.SplitByte("k=v=w", u8(u32('=')))
+    for p in named {
+        fmt.Print("<")
+        fmt.Print(p)
+        fmt.Print(">")
+        fmt.PrintNl()
+    }
+    // An empty separator cuts between code points.
+    var runes = str.Split("\u{e9}xy", "")
+    line_i(i64(runes.Len()))
+    for p in runes {
+        line_i(i64(str.Len(p)))
+    }
+
+    // Trimming answers views as well.
+    fmt.Println(str.Trim("--abc--", "-"))
+    fmt.Println(str.TrimLeft("--abc--", "-"))
+    fmt.Println(str.TrimRight("--abc--", "-"))
+    fmt.Println(str.TrimSpace("  hi \t\n"))
+    // Unicode White_Space on both ends: a no-break space and an ideographic
+    // space are removed.
+    fmt.Println(str.TrimSpace("\u{a0}x\u{3000}"))
+    line_i(i64(str.Len(str.TrimSpace("   "))))
+
+    // Construction answers new strings.
+    fmt.Println(str.Repeat("ab", 3))
+    line_i(i64(str.Len(str.Repeat("ab", 0))))
+    fmt.Println(str.Join(parts, "+"))
+    fmt.Println(str.Concat(parts))
+    fmt.Println(str.Replace("a-a-a", "a", "b", 2))
+    fmt.Println(str.ReplaceAll("a-a-a", "a", "b"))
+    fmt.Println(str.Replace("a-a", "a", "b", 0))
+    line_bool(str.ReplaceAll("abc", "", "-") == "abc")
+
+    // Case mapping is the Unicode simple mapping, one code point to at most one
+    // code point, so a mapping to several code points is not made.
+    line_bool(str.ToUpper("hello") == "HELLO")
+    line_bool(str.ToLower("Hello") == "hello")
+    // A Latin letter with a diacritic, then a Greek and a Cyrillic letter.
+    line_bool(str.ToUpper("caf\u{e9}") == "CAF\u{c9}")
+    line_bool(str.ToUpper("\u{3b1}\u{3b2}\u{3b3}") == "\u{391}\u{392}\u{393}")
+    line_bool(str.ToUpper("\u{430}\u{431}") == "\u{410}\u{411}")
+    // A code point that maps to itself, and one whose mapping to several code
+    // points is not made.
+    line_bool(str.ToUpper("123!?") == "123!?")
+    line_bool(str.ToUpper("\u{df}") == "\u{df}")
+    // A byte that is not UTF-8 passes through unchanged, and so does a valid
+    // code point around it.
+    var mixed = new str.Builder()
+    mixed.WriteStr("a\u{e9}")
+    mixed.WriteByte(u8(0xFF))
+    mixed.WriteStr("z")
+    var mixed_text = mixed.Str()
+    var mixed_upper = new str.Builder()
+    mixed_upper.WriteStr("A\u{c9}")
+    mixed_upper.WriteByte(u8(0xFF))
+    mixed_upper.WriteStr("Z")
+    line_bool(str.ToUpper(mixed_text) == mixed_upper.Str())
+    var mixed_lower = new str.Builder()
+    mixed_lower.WriteStr("a\u{e9}")
+    mixed_lower.WriteByte(u8(0xFF))
+    mixed_lower.WriteStr("z")
+    line_bool(str.ToLower(mixed_upper.Str()) == mixed_lower.Str())
+
+    // A comparison that ignores case compares the mapped code points.
+    line_bool(str.EqualsIgnoreCase("Hello", "HELLO"))
+    line_bool(str.EqualsIgnoreCase("caf\u{e9}", "CAF\u{c9}"))
+    line_bool(str.EqualsIgnoreCase("abc", "abd"))
+    line_bool(str.EqualsIgnoreCase("", ""))
+    var invalid1 = new str.Builder()
+    invalid1.WriteByte(u8(0xFF))
+    var invalid2 = new str.Builder()
+    invalid2.WriteByte(u8(0xFF))
+    line_bool(str.EqualsIgnoreCase(invalid1.Str(), invalid2.Str()))
+    // An invalid byte is not the same as the valid code point it resembles.
+    line_bool(str.EqualsIgnoreCase(invalid1.Str(), "\u{ff}"))
+
+    // A builder glues many pieces into one string.
+    var out = new str.Builder()
+    out.WriteStr("hello")
+    out.WriteByte(u8(u32(' ')))
+    out.WriteStr("world")
+    line_i(i64(out.Len()))
+    fmt.Println(out.Str())
+    out.Reset()
+    line_i(i64(out.Len()))
+}
