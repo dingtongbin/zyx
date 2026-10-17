@@ -11,10 +11,11 @@
 
 /* One registered descriptor. The table is indexed by the descriptor itself,
    so a lookup costs one step and the memory is proportional to the largest
-   descriptor in use. */
+   descriptor in use. A number is not a descriptor: the system gives a number
+   back to the next socket it opens, so only what is registered here says what
+   is watched, and nothing kept for a descriptor outlives its registration. */
 typedef struct zyxrt_fd_entry {
   int used;              /* the descriptor is registered */
-  int released;          /* the descriptor was released, so it is done with */
   int events;            /* what the poller watches for */
   zyxrt_waiter *readers; /* coroutines waiting for it to become readable */
   zyxrt_waiter *writers; /* coroutines waiting for it to become writable */
@@ -48,7 +49,6 @@ static zyxrt_fd_entry *entry_of(int fd) {
     if (!grown) zyxrt_panic("out of memory", 13);
     for (size_t i = table_cap; i < cap; i++) {
       grown[i].used = 0;
-      grown[i].released = 0;
       grown[i].events = 0;
       grown[i].readers = NULL;
       grown[i].writers = NULL;
@@ -208,12 +208,12 @@ int zyxrt_loop_wait(int fd, int events) {
     return 2;
   }
   if (!e->used) {
-    if (e->released) {
-      /* The descriptor was released, so waiting on it again is refused
-         rather than registered afresh. */
-      zyxrt_lock_drop(&loop_lock);
-      return 1;
-    }
+    /* A wait registers the descriptor it is given. A slot that is not
+       registered is one nothing watches: the descriptor that held it before
+       may have been released and closed, and the system hands the number back
+       to the next descriptor it opens, so a wait on the number watches what
+       the number names now. A release answers the waiters that were on it; it
+       does not take the number out of use. */
     e->used = 1;
     e->events = 0;
     table_used++;
@@ -243,6 +243,15 @@ int zyxrt_loop_wait(int fd, int events) {
       if (back != NULL) {
         if (back->readers == &w) back->readers = w.next;
         if (back->writers == &w) back->writers = w.next;
+        /* The kernel does not watch this descriptor and no coroutine is left
+           waiting on it, so the registration goes back: a wait that fails must
+           not leave a slot that a later wait would take for one the kernel is
+           watching, which would park that wait with nothing to ready it. */
+        if (back->used && back->readers == NULL && back->writers == NULL) {
+          back->used = 0;
+          back->events = 0;
+          table_used--;
+        }
       }
       zyxrt_lock_drop(&loop_lock);
       zyxrt_sched_external(-1);
@@ -268,7 +277,6 @@ void zyxrt_loop_release(int fd) {
     return;
   }
   e->used = 0;
-  e->released = 1;
   e->events = 0;
   table_used--;
   zyxrt_waiter *readers = e->readers;

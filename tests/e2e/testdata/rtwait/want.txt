@@ -1,7 +1,5 @@
 waiting
 ready
 writable
-releasing
-closed
-refused
+waitable again
 done

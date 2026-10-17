@@ -318,7 +318,16 @@ func TestPrograms(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			stdout, stderr, code := run(dir, "run", "./...")
+			// A program that binds a C library is linked against it, and the
+			// libraries it needs are the flags its corpus directory names one
+			// per word of link.txt. A program whose directory names none
+			// links the way every other one does.
+			args := []string{"run"}
+			if link, err := os.ReadFile(filepath.Join(dir, "link.txt")); err == nil {
+				args = append(args, strings.Fields(string(link))...)
+			}
+			args = append(args, "./...")
+			stdout, stderr, code := run(dir, args...)
 			if code != 0 {
 				t.Fatalf("run failed with %d:\n%s", code, stderr)
 			}
