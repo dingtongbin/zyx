@@ -304,6 +304,7 @@ func (g *generator) emitFrames() {
 	}
 	sort.Strings(names)
 	g.declareRuntime("zyxrt_frames_register", "void", "ptr", "i64")
+
 	var body strings.Builder
 	fmt.Fprintf(&body, "@zyx.frames = internal constant [%d x { ptr, ptr, ptr }] [\n", len(names))
 	for i, symbol := range names {

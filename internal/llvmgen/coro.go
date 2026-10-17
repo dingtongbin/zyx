@@ -21,16 +21,32 @@ func (g *generator) spawn(module string, n *zyxc.Node) *value {
 		g.fail(fmt.Errorf("llvmgen: spawn needs a call"))
 		return nil
 	}
+	if sym, ok := g.startedFunction(call); ok {
+		return g.spawnNamed(module, n, call, sym, watched)
+	}
+	return g.spawnValue(module, n, call, watched)
+}
+
+// startedFunction answers the symbol of the ordinary function a call names
+// directly, and whether it names one. A call the program reaches through a
+// value — a function held in a variable or held as a parameter, or a bound
+// method value — answers false, because what is started is that value.
+func (g *generator) startedFunction(call *zyxc.Node) (string, bool) {
 	sym := g.calleeSymbol(g.wrapped(call, "callee"))
 	if sym == "" {
-		g.fail(fmt.Errorf("llvmgen: spawn needs a named function"))
-		return nil
+		return "", false
 	}
 	decl := g.tab.decl(sym)
 	if decl == nil || decl.Kind != "func" {
-		g.fail(fmt.Errorf("llvmgen: %s is not a function", sym))
-		return nil
+		return "", false
 	}
+	return sym, true
+}
+
+// spawnNamed starts a coroutine that runs a call to a function this program
+// declares.
+func (g *generator) spawnNamed(module string, n *zyxc.Node, call *zyxc.Node, sym string, watched bool) *value {
+	decl := g.tab.decl(sym)
 	if decl.Payload[1] != "plain" {
 		g.fail(fmt.Errorf("llvmgen: only an ordinary function may start a coroutine"))
 		return nil
@@ -60,7 +76,7 @@ func (g *generator) spawn(module string, n *zyxc.Node) *value {
 
 	// The argument block is laid out as the tuple of the parameter types,
 	// which gives the same offsets the thunk reads back.
-	block := types.TupleOf(ptypes...)
+	block := g.blockType(ptypes)
 	blockLL := g.llType(block)
 	if len(ptypes) == 0 {
 		blockLL = "{}"
@@ -78,16 +94,129 @@ func (g *generator) spawn(module string, n *zyxc.Node) *value {
 				return nil
 			}
 		}
-		slot := g.newReg()
-		g.emit("  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d", slot, blockLL, base, i)
-		// The block holds the value the callee receives: a reference object
-		// is named by its reference, which is what the parameter carries.
-		g.storeInto(slot, ptypes[i], v, false)
+		g.storeArgument(base, blockLL, i, ptypes[i], v)
 	}
 
 	thunk := g.spawnThunk(sym, ptypes, blockLL, result)
+	return g.spawnHandle(n, module, watched, thunk, base, result, g.stackTier(sym))
+}
+
+// spawnValue starts a coroutine that runs a call the program reaches through a
+// function value: a variable or parameter of function type, or a bound method
+// value. The value is what the block carries beside the arguments, and the
+// thunk calls it with the receiver it holds.
+func (g *generator) spawnValue(module string, n *zyxc.Node, call *zyxc.Node, watched bool) *value {
+	callee := g.wrapped(call, "callee")
+	if call.Kind == "mcall" {
+		// A method call starts the bound method value the call expresses:
+		// the value carries the method's code and the receiver it was taken
+		// from, which the thunk reaches the method through.
+		callee = zyxc.New("method-value", call.Payload...)
+		if recv := call.First("recv"); recv != nil {
+			callee.Child(recv)
+		}
+		if ct := call.First("callee-type"); ct != nil && len(ct.Payload) > 0 {
+			// The call records the signature the method is reached with,
+			// which is the type the value that names it has.
+			callee.Child(zyxc.New("type", ct.Payload[0]))
+		}
+	}
+	if callee == nil {
+		g.fail(fmt.Errorf("llvmgen: spawn needs a call"))
+		return nil
+	}
+	sig := g.typeOfNode(callee.First("type"), module)
+	if sig == nil || sig.Kind != types.KindFunc {
+		sig = g.typeOfNode(call.First("callee-type"), module)
+	}
+	if sig == nil || sig.Kind != types.KindFunc {
+		g.fail(fmt.Errorf("llvmgen: the signature of the started call is not settled"))
+		return nil
+	}
+	args := g.argNodes(call)
+	if len(args) != len(sig.Elems) {
+		g.fail(fmt.Errorf("llvmgen: the started call takes %d arguments, %d given", len(sig.Elems), len(args)))
+		return nil
+	}
+	// The first slot carries the function value, so the thunk knows what to
+	// call and with which receiver.
+	ptypes := append([]*types.Type{types.FuncOf(sig.Result, sig.Elems...)}, sig.Elems...)
+	block := g.blockType(ptypes)
+	blockLL := g.llType(block)
+	base := g.allocate(block)
+	fn := g.load(g.expr(module, callee, nil))
+	if fn == nil {
+		return nil
+	}
+	g.storeArgument(base, blockLL, 0, ptypes[0], fn)
+	for i, arg := range args {
+		v := g.expr(module, arg, ptypes[i+1])
+		if v == nil {
+			return nil
+		}
+		if hasMark(arg, "boundary-clone") && byAddress(v.typ) {
+			if v = g.cloneInto(v); v == nil {
+				return nil
+			}
+		}
+		g.storeArgument(base, blockLL, i+1, ptypes[i+1], v)
+	}
+	thunk := g.spawnValueThunk(sig, ptypes, blockLL)
+	// A call through a value is not followed when the stack a coroutine
+	// starts on is settled, and a stack that turns out to be too small
+	// grows, so the small tier is what such a start takes.
+	return g.spawnHandle(n, module, watched, thunk, base, sig.Result, g.stackTier(""))
+}
+
+// blockType is the tuple the argument block of a started call is laid out as:
+// one slot per parameter, in the representation the callee receives. A
+// parameter that passes as a reference takes a pointer slot, because the object
+// belongs to the caller: a copy here would leave a mutation the callee made
+// sitting in the block instead of in the object the callee was handed.
+func (g *generator) blockType(ptypes []*types.Type) *types.Type {
+	slots := make([]*types.Type, len(ptypes))
+	for i, t := range ptypes {
+		slots[i] = t
+		if byAddress(t) {
+			slots[i] = types.Raw
+		}
+	}
+	return types.TupleOf(slots...)
+}
+
+// argumentPart renders one argument of a started call from the block slot that
+// holds it: a reference parameter arrives as the pointer the slot holds, which
+// is the object the caller named.
+func (g *generator) argumentPart(typ *types.Type, slot string) string {
+	reg := g.newReg()
+	g.emit("  %s = load %s, ptr %s", reg, g.llPass(typ), slot)
+	return g.llPass(typ) + " " + reg
+}
+
+// storeResult leaves the value a started call answered where the joiner reads
+// it. The runtime takes an address, which a reference aggregate already is.
+func (g *generator) storeResult(result *types.Type, reg string) {
+	addr := reg
+	if g.llPass(result) != "ptr" {
+		addr = g.newReg()
+		g.emit("  %s = inttoptr %s %s to ptr", addr, g.llPass(result), reg)
+	}
+	g.declareRuntime("zyxrt_coro_set_result", "void", "ptr")
+	g.emit("  call void @zyxrt_coro_set_result(ptr %s)", addr)
+}
+
+// storeArgument fills one slot of the block a started call reads back, in the
+// representation the callee receives: a reference parameter stores the pointer
+// to the caller's object, so what the callee writes is that object.
+func (g *generator) storeArgument(base, blockLL string, index int, typ *types.Type, v *value) {
+	slot := g.newReg()
+	g.emit("  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d", slot, blockLL, base, index)
+	g.storeInto(slot, typ, v, false)
+}
+
+// spawnHandle starts the coroutine over the block a caller filled.
+func (g *generator) spawnHandle(n *zyxc.Node, module string, watched bool, thunk, base string, result *types.Type, tier int) *value {
 	handle := g.newReg()
-	tier := g.stackTier(sym)
 	if watched {
 		// The supervisor is a function value, so the code it carries and the
 		// receiver it carries are what the runtime calls.
@@ -291,6 +420,54 @@ func (g *generator) crossesAsRegister(t *types.Type) bool {
 // spawnThunk emits the entry point a coroutine starts in: it reads the
 // argument block back, calls the function, and records the value the function
 // produced so that the handle's Join can report it.
+// spawnValueThunk emits the entry a call through a function value runs
+// through: the first slot of the block carries the value, and the thunk calls
+// it with the receiver it holds, followed by the arguments.
+func (g *generator) spawnValueThunk(sig *types.Type, ptypes []*types.Type, blockLL string) string {
+	g.thunks++
+	name := fmt.Sprintf("zyx.spawn.%d", g.thunks)
+	saved := g.fn
+	g.fn = &funcState{symbol: name, vars: map[string]*varSlot{}}
+	g.fn.entry = g.newLabel("thunk")
+	g.fn.ret = g.newLabel("thunk.done")
+
+	fnType := types.FuncOf(sig.Result, sig.Elems...)
+	fnSlot := g.newReg()
+	g.emit("  %s = getelementptr inbounds %s, ptr %%arg, i32 0, i32 0", fnSlot, blockLL)
+	fn := g.newReg()
+	g.emit("  %s = load %s, ptr %s", fn, g.llPass(fnType), fnSlot)
+	code := g.newReg()
+	g.emit("  %s = extractvalue %s %s, 0", code, g.llPass(fnType), fn)
+	recv := g.newReg()
+	g.emit("  %s = extractvalue %s %s, 1", recv, g.llPass(fnType), fn)
+	parts := []string{"ptr " + recv}
+	for i, typ := range sig.Elems {
+		slot := g.newReg()
+		g.emit("  %s = getelementptr inbounds %s, ptr %%arg, i32 0, i32 %d", slot, blockLL, i+1)
+		parts = append(parts, g.argumentPart(typ, slot))
+	}
+	if sig.Result == nil {
+		g.emit("  call void %s(%s)", code, strings.Join(parts, ", "))
+	} else {
+		reg := g.newReg()
+		g.emit("  %s = call %s %s(%s)", reg, g.llPass(sig.Result), code, strings.Join(parts, ", "))
+		g.storeResult(sig.Result, reg)
+	}
+	g.terminator("  ret void")
+
+	var out strings.Builder
+	fmt.Fprintf(&out, "define internal void @%s(ptr %%arg) {\n", name)
+	out.WriteString(g.fn.entry + ":\n")
+	out.WriteString(g.fn.allocas.String())
+	out.WriteString(g.fn.body.String())
+	out.WriteString("}\n")
+	g.m.funcs.WriteString(out.String())
+	g.fn = saved
+	return name
+}
+
+// spawnThunk emits the entry a started call to a named function runs through:
+// it reads the argument block back and calls the function.
 func (g *generator) spawnThunk(sym string, ptypes []*types.Type, blockLL string, result *types.Type) string {
 	g.thunks++
 	name := fmt.Sprintf("zyx.spawn.%d", g.thunks)
@@ -303,19 +480,14 @@ func (g *generator) spawnThunk(sym string, ptypes []*types.Type, blockLL string,
 	for i, typ := range ptypes {
 		slot := g.newReg()
 		g.emit("  %s = getelementptr inbounds %s, ptr %%arg, i32 0, i32 %d", slot, blockLL, i)
-		reg := g.newReg()
-		g.emit("  %s = load %s, ptr %s", reg, g.llPass(typ), slot)
-		parts = append(parts, g.llPass(typ)+" "+reg)
+		parts = append(parts, g.argumentPart(typ, slot))
 	}
 	if result == nil {
 		g.emit("  call void @%s(%s)", llvmName(sym), strings.Join(parts, ", "))
 	} else {
 		reg := g.newReg()
 		g.emit("  %s = call %s @%s(%s)", reg, g.llPass(result), llvmName(sym), strings.Join(parts, ", "))
-		cast := g.newReg()
-		g.emit("  %s = inttoptr %s %s to ptr", cast, g.llPass(result), reg)
-		g.declareRuntime("zyxrt_coro_set_result", "void", "ptr")
-		g.emit("  call void @zyxrt_coro_set_result(ptr %s)", cast)
+		g.storeResult(result, reg)
 	}
 	g.terminator("  ret void")
 

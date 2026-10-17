@@ -172,9 +172,9 @@ func (g *generator) deferStmt(module string, n *zyxc.Node) {
 		return
 	}
 
-	// The argument block is laid out as the tuple of the parameter types,
-	// which gives the same offsets the thunk reads back.
-	block := types.TupleOf(ptypes...)
+	// The block holds one slot per parameter, in the representation the callee
+	// receives, which is what the thunk reads back.
+	block := g.blockType(ptypes)
 	blockLL := g.llType(block)
 	if len(ptypes) == 0 {
 		blockLL = "{}"
@@ -185,9 +185,7 @@ func (g *generator) deferStmt(module string, n *zyxc.Node) {
 		if v == nil {
 			return
 		}
-		slot := g.newReg()
-		g.emit("  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 %d", slot, blockLL, base, i)
-		g.storeInto(slot, ptypes[i], v, true)
+		g.storeArgument(base, blockLL, i, ptypes[i], v)
 	}
 	thunk := g.deferThunk(sym, ptypes, blockLL)
 	g.declareRuntime("zyxrt_defer_push", "void", "ptr", "ptr")
@@ -208,9 +206,7 @@ func (g *generator) deferThunk(sym string, ptypes []*types.Type, blockLL string)
 	for i, typ := range ptypes {
 		slot := g.newReg()
 		g.emit("  %s = getelementptr inbounds %s, ptr %%arg, i32 0, i32 %d", slot, blockLL, i)
-		reg := g.newReg()
-		g.emit("  %s = load %s, ptr %s", reg, g.llPass(typ), slot)
-		parts = append(parts, g.llPass(typ)+" "+reg)
+		parts = append(parts, g.argumentPart(typ, slot))
 	}
 	g.emit("  call void @%s(%s)", llvmName(sym), strings.Join(parts, ", "))
 	g.terminator("  ret void")
