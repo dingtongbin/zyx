@@ -71,12 +71,22 @@ __chkstk:
    a function, so the trampoline sets the alignment a function expects and
    calls the coroutine entry. Every coroutine then starts exactly the way a
    resumed one continues, and the layout of the first frame carries no
-   special case. */
+   special case.
+
+   It has an entry in the function table, and no prologue to describe: the
+   address the switch returned to it is the null return address written at the top
+   of the stack, so a walk that unwinds this frame reads the end of the stack
+   rather than a leaf frame whose return address is whatever lies above it. The
+   system's own top frame is described the same way, and a walk over a coroutine's
+   frames then ends where the stack says it does. */
 	.globl	zyxrt_ctx_enter
+	.seh_proc zyxrt_ctx_enter
 zyxrt_ctx_enter:
+	.seh_endprologue
 	andq	$-16, %rsp
 	call	zyxrt_sched_enter
 	ud2
+	.seh_endproc
 
 /* The number of registers the switch saves, which the runtime uses to
    prepare the first stack of a coroutine. */

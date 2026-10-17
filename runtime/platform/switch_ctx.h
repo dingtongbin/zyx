@@ -33,18 +33,26 @@ void *zyxrt_ctx_thread(void) { return new_slot(); }
 /* The first frame is laid out exactly as the switch restores it: the vector
    state, then the callee-saved registers, then the address the switch returns
    to. The stack pointer is aligned so that the entry runs with the alignment the
-   ABI expects after a call. */
+   ABI expects after a call.
+
+   The word just above that address is the end of the stack, and it is written as
+   a null return address. A walk that unwinds the entry reads it there and stops,
+   so the frames of a coroutine end at a place the stack says is the end rather
+   than in whatever happens to lie past it: a search for a handler is not sent
+   reading outside the stack. The eight bytes are reserved so the word is inside
+   the stack, whatever the alignment costs. */
 static void slot_reset(void *ctx, void *stack, size_t size) {
   size_t total = zyxrt_ctx_saved_bytes + (zyxrt_ctx_saved_words + 1) * sizeof(void *);
   uintptr_t top = (uintptr_t)stack + size;
   /* The switch restores the registers with the stack pointer it recorded, so
      the first frame must sit where a saved one would. */
-  uintptr_t sp = (top - total) & ~(uintptr_t)15;
+  uintptr_t sp = (top - total - sizeof(void *)) & ~(uintptr_t)15;
   void **words = (void **)(sp + zyxrt_ctx_saved_bytes);
   for (size_t i = 0; i < zyxrt_ctx_saved_words; i++) {
     words[i] = NULL;
   }
   words[zyxrt_ctx_saved_words] = (void *)zyxrt_ctx_enter;
+  *(void **)(sp + total) = NULL;
   *(void **)ctx = (void *)sp;
 }
 
