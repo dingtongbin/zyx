@@ -33,14 +33,25 @@ func env(name string) string {
 	return ""
 }
 
-// sharedCache returns the cache directory the tests share, creating it the
-// first time it is asked for.
+// sharedCache returns the cache directory the tests share. The environment names
+// it when a caller wants one run to reuse what another built; otherwise the
+// checkout's own cache holds it, so one directory serves every corpus and every
+// run and the runtime and the shared artifacts are built once rather than once per
+// run: a full run was mostly the same runtime being built again in every test
+// binary. A checkout that cannot hold a cache falls back to a directory of its own.
 var sharedCache = sync.OnceValue(func() string {
-	dir, err := os.MkdirTemp("", "zyx-test-cache-")
+	if dir := os.Getenv("ZYX_CACHE"); dir != "" {
+		return dir
+	}
+	dir := filepath.Join(repoRoot(), ".zyx-cache")
+	if err := os.MkdirAll(dir, 0o755); err == nil {
+		return dir
+	}
+	fallback, err := os.MkdirTemp("", "zyx-test-cache-")
 	if err != nil {
 		panic(err)
 	}
-	return dir
+	return fallback
 })
 
 // repoRoot walks up from the working directory to the module root.

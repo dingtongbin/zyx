@@ -65,15 +65,46 @@ func mysqlServerRoot(t *testing.T) string {
 	}
 }
 
-// mysqlServerCache answers the one cache directory the suite shares, so the
-// runtime is built once rather than for every run.
+// mysqlServerCache answers the one cache directory the suite shares. The
+// environment names it when a caller wants one run to reuse what another built,
+// and otherwise the checkout's own cache holds it, so the runtime and the shared
+// artifacts are built once rather than once per run and per suite.
 var mysqlServerCache = sync.OnceValue(func() string {
-	dir, err := os.MkdirTemp("", "zyx-mysql-test-cache-")
+	if dir := os.Getenv("ZYX_CACHE"); dir != "" {
+		return dir
+	}
+	if dir := checkoutCache(); dir != "" {
+		return dir
+	}
+	fallback, err := os.MkdirTemp("", "zyx-mysql-test-cache-")
 	if err != nil {
 		panic(err)
 	}
-	return dir
+	return fallback
 })
+
+// checkoutCache answers the cache directory of the checkout the suite runs in, or
+// an empty name when there is no checkout to hold one.
+func checkoutCache() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			shared := filepath.Join(dir, ".zyx-cache")
+			if err := os.MkdirAll(shared, 0o755); err != nil {
+				return ""
+			}
+			return shared
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
 
 // mysqlServerEnv gives the compiler the standard library, the runtime tree,
 // and the cache of the checkout.
@@ -337,6 +368,9 @@ closed Closed
 // the suite skips rather than fails, so a machine without a server keeps the
 // gate green.
 func TestMySQLServer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("the server suite runs in the full gate")
+	}
 	tc, err := toolchain.Locate()
 	if err != nil {
 		t.Skipf("the toolchain is not available: %v", err)

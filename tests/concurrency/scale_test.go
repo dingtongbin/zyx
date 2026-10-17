@@ -23,7 +23,13 @@ func TestPackedCoroutinesAreSmall(t *testing.T) {
 		t.Skipf("the toolchain is not available: %v", err)
 	}
 	dir := t.TempDir()
-	copyTree(t, "scale", dir)
+	// A quick run holds the same property at a smaller size, because the cost a
+	// packed coroutine commits is linear in the count.
+	name := "scale"
+	if testing.Short() {
+		name = "scale-short"
+	}
+	copyTree(t, name, dir)
 	path := builtProgram(t, dir)
 	out, err := runAt(t, path, "")
 	if err != nil {

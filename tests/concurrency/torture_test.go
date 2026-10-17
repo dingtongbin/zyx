@@ -39,12 +39,23 @@ func env(name string) string {
 	return ""
 }
 
+// sharedCache answers the cache directory the suite shares. The environment names
+// it when a caller wants one run to reuse what another built; otherwise the
+// checkout's own cache holds it, so the runtime and the shared artifacts are built
+// once rather than once per run and per suite.
 var sharedCache = sync.OnceValue(func() string {
-	dir, err := os.MkdirTemp("", "zyx-concurrency-cache-")
+	if dir := os.Getenv("ZYX_CACHE"); dir != "" {
+		return dir
+	}
+	shared := filepath.Join(repoRoot(), ".zyx-cache")
+	if err := os.MkdirAll(shared, 0o755); err == nil {
+		return shared
+	}
+	fallback, err := os.MkdirTemp("", "zyx-concurrency-cache-")
 	if err != nil {
 		panic(err)
 	}
-	return dir
+	return fallback
 })
 
 // repoRoot walks up from the working directory to the module root.
