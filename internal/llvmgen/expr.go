@@ -1393,7 +1393,16 @@ func (g *generator) tupleIndex(module string, n *zyxc.Node) *value {
 	}
 	reg := g.newReg()
 	g.emit("  %s = extractvalue %s %s, %d", reg, g.llType(recv.typ), recv.text, index)
-	return &value{text: reg, ll: g.llPass(recv.typ.Elems[index]), typ: recv.typ.Elems[index]}
+	elem := recv.typ.Elems[index]
+	if byAddress(elem) {
+		// The element is the object itself, which a register can hold but a
+		// field access needs an address for, so the object is placed where one
+		// is and the element answers as the object lying there.
+		slot := g.allocate(elem)
+		g.emit("  store %s %s, ptr %s", g.llType(elem), reg, slot)
+		return g.inlineObject(slot, elem)
+	}
+	return &value{text: reg, ll: g.llPass(elem), typ: elem}
 }
 
 // sliceExpr lowers a view of a sequence: the address of the first element it
@@ -1719,7 +1728,15 @@ func (g *generator) tupleLit(module string, n *zyxc.Node) *value {
 	reg := "undef"
 	for i, v := range vals {
 		next := g.newReg()
-		g.emit("  %s = insertvalue %s %s, %s %s, %d", next, ll, reg, v.ll, v.text, i)
+		operand := v
+		if byAddress(v.typ) {
+			// The element's storage is the object itself, so the insert takes
+			// the object the expression named rather than the reference to it.
+			object := g.newReg()
+			g.emit("  %s = load %s, ptr %s", object, g.llType(v.typ), g.addrText(v))
+			operand = &value{text: object, ll: g.llType(v.typ), typ: v.typ}
+		}
+		g.emit("  %s = insertvalue %s %s, %s %s, %d", next, ll, reg, operand.ll, operand.text, i)
 		reg = next
 	}
 	return &value{text: reg, ll: ll, typ: typ}

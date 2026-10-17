@@ -1,0 +1,6 @@
+x
+42
+true
+y
+1
+false

@@ -1,0 +1,51 @@
+package main
+
+// A tuple whose element is a struct. The storage of a tuple element is the
+// object itself rather than a reference to it, so a tuple built from a
+// reference answers with the object, and a field reached through the tuple
+// reads what was put there.
+//
+// Both shapes are here: a plain tuple returned directly, and one carried in a
+// Result, which is how a call reports a pair beside its failure.
+
+import "std/fmt"
+
+struct point {
+    name: str
+    n: i64
+}
+
+func pair() -> (point, bool) {
+    var p = point { name: "x", n: 41 }
+    return (p, true)
+}
+
+func carried() -> Result<(point, bool), i32> {
+    var p = point { name: "y", n: 1 }
+    return Result.Ok((p, false))
+}
+
+func main() {
+    var direct = pair()
+    fmt.Print(direct.0.name)
+    fmt.PrintNl()
+    fmt.PrintI64(direct.0.n + 1)
+    fmt.PrintNl()
+    fmt.PrintBool(direct.1)
+    fmt.PrintNl()
+
+    match carried() {
+        Ok(rest) => {
+            fmt.Print(rest.0.name)
+            fmt.PrintNl()
+            fmt.PrintI64(rest.0.n)
+            fmt.PrintNl()
+            fmt.PrintBool(rest.1)
+            fmt.PrintNl()
+        }
+        Err(_) => {
+            fmt.Print("a pair was refused")
+            fmt.PrintNl()
+        }
+    }
+}
