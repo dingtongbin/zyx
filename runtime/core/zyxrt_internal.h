@@ -218,6 +218,12 @@ void zyxrt_sched_ready(zyxrt_coro *c);
 /* zyxrt_sched_thread_index answers which scheduler thread the caller runs on,
    or the number of them when the caller is not one. */
 size_t zyxrt_sched_thread_index(void);
+/* zyxrt_sched_poll is what a periodic pass over the scheduler does about the
+   lanes that are inside C calls: a lane inside one runs no coroutine, so when
+   every lane is inside one and work is waiting, one more thread takes that work
+   up. The preemption monitor calls it, which is why it is not on the path a C
+   call takes. */
+void zyxrt_sched_poll(void);
 /* zyxrt_sched_thread_none records that the calling thread is not a scheduler
    thread, which a thread the runtime starts for something else says of itself
    before it runs. */

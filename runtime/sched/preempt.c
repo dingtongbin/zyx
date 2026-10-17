@@ -65,6 +65,9 @@ static void monitor(void *arg) {
     zyxrt_note_wait(&monitor_note, ZYXXRT_MONITOR_NS);
     uint64_t now = zyxrt_now();
     atomic_store_explicit(&monitor_clock, now, memory_order_relaxed);
+    /* A lane that is inside a C call runs no coroutine, and the pass is where
+       the scheduler hears about lanes that are all inside one. */
+    zyxrt_sched_poll();
     for (size_t i = 0; i < ZYXXRT_PREEMPT_SLOTS; i++) {
       zyxrt_coro *c = atomic_load_explicit(&running[i], memory_order_acquire);
       if (c == NULL) {
