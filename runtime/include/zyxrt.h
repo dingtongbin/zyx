@@ -228,8 +228,11 @@ void *zyxrt_coro_spawn(zyxrt_fn fn, void *arg, int tier);
    region is released, so the exception it is given is still valid. */
 void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, void *watch_recv, int tier);
 /* zyxrt_stack_committed answers how many bytes of coroutine stacks the program
-   has committed, which is what a program that keeps many coroutines alive
-   watches: every live coroutine holds the stack its tier gave it. */
+   has asked the system to commit. What the system charges for that is rounded up
+   to whole pages, and a coroutine's stack sits in a page of its own, so the
+   resident cost of a live coroutine is a page even when this number is a
+   kilobyte: what this counts is what the runtime asked for, not what the system
+   gave. */
 size_t zyxrt_stack_committed(void);
 /* zyxrt_coro_join waits for a coroutine and reports how it ended. It returns
    the value the coroutine recorded and writes the exception it raised to
