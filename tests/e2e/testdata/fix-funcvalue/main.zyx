@@ -7,6 +7,10 @@ package main
 
 import "std/fmt"
 
+// llabs crosses the C boundary, so its value is a thunk that passes what it is
+// given the way the C ABI does and calls the symbol under the name C defines.
+extern func llabs(n: i64) -> i64
+
 func twice(n: i64) -> i64 {
     return n * 2
 }
@@ -27,4 +31,10 @@ func main() {
         fmt.PrintI64(f(4))
         fmt.PrintNl()
     }
+
+    var absolute = llabs
+    fmt.PrintI64(absolute(-7))
+    fmt.PrintNl()
+    fmt.PrintI64(take(llabs))
+    fmt.PrintNl()
 }
