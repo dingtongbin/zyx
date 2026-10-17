@@ -257,6 +257,7 @@ func (t *Toolchain) Sources(target Target) []string {
 		filepath.Join(t.Runtime, "io", "loop.c"),
 		filepath.Join(t.Runtime, "io", t.loopBackend(target)),
 		filepath.Join(t.Runtime, "platform", "note.c"),
+		filepath.Join(t.Runtime, "platform", "fault.c"),
 		filepath.Join(t.Runtime, "chan", "chan.c"),
 		filepath.Join(t.Runtime, "sync", "sync.c"),
 		filepath.Join(t.Runtime, "container", "array.c"),
@@ -614,6 +615,10 @@ func platformLibs(target Target) []string {
 	switch target.OS {
 	case "windows":
 		return []string{"ws2_32"}
+	case "linux", "android", "harmony":
+		// A crash report asks the dynamic loader which module an address
+		// belongs to, which is the loader's own library on these systems.
+		return []string{"dl"}
 	default:
 		return nil
 	}

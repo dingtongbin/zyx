@@ -2,6 +2,22 @@
 #ifndef ZYXRUNTIME_INTERNAL_H
 #define ZYXRUNTIME_INTERNAL_H
 
+/* The runtime is a POSIX program on the systems that have POSIX, and the C
+   compiler is asked for strict ISO C, under which those systems hide the
+   declarations the runtime is written against: signals, contexts, dynamic
+   loading, and the calls a scheduler and an event loop are made of. The
+   runtime says what it is here, before any system header is included, because
+   a system reads that once and a later word comes too late. A target that is
+   not POSIX keeps the strict set. */
+#if !defined(_WIN32) && !defined(__wasm__)
+#if !defined(_GNU_SOURCE)
+#define _GNU_SOURCE 1
+#endif
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE 1
+#endif
+#endif
+
 #include "zyxrt.h"
 #include "lock.h"
 
@@ -207,6 +223,11 @@ size_t zyxrt_system_page(void);
 /* zyxrt_platform_init prepares the process for the runtime: the platform
    layer puts standard output in the mode the runtime writes in. */
 void zyxrt_platform_init(void);
+/* zyxrt_fault_install catches a fault the program cannot continue from and has
+   it reported with the functions the stack passed through. It is installed on
+   the thread a program begins on and on every thread a coroutine's stack is
+   entered from, because the report is written where the fault happens. */
+void zyxrt_fault_install(void);
 
 /* The scheduler. Coroutines run cooperatively, each on its own stack; a
    coroutine that cannot proceed suspends itself and a scheduler thread

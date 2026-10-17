@@ -4,8 +4,6 @@
 #ifndef ZYXRUNTIME_POSIX_CTX_H
 #define ZYXRUNTIME_POSIX_CTX_H
 
-#define _XOPEN_SOURCE 700
-
 #include "zyxrt_internal.h"
 
 #include <stdlib.h>
@@ -18,8 +16,6 @@ typedef struct zyxrt_posix_ctx {
 } zyxrt_posix_ctx;
 
 void *zyxrt_ctx_thread(void) { return NULL; }
-
-void zyxrt_platform_init(void) {}
 
 void *zyxrt_ctx_new(void *stack, size_t size) {
   zyxrt_posix_ctx *c = (zyxrt_posix_ctx *)calloc(1, sizeof(zyxrt_posix_ctx));
@@ -43,6 +39,6 @@ void zyxrt_ctx_free(void *ctx) { free(ctx); }
 /* A POSIX target keeps no stack record of its own, so the bounds name nothing
    and there is nothing to update. */
 void zyxrt_ctx_bounds_thread(void) {}
-void zyxrt_ctx_bounds_coro(void *stack, size_t size) { (void)stack; (void)size; }
+void zyxrt_ctx_bounds_coro(zyxrt_coro *c) { (void)c; }
 
 #endif /* ZYXRUNTIME_POSIX_CTX_H */

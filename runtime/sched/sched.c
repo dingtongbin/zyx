@@ -666,6 +666,9 @@ static size_t scheduler_threads(void) {
    return. */
 static void thread_main(void *arg) {
   zyxrt_thread *t = (zyxrt_thread *)arg;
+  /* A coroutine of this thread runs on a stack of its own, so a fault in one
+     faults where this thread's trap must catch it. */
+  zyxrt_fault_install();
   self_thread_set(t);
   t->ctx = zyxrt_ctx_thread();
   zyxrt_sched_run();

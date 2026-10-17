@@ -7,6 +7,7 @@
 
 int zyxrt_run_main(zyxrt_main_fn fn, void *arg) {
   zyxrt_platform_init();
+  zyxrt_fault_install();
   zyxrt_timer_init();
   zyxrt_pool_warm();
   zyxrt_block_start();
