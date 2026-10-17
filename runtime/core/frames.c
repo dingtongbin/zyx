@@ -127,61 +127,116 @@ static void write_name(const char *name) {
 
 #if defined(_WIN32)
 
-/* Windows walks a stack from the unwind data of the executable itself. It says
-   nothing about a frame it cannot unwind and finds none that is not there, which
-   is what a report needs: the frames it can read are the frames it names. Two
-   frames of the walk are skipped, this function and the report that called it.
-   The walk ends where the report can no longer name what it sees, so that a
-   report of a panic is the program's own frames and nothing of the runtime it
-   runs on. */
+/* report_bounds answers the low and high end of the stack the report is running
+   on. The runtime keeps a coroutine's bounds in the thread environment block
+   while it runs, so the answer is the stack really in use: a frame whose stack
+   pointer is above the high end belongs to whatever ran the coroutine, and a
+   report of a coroutine's panic is about the coroutine. */
+static void report_bounds(uintptr_t *low, uintptr_t *high) {
+  NT_TIB *tib = (NT_TIB *)NtCurrentTeb();
+  *low = (uintptr_t)tib->StackLimit;
+  *high = (uintptr_t)tib->StackBase;
+}
+
+/* Windows walks a stack itself. The system's capture answers addresses without
+   the stack pointer each was taken in, and a report has to know when it has left
+   the stack it is about: a coroutine's frames end where its stack ends, and what
+   follows belongs to the scheduler that ran it. RtlVirtualUnwind is the unwinder
+   the system's own debuggers use, so this walk reads what they read and writes
+   nothing of its own into the report. Two frames are skipped, this function and
+   the report that called it. */
 size_t zyxrt_frames_capture(void **out, size_t max, void *above) {
-  size_t got;
-  size_t named = 0;
+  CONTEXT ctx;
+  size_t count = 0;
+  size_t skip = 2;
+  uintptr_t low = 0;
+  uintptr_t high = 0;
   (void)above;
-  got = (size_t)CaptureStackBackTrace(2, (DWORD)max, out, NULL);
-  while (named < got && frame_entry((uintptr_t)out[named]) != NULL) {
-    named++;
+  report_bounds(&low, &high);
+  memset(&ctx, 0, sizeof ctx);
+  RtlCaptureContext(&ctx);
+  while (count < max && ctx.Rip != 0) {
+    PRUNTIME_FUNCTION entry;
+    ULONG64 image = 0;
+    if (high != 0 && (uintptr_t)ctx.Rsp >= high) break;
+    if (skip > 0) {
+      skip--;
+    } else {
+      out[count++] = (void *)(uintptr_t)ctx.Rip;
+    }
+    entry = RtlLookupFunctionEntry(ctx.Rip, &image, NULL);
+    if (entry == NULL) {
+      /* A leaf function keeps no unwind data of its own, so its return address
+         is at the top of its frame. */
+      ctx.Rip = *(ULONG64 *)ctx.Rsp;
+      ctx.Rsp += sizeof(void *);
+      continue;
+    }
+    {
+      void *handler = NULL;
+      DWORD64 establisher = 0;
+      RtlVirtualUnwind(0, image, ctx.Rip, entry, &ctx, &handler, &establisher, NULL);
+    }
   }
-  return named;
+  return count;
 }
 
 #else
 
+/* report_bounds answers the low and high end of the stack the report is running
+   on, which for a coroutine is its own stack: a frame whose unwind context is
+   above the high end belongs to whatever ran the coroutine rather than to the
+   coroutine. A report that runs where no coroutine does has no bounds. */
+static void report_bounds(uintptr_t *low, uintptr_t *high) {
+  zyxrt_coro *c = zyxrt_sched_current();
+  *low = 0;
+  *high = 0;
+  if (c != NULL && c->stack != NULL) {
+    *low = (uintptr_t)c->stack;
+    *high = (uintptr_t)c->stack + c->stack_size;
+  }
+}
+
 /* A walk records the addresses of the frames outside the marker the caller
-   named, innermost first. The unwinder stops at the end of the stack it is
-   given, which for a coroutine is the end of that coroutine's own stack. */
+   named, innermost first, and stops where the stack the report is about ends. */
 typedef struct zyxrt_walk {
   void **out;
   size_t max;
   size_t count;
   void *above;
   int passed;
+  uintptr_t low;
+  uintptr_t high;
 } zyxrt_walk;
 
 static _Unwind_Reason_Code frame_step(struct _Unwind_Context *ctx, void *arg) {
   zyxrt_walk *walk = (zyxrt_walk *)arg;
   uintptr_t at = (uintptr_t)_Unwind_GetIP(ctx);
+  uintptr_t cfa = (uintptr_t)_Unwind_GetCFA(ctx);
   if (at == 0) return _URC_END_OF_STACK;
   if (walk->above != NULL && !walk->passed) {
     /* The frame that holds the marker is the caller's own, so it and the frames
        inside it are the report rather than the program it reports on. */
-    if ((uintptr_t)_Unwind_GetCFA(ctx) <= (uintptr_t)walk->above) {
+    if (cfa <= (uintptr_t)walk->above) {
       return _URC_NO_REASON;
     }
     walk->passed = 1;
     return _URC_NO_REASON;
   }
-  /* The walk ends where the report can no longer name what it sees, so that a
-     report of a panic is the program's own frames and nothing of the runtime it
-     runs on. */
-  if (frame_entry(at) == NULL) return _URC_END_OF_STACK;
+  if (walk->high != 0 && cfa >= walk->high) return _URC_END_OF_STACK;
   if (walk->count >= walk->max) return _URC_END_OF_STACK;
   walk->out[walk->count++] = (void *)at;
   return _URC_NO_REASON;
 }
 
 size_t zyxrt_frames_capture(void **out, size_t max, void *above) {
-  zyxrt_walk walk = {out, max, 0, above, 0};
+  zyxrt_walk walk;
+  walk.out = out;
+  walk.max = max;
+  walk.count = 0;
+  walk.above = above;
+  walk.passed = 0;
+  report_bounds(&walk.low, &walk.high);
   _Unwind_Backtrace(frame_step, &walk);
   return walk.count;
 }
@@ -189,8 +244,9 @@ size_t zyxrt_frames_capture(void **out, size_t max, void *above) {
 #endif
 
 /* write_frame writes one frame: the position the function was declared at and
-   its name. The walk ends before a frame the program cannot name, so every
-   frame a report writes is one it knows. */
+   its name, and for a frame the program carries no name for, the address it
+   stands at, which is what a report of a fault in code the program did not
+   compile can offer. */
 static void write_frame(uintptr_t at) {
   const zyxrt_frame *entry = frame_entry(at);
   write_text("  at ");
