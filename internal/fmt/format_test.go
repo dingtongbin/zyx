@@ -22,6 +22,7 @@ var sources = []string{
 	"package main\n\nfunc h() {\nvar x = 0 - 1\nvar y = a - b\n}\n",
 	"package main\n\nfunc i() {\n// a comment\nvar x = 1 // trailing\n}\n",
 	"package main\nimport c \"test.h\" { fast read, write }\nfast extern func getpid() -> i32\nfunc main() {\n}\n",
+	"package main\n\nstruct point {\n    x: i64\n    y: i64\n}\n\nfunc f() -> point {\n    return point { x: 1, y: 2 }\n}\n",
 }
 
 func TestFormatIsIdempotent(t *testing.T) {
@@ -252,4 +253,48 @@ func TestFormatKeepsABlankLineInsideABlock(t *testing.T) {
 	src := "package main\n\nfunc f() {\n    var x = 1\n\n\n    var y = 2\n}\n"
 	want := "package main\n\nfunc f() {\n    var x = 1\n\n    var y = 2\n}\n"
 	checkFormat(t, "blank line in a block", src, want)
+}
+
+// TestFormatKeepsALowerCaseTypeLiteral checks that a value of a type whose
+// name is written in lower case is a literal like any other: the brace builds
+// a value, so it does not open a block body. The spelling of the name does not
+// decide the brace; whether the construct is a definition or a statement does.
+// The array around the literals also keeps the indentation its brackets give
+// it.
+func TestFormatKeepsALowerCaseTypeLiteral(t *testing.T) {
+	src := "package main\n\nextern struct case_range {\n    lo: u32\n    hi: u32\n    delta: i32\n}\n\n" +
+		"const upper: [case_range; 2] = [\n" +
+		"    case_range { lo: 0x61, hi: 0x7A, delta: -32 },\n" +
+		"    case_range { lo: 0xB5, hi: 0xB5, delta: 743 },\n" +
+		"]\n"
+	checkFormat(t, "lower-case type literal", src, src)
+}
+
+// TestFormatKeepsABlockWrittenOnOneLine checks that a block written on one
+// line stays on one line, braces and all, rather than being spread over
+// several.
+func TestFormatKeepsABlockWrittenOnOneLine(t *testing.T) {
+	src := "package main\n\nfunc f(n: i64) -> i64 {\n" +
+		"    if n > 0 { return 1 }\n" +
+		"    if n < 0 { return -1 } else { return 0 }\n" +
+		"    return n\n}\n"
+	checkFormat(t, "one-line block", src, src)
+}
+
+// TestFormatKeepsABlockWrittenAcrossLines checks the other direction: a block
+// the author spread over several lines is not joined onto one.
+func TestFormatKeepsABlockWrittenAcrossLines(t *testing.T) {
+	src := "package main\n\nfunc f(n: i64) -> i64 {\n    if n > 0 {\n        return 1\n" +
+		"    } else {\n        return -1\n    }\n    return n\n}\n"
+	checkFormat(t, "multi-line block", src, src)
+}
+
+// TestFormatSpacesARange checks that `..` takes one space on each side, as
+// every binary operator does, whether it writes a range or a slice.
+func TestFormatSpacesARange(t *testing.T) {
+	src := "package main\n\nfunc f(xs: [u8]) -> [u8] {\n    for i in 0..xs.Len() {\n" +
+		"        return xs[0..i]\n    }\n}\n"
+	want := "package main\n\nfunc f(xs: [u8]) -> [u8] {\n    for i in 0 .. xs.Len() {\n" +
+		"        return xs[0 .. i]\n    }\n}\n"
+	checkFormat(t, "range", src, want)
 }

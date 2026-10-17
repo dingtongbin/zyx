@@ -120,8 +120,15 @@ func (p *printer) token(toks []token.Token, i int) {
 		p.prevContent != token.Comment && !sameRun(p.lastDecl, t.Kind) {
 		p.blankLine()
 	}
-	if t.Kind == token.RBrace && p.indented() {
+	switch {
+	case t.Kind == token.RBrace && p.indented():
 		// The closing brace returns to the level that opened its body.
+		if p.indent > 0 {
+			p.indent--
+		}
+	case (t.Kind == token.RParen || t.Kind == token.RBrack) && p.brackets > 0:
+		// A bracket returns to the level that opened it, so a closer on a
+		// line of its own sits under the line that opened the group.
 		if p.indent > 0 {
 			p.indent--
 		}
@@ -135,6 +142,7 @@ func (p *printer) token(toks []token.Token, i int) {
 	switch t.Kind {
 	case token.LParen, token.LBrack:
 		p.brackets++
+		p.indent++
 	case token.RParen, token.RBrack:
 		if p.brackets > 0 {
 			p.brackets--
@@ -142,7 +150,7 @@ func (p *printer) token(toks []token.Token, i int) {
 	case token.LBrace:
 		p.pushBrace(toks, i)
 	case token.RBrace:
-		p.popBrace(toks, i)
+		p.popBrace()
 	case token.Semicolon:
 		// A semicolon between statements ends a line; one inside brackets
 		// separates the parts of a type or a literal, which stay together.
@@ -227,8 +235,10 @@ func commentEnd(t token.Token, start int) int {
 	return end
 }
 
-// pushBrace records an opening brace. A body that holds something raises the
-// indentation, and a statement block ends its line there.
+// pushBrace records an opening brace. A brace that holds something raises the
+// indentation; the line structure inside it comes from the source positions,
+// so a body the author wrote on one line stays on one line and one written
+// across lines stays across lines.
 func (p *printer) pushBrace(toks []token.Token, i int) {
 	block := p.opensBlock(toks, i)
 	p.braces = append(p.braces, block)
@@ -243,14 +253,10 @@ func (p *printer) pushBrace(toks []token.Token, i int) {
 	}
 	p.indents = append(p.indents, true)
 	p.indent++
-	if block {
-		p.deferNewline()
-	}
 }
 
-// popBrace leaves an opening brace and resets the marks it set. The line is
-// ended after the brace, unless an `else` the format keeps beside it follows.
-func (p *printer) popBrace(toks []token.Token, i int) {
+// popBrace leaves an opening brace and clears the empty-body mark it set.
+func (p *printer) popBrace() {
 	block := p.inBlock()
 	if n := len(p.braces); n > 0 {
 		p.braces = p.braces[:n-1]
@@ -258,17 +264,9 @@ func (p *printer) popBrace(toks []token.Token, i int) {
 	if n := len(p.indents); n > 0 {
 		p.indents = p.indents[:n-1]
 	}
-	if !block {
-		return
-	}
-	if p.emptyBody {
+	if block && p.emptyBody {
 		p.emptyBody = false
-		return
 	}
-	if i+1 < len(toks) && toks[i+1].Kind == token.Else {
-		return
-	}
-	p.deferNewline()
 }
 
 // isDeclKeyword reports whether a token opens a top-level declaration.
@@ -336,42 +334,89 @@ func (p *printer) separates() bool {
 	return true
 }
 
-// opensBlock reports whether a brace opens a statement block rather than an
-// aggregate literal. A literal follows the name of a type; a token that can
-// only stand before a body makes the brace a body even when the token before it
-// is a type name, which is how a result type of a user-declared type is told
-// from a construction.
+// opensBlock reports whether a brace opens a definition body or a block
+// statement rather than an aggregate literal. The spelling of the type name
+// does not decide it: a private type is written in lower case, so
+// `case_range { ... }` builds a value exactly as `Tally { ... }` does. The
+// brace is a body when the construct it belongs to begins with a definition or
+// a statement keyword, and a literal when a value is being built.
 func (p *printer) opensBlock(toks []token.Token, i int) bool {
 	if i == 0 {
 		return true
 	}
-	j := i - 1
-	if toks[j].Kind == token.Gt {
-		// The brace follows the closing bracket of a type argument list, so
-		// the type name stands before the list. Step back over it.
-		depth := 0
-		for ; j >= 0; j-- {
-			switch toks[j].Kind {
-			case token.Gt:
-				depth++
-			case token.Lt:
-				depth--
-			}
-			if depth == 0 {
-				break
-			}
-		}
-		j--
-	}
-	if j < 0 || !opensAType(toks[j].Kind, toks[j].Span.Text()) {
+	switch toks[i-1].Kind {
+	case token.RParen, token.RBrack, token.FatArrow:
+		// A signature or a condition ends in `)` or `]`, and the body of a
+		// match arm may be a block. None of them can stand before a literal.
 		return true
 	}
-	if j >= 1 {
-		switch toks[j-1].Kind {
-		case token.Struct, token.Enum, token.Interface, token.Impl, token.Extern, token.Union,
-			token.Arrow, token.Is, token.For:
+	j := i - 1
+	if k := toks[j].Kind; k == token.Gt || k == token.Shr {
+		j = typeNameStart(toks, j)
+		if j < 0 {
 			return true
 		}
+	}
+	if j >= 1 && toks[j-1].Kind == token.Arrow {
+		// A function signature names its result type before its body.
+		return true
+	}
+	switch constructHead(toks, j) {
+	case token.Struct, token.Union, token.Enum, token.Interface, token.Impl,
+		token.Extern, token.Func, token.Comptime,
+		token.If, token.Else, token.For, token.Match, token.Select, token.Default,
+		token.Region:
+		return true
+	}
+	return false
+}
+
+// typeNameStart returns the index of the type name that the `>` or `>>` at
+// index j closes the argument list of, or -1 when the list is not balanced.
+func typeNameStart(toks []token.Token, j int) int {
+	depth := 0
+	for ; j >= 0; j-- {
+		switch toks[j].Kind {
+		case token.Gt:
+			depth++
+		case token.Shr:
+			depth += 2
+		case token.Lt:
+			depth--
+		}
+		if depth <= 0 {
+			break
+		}
+	}
+	if j < 1 {
+		return -1
+	}
+	return j - 1
+}
+
+// constructHead returns the kind of the first token of the construct that
+// contains the token at index j: the token after the nearest boundary to its
+// left, with any comment between them skipped.
+func constructHead(toks []token.Token, j int) token.Kind {
+	k := j - 1
+	for k >= 0 && !isConstructBoundary(toks[k].Kind) {
+		k--
+	}
+	for k+1 < len(toks) && toks[k+1].Kind == token.Comment {
+		k++
+	}
+	if k+1 >= len(toks) {
+		return token.Invalid
+	}
+	return toks[k+1].Kind
+}
+
+// isConstructBoundary lists the tokens that end one construct and begin the
+// next, where a scan for the head of an expression stops.
+func isConstructBoundary(k token.Kind) bool {
+	switch k {
+	case token.Newline, token.Semicolon, token.LBrace, token.RBrace:
+		return true
 	}
 	return false
 }
@@ -387,8 +432,9 @@ func (p *printer) needsSpace(toks []token.Token, i int) bool {
 		return false
 	}
 	kind := toks[i].Kind
-	if kind == token.RBrace && !p.inBlock() && p.prevKind() != token.LBrace {
-		// A literal with members closes with a space before its brace.
+	if kind == token.RBrace && p.indented() {
+		// A brace that holds members written on one line keeps a space before
+		// it, whether it closes a literal or a block.
 		return true
 	}
 	if noSpaceBefore(kind) {
