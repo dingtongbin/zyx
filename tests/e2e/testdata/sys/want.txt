@@ -1,0 +1,9 @@
+cpu count is at least one: true
+physical memory is reported: true
+available memory is within the total: true
+uptime is measured: true
+boot is before now: true
+uptime and boot agree: true
+the system is named: true
+the kernel is named: true
+load is not negative: true

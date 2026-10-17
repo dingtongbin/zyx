@@ -1,1 +1,78 @@
 package sys
+
+// What the machine is: the processors a program may run on, the memory it
+// holds, how long it has been up, which system it runs, and its load. The
+// answers describe the machine rather than the program, so a program reads
+// them and reports them rather than comparing them against numbers of its
+// own.
+
+import "std/time"
+
+import c "zyxsys.h"
+
+// zyxtime_duration_of turns a count of nanoseconds into the Duration it is.
+// The language converts neither a Duration to a count nor a count to a
+// Duration, so the two meet at the clock package's own bridge, which this
+// package reaches rather than writing a second one.
+
+extern func zyxtime_duration_of(nanos: i64) -> Duration
+
+// CpuCount answers the number of processors the program may run on, which is
+// at least one.
+func CpuCount() -> usize {
+    return usize(c.zyxsys_cpu_count())
+}
+
+// MemTotal answers the physical memory of the machine in bytes.
+func MemTotal() -> usize {
+    return usize(c.zyxsys_mem_total())
+}
+
+// MemAvailable answers how many bytes of memory the system believes a program
+// could still take without swapping. It is a reading of the moment: the
+// system reclaims and hands out memory as programs run.
+func MemAvailable() -> usize {
+    return usize(c.zyxsys_mem_available())
+}
+
+// Uptime answers how long the machine has been up.
+func Uptime() -> Duration {
+    return zyxtime_duration_of(i64(c.zyxsys_uptime_ns()))
+}
+
+// BootTime answers the moment the machine started, as a reading of the
+// monotonic clock. The clock's origin is the start of the process, so the
+// moment is before it and the reading is negative; the interval from it to
+// now is the uptime.
+func BootTime() -> time.Instant {
+    return time.Monotonic().Add(zero() - Uptime())
+}
+
+// zero is the duration of no time, which is what a count of zero is.
+func zero() -> Duration {
+    return zyxtime_duration_of(0)
+}
+
+// OsVersion answers the name and the version of the running system.
+func OsVersion() -> str {
+    var text = new Buf(0)
+    c.zyxsys_os_version(text)
+    return text.Str()
+}
+
+// KernelVersion answers the version of the running kernel.
+func KernelVersion() -> str {
+    var text = new Buf(0)
+    c.zyxsys_kernel_version(text)
+    return text.Str()
+}
+
+// LoadAvg answers the one-, five-, and fifteen-minute run-queue averages. A
+// system that keeps no such average answers zero for every window.
+func LoadAvg() -> (f64, f64, f64) {
+    var one: f64 = 0.0
+    var five: f64 = 0.0
+    var fifteen: f64 = 0.0
+    c.zyxsys_load_avg(& one, & five, & fifteen)
+    return (one, five, fifteen)
+}

@@ -1,0 +1,145 @@
+package net
+
+// Address parsing. A program names the far end of a connection as a host and
+// a port: the host, then a colon, then the port in decimal. A host of the
+// newer internet family carries colons of its own, so an address writes it in
+// brackets, and the colons inside them are not a separator.
+//
+// This file imports std/str, so in this file the name str is the package it
+// imports and the language's own string type cannot be written. What it reads
+// is therefore a buffer of bytes, and the file that declares the package's
+// surface turns a string into one.
+
+import "std/str"
+
+// address is the host and the port an address text names. An empty host names
+// the address a program may listen on any interface with, and port_written
+// says whether the text named a port of its own.
+struct address {
+    host: Buf
+    port: i32
+    port_written: bool
+}
+
+// parse_addr reads an address text and answers the host and the port. A text
+// that names no address is refused.
+func parse_addr(text: Buf, default_port: i32) -> Result<address, Error> {
+    var s = text.Str()
+    var n = s.Len()
+    if n == 0 {
+        return Result.Ok(address { host: new Buf(0), port: default_port, port_written: false })
+    }
+    if s[0] == open_bracket() {
+        var close = str.IndexByte(s, close_bracket())
+        var at: usize = 0
+        match close {
+            Some(v) => { at = v }
+            None => { return Result.Err(invalid_address()) }
+        }
+        if at <= 1 {
+            return Result.Err(invalid_address())
+        }
+        var host = copy_bytes(text, 1, at)
+        if at + 1 == n {
+            return Result.Ok(address { host: host, port: default_port, port_written: false })
+        }
+        if s[at + 1] != colon() {
+            return Result.Err(invalid_address())
+        }
+        var port = try read_port(text, at + 2, n)
+        return Result.Ok(address { host: host, port: port, port_written: true })
+    }
+    var colons = count_bytes(text, colon())
+    if colons == 0 {
+        return Result.Ok(address { host: copy_bytes(text, 0, n), port: default_port, port_written: false })
+    }
+    // A text with more than one colon and no brackets names no address: the
+    // language's own form brackets the family that carries colons.
+    if colons > 1 {
+        return Result.Err(invalid_address())
+    }
+    var at = str.IndexByte(s, colon()).Unwrap()
+    var port = try read_port(text, at + 1, n)
+    return Result.Ok(address { host: copy_bytes(text, 0, at), port: port, port_written: true })
+}
+
+// copy_bytes answers the bytes of a text between two positions as a buffer of
+// their own.
+func copy_bytes(text: Buf, from: usize, to: usize) -> Buf {
+    var s = text.Str()
+    var out = new Buf(to - from)
+    var i = from
+    for i < to {
+        out.WriteByte(s[i])
+        i += 1
+    }
+    return out
+}
+
+// count_bytes is how many times a byte appears in a text.
+func count_bytes(text: Buf, b: u8) -> usize {
+    var s = text.Str()
+    var count: usize = 0
+    var i: usize = 0
+    for i < s.Len() {
+        if s[i] == b {
+            count += 1
+        }
+        i += 1
+    }
+    return count
+}
+
+// read_port reads the decimal port a text holds between two positions. A text
+// that holds no digits, or a number beyond the range a port may take, is
+// refused.
+func read_port(text: Buf, from: usize, to: usize) -> Result<i32, Error> {
+    var s = text.Str()
+    if from >= to {
+        return Result.Err(invalid_address())
+    }
+    var value: i32 = 0
+    var i = from
+    for i < to {
+        var b = s[i]
+        if b < zero() || b > nine() {
+            return Result.Err(invalid_address())
+        }
+        value = value * 10 + i32(b - zero())
+        if value > 65535 {
+            return Result.Err(invalid_address())
+        }
+        i += 1
+    }
+    return Result.Ok(value)
+}
+
+// invalid_address is the failure of a text that names no address.
+func invalid_address() -> Error {
+    return Error { Kind: ErrorKind.Invalid, Errno: 0, Msg: "the address is not valid" }
+}
+
+// open_bracket is the byte that begins a host of the newer internet family.
+func open_bracket() -> u8 {
+    return 91
+}
+
+// close_bracket is the byte that ends one.
+func close_bracket() -> u8 {
+    return 93
+}
+
+// colon is the byte that separates a host from its port.
+func colon() -> u8 {
+    return 58
+}
+
+// zero is the byte a decimal digit counts from.
+func zero() -> u8 {
+    return 48
+}
+
+// nine is the last decimal digit.
+func nine() -> u8 {
+    return 57
+}

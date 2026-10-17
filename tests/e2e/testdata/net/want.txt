@@ -1,0 +1,15 @@
+listening: ok
+refused: true
+dialed: ok
+accepted: ok
+client wrote: 4
+server read: ping
+client read: pong
+near end is loopback: true
+far end is loopback: true
+read after the peer closed is empty: true
+read after close: true
+accept after close: true
+invalid address: true
+a literal address answers with a name: true
+the name is the literal itself: true

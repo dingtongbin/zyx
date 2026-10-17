@@ -1,0 +1,13 @@
+connected: ok
+near end is loopback: true
+wrote in parts: 4
+read in parts: abcd
+read all: efgh
+try read with nothing there: true
+try write took the bytes: true
+read one: i
+sent from the file: 5
+the file position was put back: true
+read from the file: parts
+the half close ended the stream: true
+done

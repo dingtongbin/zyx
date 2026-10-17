@@ -1,1 +1,684 @@
 package net
+
+// Networking: the listeners, connections, and datagrams a program makes over
+// TCP, UDP, and unix sockets. Every descriptor this package makes is
+// non-blocking, and a call that has nothing to do parks the calling coroutine
+// on the runtime's event loop, so a socket never holds a scheduler thread
+// while it waits. A program that must not wait uses TryRead and TryWrite,
+// which answer a would-block failure instead of waiting.
+//
+// A handle is a reference: a copy names the same socket, and a program closes
+// what it opened. Close is idempotent and a closed handle refuses every call;
+// closing a handle from one coroutine wakes another coroutine waiting on it.
+
+import "std/fs"
+import "std/rt"
+
+import c "zyxnet.h" {
+    fast zyxnet_error_kind, zyxnet_error_number, zyxnet_error_message
+    fast zyxnet_start, zyxnet_fd, zyxnet_close, zyxnet_shutdown
+    fast zyxnet_local_addr, zyxnet_remote_addr, zyxnet_connect_pending, zyxnet_connect_state
+    fast zyxnet_set_blocking, zyxnet_set_no_delay, zyxnet_set_keep_alive
+    fast zyxnet_listen, zyxnet_accept, zyxnet_dial, zyxnet_bind_udp
+    fast zyxnet_recv, zyxnet_send, zyxnet_recv_from, zyxnet_send_to
+}
+
+// ErrorKind is what went wrong. Every system package reports failures in this
+// shape, so one program reads them the same way wherever they come from.
+
+enum ErrorKind {
+    NotFound
+    Permission
+    Exists
+    NotDir
+    IsDir
+    Invalid
+    Closed
+    Timeout
+    Interrupted
+    WouldBlock
+    Eof
+    AddrInUse
+    AddrNotAvailable
+    Refused
+    Reset
+    Unreachable
+    Other
+}
+
+// Error is one failure of a call. Errno is the number the system reported, or
+// zero when the failure is not one the system names, and Msg is the text the
+// system gave it.
+
+struct Error {
+    Kind: ErrorKind
+    Errno: i32
+    Msg: str
+
+    impl Show {
+        func Show(w: Buf) {
+            w.WriteStr(f"net: {self.Msg}")
+        }
+    }
+}
+
+// error_of builds the failure a C call just reported.
+func error_of() -> Error {
+    var text = new Buf(0)
+    c.zyxnet_error_message(text)
+    return Error {
+        Kind: error_kind(c.zyxnet_error_kind())
+        Errno: c.zyxnet_error_number()
+        Msg: text.Str()
+    }
+}
+
+// error_of_fs reads a failure of the file package as a failure of this one.
+// The two kinds are the one shape every system package reports, and the
+// header numbers its variants from one while the language numbers the same
+// variants from zero.
+func error_of_fs(e: fs.Error) -> Error {
+    return Error { Kind: error_kind(i32(e.Kind) + 1), Errno: e.Errno, Msg: e.Msg }
+}
+
+// error_kind maps the number a C call reports onto the kind of failure it is.
+// The numbers are the ones the package's own header defines.
+func error_kind(code: i32) -> ErrorKind {
+    if code == c.ZYXNET_NOT_FOUND {
+        return ErrorKind.NotFound
+    }
+    if code == c.ZYXNET_PERMISSION {
+        return ErrorKind.Permission
+    }
+    if code == c.ZYXNET_EXISTS {
+        return ErrorKind.Exists
+    }
+    if code == c.ZYXNET_NOT_DIR {
+        return ErrorKind.NotDir
+    }
+    if code == c.ZYXNET_IS_DIR {
+        return ErrorKind.IsDir
+    }
+    if code == c.ZYXNET_INVALID {
+        return ErrorKind.Invalid
+    }
+    if code == c.ZYXNET_CLOSED {
+        return ErrorKind.Closed
+    }
+    if code == c.ZYXNET_TIMEOUT {
+        return ErrorKind.Timeout
+    }
+    if code == c.ZYXNET_INTERRUPTED {
+        return ErrorKind.Interrupted
+    }
+    if code == c.ZYXNET_WOULD_BLOCK {
+        return ErrorKind.WouldBlock
+    }
+    if code == c.ZYXNET_EOF {
+        return ErrorKind.Eof
+    }
+    if code == c.ZYXNET_ADDR_IN_USE {
+        return ErrorKind.AddrInUse
+    }
+    if code == c.ZYXNET_ADDR_NOT_AVAILABLE {
+        return ErrorKind.AddrNotAvailable
+    }
+    if code == c.ZYXNET_REFUSED {
+        return ErrorKind.Refused
+    }
+    if code == c.ZYXNET_RESET {
+        return ErrorKind.Reset
+    }
+    if code == c.ZYXNET_UNREACHABLE {
+        return ErrorKind.Unreachable
+    }
+    return ErrorKind.Other
+}
+
+// closed_error is the failure of a call on a handle that was closed.
+func closed_error() -> Error {
+    return Error { Kind: ErrorKind.Closed, Errno: 0, Msg: "the handle is closed" }
+}
+
+// eof_error is the failure of a write that took nothing, which means the far
+// end is gone.
+func eof_error() -> Error {
+    return Error { Kind: ErrorKind.Eof, Errno: 0, Msg: "the connection took no bytes" }
+}
+
+// start makes the platform's socket library ready, which every call that
+// makes a socket runs first.
+func start() {
+    c.zyxnet_start()
+}
+
+// buf_of answers the bytes of a string as a buffer, which is what the file
+// that reads an address works on.
+func buf_of(s: str) -> Buf {
+    var out = new Buf(s.Len())
+    var i: usize = 0
+    for i < s.Len() {
+        out.WriteByte(s[i])
+        i += 1
+    }
+    return out
+}
+
+// bytes_of turns a text into the bytes a write takes.
+func bytes_of(s: str) -> [u8] {
+    var out = new Array<u8>(s.Len())
+    var i: usize = 0
+    for i < s.Len() {
+        out.Push(s[i])
+        i += 1
+    }
+    return out[0 .. out.Len()]
+}
+
+// length counts the bytes of a view. A view carries its count, but the count
+// is not reachable from a program, so it is taken by walking the view once.
+func length(src: [u8]) -> usize {
+    var n: usize = 0
+    for _ in src {
+        n += 1
+    }
+    return n
+}
+
+// flag_of answers one or zero for a switch, which is how a C call takes it.
+func flag_of(on: bool) -> i32 {
+    if on {
+        return 1
+    }
+    return 0
+}
+
+// wait_readable parks the calling coroutine until the descriptor can be read
+// from.
+func wait_readable(fd: i32) -> Result<(), Error> {
+    match rt.WaitReadable(fd) {
+        Ok(_) => { return Result.Ok() }
+        Err(e) => { return Result.Err(wait_error(e)) }
+    }
+}
+
+// wait_writable parks the calling coroutine until the descriptor can be
+// written to.
+func wait_writable(fd: i32) -> Result<(), Error> {
+    match rt.WaitWritable(fd) {
+        Ok(_) => { return Result.Ok() }
+        Err(e) => { return Result.Err(wait_error(e)) }
+    }
+}
+
+// wait_error reads a failure of the runtime's own wait as a failure of this
+// package. A wait that ended because the descriptor was closed or released is
+// a closed failure; anything else is a wait this target could not make.
+func wait_error(e: rt.Error) -> Error {
+    if i32(e.Kind) == i32(rt.ErrorKind.Closed) {
+        return Error { Kind: ErrorKind.Closed, Errno: e.Errno, Msg: e.Msg }
+    }
+    return Error { Kind: ErrorKind.Other, Errno: e.Errno, Msg: e.Msg }
+}
+
+// A Conn is a connection to another program: a stream socket a program reads
+// from and writes to. It is a reference, and it is safe to share between
+// coroutines, which is what lets one coroutine close a connection while
+// another waits on it.
+struct Conn {
+    handle: raw
+    fd: i32
+    closed: bool
+    blocking: bool
+
+    impl SyncSafe { }
+
+    // Read reads at most max bytes into b and answers how many it read. A
+    // zero answer is the end of the stream: the far end closed and there is
+    // nothing left to read. A read with nothing to read parks the calling
+    // coroutine until something arrives.
+    func Read(b: Buf, max: usize) -> Result<usize, Error> {
+        if self.closed {
+            return Result.Err(closed_error())
+        }
+        var n = c.zyxnet_recv(self.handle, b, max)
+        for n < 0 && c.zyxnet_error_kind() == c.ZYXNET_WOULD_BLOCK && self.blocking == false {
+            try wait_readable(self.fd)
+            n = c.zyxnet_recv(self.handle, b, max)
+        }
+        if n < 0 {
+            return Result.Err(error_of())
+        }
+        return Result.Ok(usize(n))
+    }
+
+    // TryRead reads at most max bytes into b without waiting. A connection
+    // with nothing to read answers a would-block failure.
+    func TryRead(b: Buf, max: usize) -> Result<usize, Error> {
+        if self.closed {
+            return Result.Err(closed_error())
+        }
+        var n = c.zyxnet_recv(self.handle, b, max)
+        if n < 0 {
+            return Result.Err(error_of())
+        }
+        return Result.Ok(usize(n))
+    }
+
+    // Write writes the bytes of b and answers how many of them the connection
+    // took, which may be fewer than it was given. A full send buffer parks the
+    // calling coroutine until there is room.
+    func Write(b: [u8]) -> Result<usize, Error> {
+        if self.closed {
+            return Result.Err(closed_error())
+        }
+        var n = c.zyxnet_send(self.handle, b)
+        for n < 0 && c.zyxnet_error_kind() == c.ZYXNET_WOULD_BLOCK && self.blocking == false {
+            try wait_writable(self.fd)
+            n = c.zyxnet_send(self.handle, b)
+        }
+        if n < 0 {
+            return Result.Err(error_of())
+        }
+        return Result.Ok(usize(n))
+    }
+
+    // WriteStr writes the bytes of s.
+    func WriteStr(s: str) -> Result<usize, Error> {
+        return self.Write(bytes_of(s))
+    }
+
+    // WriteAll writes every byte of b, waiting for room when the send buffer
+    // is full.
+    func WriteAll(b: [u8]) -> Result<(), Error> {
+        var total = length(b)
+        var done: usize = 0
+        for done < total {
+            var n = try self.Write(b[done .. total])
+            if n == 0 {
+                return Result.Err(eof_error())
+            }
+            done += n
+        }
+        return Result.Ok()
+    }
+
+    // Writev writes every part in order and answers how many bytes it wrote in
+    // all. The parts are written one after another, so a part boundary may
+    // fall in the middle of what the far end reads.
+    func Writev(parts: Array<[u8]>) -> Result<usize, Error> {
+        var total: usize = 0
+        for part in parts {
+            try self.WriteAll(part)
+            total += length(part)
+        }
+        return Result.Ok(total)
+    }
+
+    // TryWrite writes the bytes of b without waiting and answers how many the
+    // connection took. A full send buffer answers a would-block failure.
+    func TryWrite(b: [u8]) -> Result<usize, Error> {
+        if self.closed {
+            return Result.Err(closed_error())
+        }
+        var n = c.zyxnet_send(self.handle, b)
+        if n < 0 {
+            return Result.Err(error_of())
+        }
+        return Result.Ok(usize(n))
+    }
+
+    // SendFile sends at most n bytes of the file from the given offset and
+    // answers how many it sent. The file is read through its own handle and
+    // written to the connection, and the position the file stood at is put
+    // back where it was.
+    func SendFile(f: fs.File, off: u64, n: usize) -> Result<usize, Error> {
+        if self.closed {
+            return Result.Err(closed_error())
+        }
+        var at: i64 = 0
+        match f.Seek(0, 1) {
+            Ok(v) => { at = v }
+            Err(e) => { return Result.Err(error_of_fs(e)) }
+        }
+        var out = self.send_file(f, off, n)
+        f.Seek(at, 0)
+        return out
+    }
+
+    // send_file reads the file from the offset and writes what it read.
+    func send_file(f: fs.File, off: u64, n: usize) -> Result<usize, Error> {
+        match f.Seek(i64(off), 0) {
+            Ok(_) => { }
+            Err(e) => { return Result.Err(error_of_fs(e)) }
+        }
+        var chunk = new Buf(0)
+        var done: usize = 0
+        for done < n {
+            chunk.Reset()
+            var want = n - done
+            if want > 65536 {
+                want = 65536
+            }
+            var got: usize = 0
+            match f.Read(chunk, want) {
+                Ok(v) => { got = v }
+                Err(e) => { return Result.Err(error_of_fs(e)) }
+            }
+            if got == 0 {
+                break
+            }
+            try self.WriteAll(chunk.Bytes())
+            done += got
+        }
+        return Result.Ok(done)
+    }
+
+    // Close gives the connection up, waking every coroutine waiting on it. It
+    // is idempotent: a connection already closed is left alone, and a call on
+    // it afterwards is refused.
+    func Close() {
+        if self.closed {
+            return
+        }
+        self.closed = true
+        rt.Release(self.fd)
+        c.zyxnet_close(self.handle)
+    }
+
+    // Shutdown closes one direction of the connection and leaves the other
+    // open: 0 refuses further reads, 1 refuses further writes and tells the
+    // far end that nothing more is coming, and 2 does both.
+    func Shutdown(how: i32) -> Result<(), Error> {
+        if self.closed {
+            return Result.Err(closed_error())
+        }
+        if c.zyxnet_shutdown(self.handle, how) != 0 {
+            return Result.Err(error_of())
+        }
+        return Result.Ok()
+    }
+
+    // LocalAddr answers the address of the near end of the connection.
+    func LocalAddr() -> str {
+        if self.closed {
+            return ""
+        }
+        var text = new Buf(0)
+        if c.zyxnet_local_addr(self.handle, text) != 0 {
+            return ""
+        }
+        return text.Str()
+    }
+
+    // RemoteAddr answers the address of the far end of the connection.
+    func RemoteAddr() -> str {
+        if self.closed {
+            return ""
+        }
+        var text = new Buf(0)
+        if c.zyxnet_remote_addr(self.handle, text) != 0 {
+            return ""
+        }
+        return text.Str()
+    }
+
+    // SetBlocking makes the descriptor wait inside the call rather than park
+    // the coroutine: a read of a blocking connection holds the scheduler
+    // thread until the data arrives. A program that wants the runtime's own
+    // waiting leaves it non-blocking, which is how a connection begins.
+    func SetBlocking(on: bool) {
+        if self.closed {
+            return
+        }
+        if c.zyxnet_set_blocking(self.handle, flag_of(on)) != 0 {
+            return
+        }
+        self.blocking = on
+    }
+
+    // SetNoDelay turns the delayed-send rule of a stream connection off or on.
+    // A connection with it off coalesces small writes, which trades latency
+    // for fewer packets.
+    func SetNoDelay(on: bool) {
+        if self.closed {
+            return
+        }
+        c.zyxnet_set_no_delay(self.handle, flag_of(on))
+    }
+
+    // SetKeepAlive asks the system to watch an idle connection and report it
+    // when the far end stops answering.
+    func SetKeepAlive(on: bool) {
+        if self.closed {
+            return
+        }
+        c.zyxnet_set_keep_alive(self.handle, flag_of(on))
+    }
+}
+
+// conn_of builds the connection a call just made.
+func conn_of(handle: raw) -> Conn {
+    return Conn { handle: handle, fd: c.zyxnet_fd(handle), closed: false, blocking: false }
+}
+
+// discard gives up a connection the call that made it never handed to the
+// program. No coroutine can be waiting on such a connection, so only the
+// descriptor is given up and the runtime is not asked to wake anybody.
+func discard(conn: Conn) {
+    conn.closed = true
+    c.zyxnet_close(conn.handle)
+}
+
+// A Listener accepts connections. It is a reference, and a program closes what
+// it opened.
+struct Listener {
+    handle: raw
+    fd: i32
+    closed: bool
+
+    // Accept waits for a connection and answers it.
+    func Accept() -> Result<Conn, Error> {
+        if self.closed {
+            return Result.Err(closed_error())
+        }
+        var handle = c.zyxnet_accept(self.handle)
+        for c.zyxnet_error_kind() == c.ZYXNET_WOULD_BLOCK {
+            try wait_readable(self.fd)
+            handle = c.zyxnet_accept(self.handle)
+        }
+        if c.zyxnet_error_kind() != 0 {
+            return Result.Err(error_of())
+        }
+        return Result.Ok(conn_of(handle))
+    }
+
+    // AcceptLoop accepts connections one after another and hands each to
+    // on_accept, which answers whether the loop goes on. When it answers no,
+    // the connection is closed and the loop answers.
+    func AcceptLoop(on_accept: func(Conn) -> bool) -> Result<(), Error> {
+        for {
+            var conn = try self.Accept()
+            if on_accept(conn) {
+                continue
+            }
+            conn.Close()
+            break
+        }
+        return Result.Ok()
+    }
+
+    // Close gives the listener up, waking every coroutine waiting on it. It is
+    // idempotent, and a call on it afterwards is refused.
+    func Close() {
+        if self.closed {
+            return
+        }
+        self.closed = true
+        rt.Release(self.fd)
+        c.zyxnet_close(self.handle)
+    }
+}
+
+// A UdpConn sends and receives datagrams. A datagram is a message of its own:
+// what a read answers is one whole message, and a message the network loses is
+// lost.
+struct UdpConn {
+    handle: raw
+    fd: i32
+    closed: bool
+    blocking: bool
+
+    // ReadFrom reads one datagram into b and answers how many bytes it held
+    // and where it came from.
+    func ReadFrom(b: Buf, max: usize) -> Result<(usize, str), Error> {
+        if self.closed {
+            return Result.Err(closed_error())
+        }
+        var from = new Buf(0)
+        var n = c.zyxnet_recv_from(self.handle, b, max, from)
+        for n < 0 && c.zyxnet_error_kind() == c.ZYXNET_WOULD_BLOCK && self.blocking == false {
+            try wait_readable(self.fd)
+            from = new Buf(0)
+            n = c.zyxnet_recv_from(self.handle, b, max, from)
+        }
+        if n < 0 {
+            return Result.Err(error_of())
+        }
+        return Result.Ok((usize(n), from.Str()))
+    }
+
+    // WriteTo sends the bytes of b to the address addr names.
+    func WriteTo(b: [u8], addr: str) -> Result<usize, Error> {
+        if self.closed {
+            return Result.Err(closed_error())
+        }
+        var a = try parse_addr(buf_of(addr), 0)
+        if a.port_written == false {
+            return Result.Err(invalid_address())
+        }
+        var n = c.zyxnet_send_to(self.handle, b, a.host.Bytes(), a.port)
+        for n < 0 && c.zyxnet_error_kind() == c.ZYXNET_WOULD_BLOCK && self.blocking == false {
+            try wait_writable(self.fd)
+            n = c.zyxnet_send_to(self.handle, b, a.host.Bytes(), a.port)
+        }
+        if n < 0 {
+            return Result.Err(error_of())
+        }
+        return Result.Ok(usize(n))
+    }
+
+    // Close gives the datagram socket up. It is idempotent, and a call on it
+    // afterwards is refused.
+    func Close() {
+        if self.closed {
+            return
+        }
+        self.closed = true
+        rt.Release(self.fd)
+        c.zyxnet_close(self.handle)
+    }
+
+    // SetBlocking makes the descriptor wait inside the call rather than park
+    // the coroutine.
+    func SetBlocking(on: bool) {
+        if self.closed {
+            return
+        }
+        if c.zyxnet_set_blocking(self.handle, flag_of(on)) != 0 {
+            return
+        }
+        self.blocking = on
+    }
+}
+
+// udp_of builds the datagram socket a call just made.
+func udp_of(handle: raw) -> UdpConn {
+    return UdpConn { handle: handle, fd: c.zyxnet_fd(handle), closed: false, blocking: false }
+}
+
+// Listen listens on addr for the connections of a network. The network is
+// "tcp", "tcp4", "tcp6", or "unix"; the address is a host and a port, and a
+// port of zero lets the system choose one.
+func Listen(network: str, addr: str) -> Result<Listener, Error> {
+    start()
+    var a = try parse_addr(buf_of(addr), 0)
+    var handle = c.zyxnet_listen(network, a.host.Bytes(), a.port)
+    if c.zyxnet_error_kind() != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok(Listener { handle: handle, fd: c.zyxnet_fd(handle), closed: false })
+}
+
+// Dial connects to the address addr names over the network. A network of
+// "unix" reads the address as the path of a unix socket.
+func Dial(network: str, addr: str) -> Result<Conn, Error> {
+    start()
+    var a = try parse_addr(buf_of(addr), 0)
+    if a.port_written == false || a.host.Len() == 0 {
+        return Result.Err(invalid_address())
+    }
+    var handle = c.zyxnet_dial(network, a.host.Bytes(), a.port)
+    if c.zyxnet_error_kind() != 0 {
+        return Result.Err(error_of())
+    }
+    var conn = conn_of(handle)
+    // A connection to a machine that answers at once is up when the call
+    // returns; one that has to travel is still in progress, and the coroutine
+    // waits for the descriptor to become writable.
+    if c.zyxnet_connect_pending(handle) != 0 {
+        match wait_writable(conn.fd) {
+            Ok(_) => { }
+            Err(e) => {
+                discard(conn)
+                return Result.Err(e)
+            }
+        }
+    }
+    if c.zyxnet_connect_state(handle) != 0 {
+        discard(conn)
+        return Result.Err(error_of())
+    }
+    return Result.Ok(conn)
+}
+
+// BindUdp binds a datagram socket to the address addr names. A port of zero
+// lets the system choose one.
+func BindUdp(addr: str) -> Result<UdpConn, Error> {
+    start()
+    var a = try parse_addr(buf_of(addr), 0)
+    if a.port_written == false {
+        return Result.Err(invalid_address())
+    }
+    var handle = c.zyxnet_bind_udp(a.host.Bytes(), a.port)
+    if c.zyxnet_error_kind() != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok(udp_of(handle))
+}
+
+// Resolve answers the numeric addresses a host name stands for. The lookup is
+// a call of the system's own name service, and it is the one call of this
+// package that runs on the blocking pool rather than on the event loop.
+func Resolve(host: str) -> Result<Array<str>, Error> {
+    start()
+    var text = new Buf(0)
+    if c.zyxnet_resolve(host, text) != 0 {
+        return Result.Err(error_of())
+    }
+    var out = new Array<str>(0)
+    var name = new Buf(0)
+    var bytes = text.Bytes()
+    var count = length(bytes)
+    var i: usize = 0
+    for i < count {
+        if bytes[i] == 0 {
+            out.Push(name.Str())
+            name = new Buf(0)
+        } else {
+            name.WriteByte(bytes[i])
+        }
+        i += 1
+    }
+    return Result.Ok(out)
+}

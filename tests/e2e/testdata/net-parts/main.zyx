@@ -1,0 +1,207 @@
+package main
+
+// The writing side of a stream connection, over the loopback address only.
+// The program writes in parts, writes everything at once, tries to read and
+// write without waiting, sends part of a file, and ends the stream with a half
+// close. The port is chosen by the program and never printed, so every line
+// below is the same wherever the program runs.
+
+import "std/fmt"
+import "std/fs"
+import "std/net"
+import "std/time"
+
+// colon is the byte that separates a host from its port.
+func colon() -> u8 {
+    return 58
+}
+
+// host_of answers the host an address text names, which is what is left of it
+// before the port.
+func host_of(text: str) -> str {
+    var out = new Buf(0)
+    var i: usize = 0
+    for i < text.Len() {
+        if text[i] == colon() {
+            break
+        }
+        out.WriteByte(text[i])
+        i += 1
+    }
+    return out.Str()
+}
+
+// bytes_of turns a text into the bytes a write takes.
+func bytes_of(s: str) -> [u8] {
+    var out = new Array<u8>(s.Len())
+    var i: usize = 0
+    for i < s.Len() {
+        out.Push(s[i])
+        i += 1
+    }
+    return out[0 .. out.Len()]
+}
+
+// say prints a label and the answer it introduces.
+func say(label: str, answer: bool) {
+    fmt.Print(label)
+    fmt.PrintBool(answer)
+    fmt.PrintNl()
+}
+
+// said prints a label and the text that follows it.
+func said(label: str, text: str) {
+    fmt.Print(label)
+    fmt.Print(text)
+    fmt.PrintNl()
+}
+
+// bound is a listener with the address it took.
+struct bound {
+    listener: net.Listener
+    addr: str
+}
+
+// listen_first listens on a loopback port that is free, because which port the
+// program gets is not part of what it prints.
+func listen_first() -> Result<bound, net.Error> {
+    var port = 20000 + i32(time.UnixMilli() % 20000)
+    var tries: i32 = 0
+    for tries < 64 {
+        var addr = f"127.0.0.1:{i64(port)}"
+        match net.Listen("tcp", addr) {
+            Ok(listener) => { return Result.Ok(bound { listener: listener, addr: addr }) }
+            Err(_) => { port += 1 }
+        }
+        tries += 1
+    }
+    var addr = f"127.0.0.1:{i64(port)}"
+    var listener = try net.Listen("tcp", addr)
+    return Result.Ok(bound { listener: listener, addr: addr })
+}
+
+// read_at_least reads until the buffer holds want bytes. What was written in
+// parts may arrive in more than one read, so the count is what a test waits
+// for rather than the first answer.
+func read_at_least(conn: net.Conn, b: Buf, want: usize) -> Result<usize, net.Error> {
+    var total: usize = 0
+    for total < want {
+        var n = try conn.Read(b, want - total)
+        if n == 0 {
+            break
+        }
+        total += n
+    }
+    return Result.Ok(total)
+}
+
+// payload is what the temporary file holds. The part that is sent begins at
+// offset four and is five bytes long.
+func payload() -> str {
+    return "net-parts-payload"
+}
+
+// file_failure reads a failure of the file package as a failure of this one.
+func file_failure(e: fs.Error) -> net.Error {
+    return net.Error { Kind: net.ErrorKind.Other, Errno: e.Errno, Msg: e.Msg }
+}
+
+// send_payload writes the payload into the file and sends one part of it over
+// the connection, reading from the offset the send names rather than from
+// wherever the file happens to stand. The file is left open, so the caller
+// reads where its position ended up.
+func send_payload(conn: net.Conn, file: fs.File) -> Result<usize, net.Error> {
+    match file.Write(bytes_of(payload())) {
+        Ok(_) => { }
+        Err(e) => { return Result.Err(file_failure(e)) }
+    }
+    return conn.SendFile(file, 4, 5)
+}
+
+func main() {
+    match run() {
+        Ok(_) => { }
+        Err(e) => {
+            var message = f"net parts test: {e.Msg}"
+            panic(message)
+        }
+    }
+}
+
+func run() -> Result<(), net.Error> {
+    var first = try listen_first()
+    var listener = first.listener
+    var addr = first.addr
+    var client = try net.Dial("tcp", addr)
+    var server = try listener.Accept()
+    fmt.Println("connected: ok")
+    say("near end is loopback: ", host_of(server.LocalAddr()) == "127.0.0.1")
+
+    // Writev writes every part in order.
+    var parts = new Array<[u8]>(0)
+    parts.Push(bytes_of("ab"))
+    parts.Push(bytes_of("cd"))
+    var vector = try client.Writev(parts)
+    fmt.Print("wrote in parts: ")
+    fmt.PrintI64(i64(vector))
+    fmt.PrintNl()
+    var got = new Buf(0)
+    try read_at_least(server, got, 4)
+    said("read in parts: ", got.Str())
+
+    // WriteAll writes every byte before it answers.
+    try client.WriteAll(bytes_of("efgh"))
+    got.Reset()
+    try read_at_least(server, got, 4)
+    said("read all: ", got.Str())
+
+    // Nothing has arrived for the server, so reading without waiting answers a
+    // would-block failure instead of parking.
+    var empty = new Buf(0)
+    match server.TryRead(empty, 64) {
+        Ok(_) => { fmt.Println("try read with nothing there: no") }
+        Err(e) => { say("try read with nothing there: ", i32(e.Kind) == i32(net.ErrorKind.WouldBlock)) }
+    }
+
+    // A send buffer with room takes the bytes at once.
+    match client.TryWrite(bytes_of("i")) {
+        Ok(n) => { say("try write took the bytes: ", n == 1) }
+        Err(_) => { fmt.Println("try write with room: no") }
+    }
+    got.Reset()
+    try read_at_least(server, got, 1)
+    said("read one: ", got.Str())
+
+    // Part of a file is sent over the connection from an offset, and the
+    // position the file stood at is put back where it was.
+    match fs.TempFile(fs.TempDir(), "zyx-net-parts-") {
+        Ok(file) => {
+            var sent = try send_payload(client, file)
+            fmt.Print("sent from the file: ")
+            fmt.PrintI64(i64(sent))
+            fmt.PrintNl()
+            match file.Seek(0, 1) {
+                Ok(at) => { say("the file position was put back: ", at == i64(payload().Len())) }
+                Err(_) => { fmt.Println("the file position was put back: no") }
+            }
+            file.Close()
+        }
+        Err(_) => { panic("a temporary file could not be made") }
+    }
+    got.Reset()
+    try read_at_least(server, got, 5)
+    said("read from the file: ", got.Str())
+
+    // The client has nothing more to say, so the server reads the end of the
+    // stream while the connection is still open.
+    try client.Shutdown(1)
+    var end = new Buf(0)
+    var left = try server.Read(end, 64)
+    say("the half close ended the stream: ", left == 0)
+
+    server.Close()
+    client.Close()
+    listener.Close()
+    fmt.Println("done")
+    return Result.Ok()
+}
