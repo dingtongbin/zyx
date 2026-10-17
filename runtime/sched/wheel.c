@@ -24,6 +24,10 @@ static uint64_t nonempty[ZYXXRT_WHEEL_LEVELS];
    covers [base[L] + i * span(L), base[L] + (i + 1) * span(L)). */
 static uint64_t base[ZYXXRT_WHEEL_LEVELS];
 
+/* timers counts the deadlines the wheel holds, so a thread that has none can
+   tell without taking the lock and without reading the machine clock. */
+static _Atomic size_t timers;
+
 /* The wheel belongs to the whole runtime rather than to one scheduler thread:
    a coroutine may park or be woken on any of them, so every entry point takes
    this lock. */
@@ -116,6 +120,7 @@ void zyxrt_wheel_add(zyxrt_timer *t, uint64_t deadline) {
   t->prev = NULL;
   t->level = -1;
   place(t);
+  atomic_fetch_add_explicit(&timers, 1, memory_order_relaxed);
   zyxrt_lock_drop(&wheel_lock);
   /* A scheduler thread that found nothing to run waits on the wakeup handle
      with the distance to the next deadline, or forever when the wheel was
@@ -126,9 +131,13 @@ void zyxrt_wheel_add(zyxrt_timer *t, uint64_t deadline) {
 
 void zyxrt_wheel_remove(zyxrt_timer *t) {
   zyxrt_lock_hold(&wheel_lock);
+  if (t->level >= 0) atomic_fetch_sub_explicit(&timers, 1, memory_order_relaxed);
   unlink(t);
   zyxrt_lock_drop(&wheel_lock);
 }
+
+/* zyxrt_wheel_pending answers how many deadlines the wheel holds. */
+size_t zyxrt_wheel_pending(void) { return atomic_load_explicit(&timers, memory_order_relaxed); }
 
 /* advance moves the clock forward. Every bucket the clock has passed is
    emptied: a timer that is due is readied, and one whose deadline the bucket
@@ -156,6 +165,7 @@ void zyxrt_wheel_advance(uint64_t now) {
         t->prev = NULL;
         t->level = -1;
         if (t->deadline <= now) {
+          atomic_fetch_sub_explicit(&timers, 1, memory_order_relaxed);
           zyxrt_sched_ready(t->coro);
         } else {
           place(t);

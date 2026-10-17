@@ -80,6 +80,7 @@ static void record(int fd, int events) { ready_fd(fd, events); }
    the thread that owns them. */
 static void poller(void *arg) {
   (void)arg;
+  zyxrt_sched_thread_none();
   int fds[ZYXRT_LOOP_BATCH];
   int events[ZYXRT_LOOP_BATCH];
   for (;;) {

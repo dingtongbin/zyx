@@ -5,8 +5,9 @@ import "std/fmt"
 // The smallest program that hands a coroutine back and forth: one coroutine
 // writes twice, each write being a blocking call that leaves the scheduler and
 // comes back to the thread that owns it, and the program is over as soon as
-// both have finished. The output must be the same whatever the scheduler does,
-// and the program must finish.
+// both have finished. It is also what a benchmark measures when it asks what a
+// process costs before it does anything: the answer is what every other
+// benchmark reports on top of its own work.
 
 func writer() {
     fmt.Print("w")

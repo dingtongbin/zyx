@@ -45,16 +45,27 @@ typedef struct zyxrt_thread {
    saved context carries the thread-local base of the thread it was saved on:
    on a target where the compiler keeps that base in a register the switch
    preserves, a coroutine resumed on another thread would read and write the
-   storage of the thread it left. */
+   storage of the thread it left.
+ *
+ * Windows keeps an application slot in the thread environment block, which is
+ * one instruction to read and needs no call: the loop back edge and every
+ * switch read this, so a call here would be paid for by every iteration of
+ * every loop. A coroutine resumed on another thread reads that thread's slot,
+ * which is what makes the answer correct as well as cheap. */
 #if defined(_WIN32)
-static DWORD self_thread_key = TLS_OUT_OF_INDEXES;
-static zyxrt_thread *self_thread(void) { return (zyxrt_thread *)TlsGetValue(self_thread_key); }
-static void self_thread_set(zyxrt_thread *t) { TlsSetValue(self_thread_key, (void *)t); }
+static zyxrt_thread *self_thread(void) {
+  return (zyxrt_thread *)((NT_TIB *)NtCurrentTeb())->ArbitraryUserPointer;
+}
+static void self_thread_set(zyxrt_thread *t) {
+  ((NT_TIB *)NtCurrentTeb())->ArbitraryUserPointer = (void *)t;
+}
 #else
 static _Thread_local zyxrt_thread *self_thread_holder;
 static zyxrt_thread *self_thread(void) { return self_thread_holder; }
 static void self_thread_set(zyxrt_thread *t) { self_thread_holder = t; }
 #endif
+
+void zyxrt_sched_thread_none(void) { self_thread_set(NULL); }
 
 static zyxrt_thread *threads;
 /* thread_count is how many threads may run coroutines at once, and thread_cap
@@ -316,7 +327,7 @@ void zyxrt_sched_suspend(zyxrt_coro *c) {
   zyxrt_ctx_switch(c->ctx, t->ctx);
   /* Control comes back here when the coroutine is resumed, on whichever
      thread took it, so its stack is the one in use again. */
-  zyxrt_ctx_bounds_coro(c->stack, c->stack_size);
+  zyxrt_ctx_bounds_coro(c);
 }
 
 /* sched_finish publishes a coroutine that has finished. It runs on the thread
@@ -344,7 +355,7 @@ static int run_once(zyxrt_thread *t) {
   zyxrt_preempt_enter(c);
   /* The stack a thread runs on is recorded by the platform, so it follows the
      stack that is in use. */
-  zyxrt_ctx_bounds_coro(c->stack, c->stack_size);
+  zyxrt_ctx_bounds_coro(c);
   zyxrt_ctx_switch(t->ctx, c->ctx);
   zyxrt_ctx_bounds_thread();
   zyxrt_preempt_leave();
@@ -426,8 +437,11 @@ void zyxrt_sched_sleep(uint64_t ns) {
 
 /* zyxrt_sched_advance fires every deadline that has come due, so the run that
    follows sees everything that is ready now. Readiness on a descriptor needs no
-   such step: the poller readies the coroutine where it finds it. */
+   such step: the poller readies the coroutine where it finds it. The machine
+   clock is read only when a deadline exists to compare it with, which is what
+   keeps a program that uses no timer from reading it on every turn. */
 void zyxrt_sched_advance(void) {
+  if (zyxrt_wheel_pending() == 0) return;
   zyxrt_wheel_advance(zyxrt_now());
 }
 
@@ -514,7 +528,7 @@ static void free_coro(zyxrt_coro *c) {
      again. */
   zyxrt_region_detach(c->owner_region, c);
   if (c->ctx) zyxrt_ctx_free(c->ctx);
-  if (c->stack) zyxrt_stack_unmap(c->stack, c->stack_size);
+  if (c->stack) zyxrt_stack_unmap(c->stack, c->stack_size, c->stack_limit);
   free(c->regions);
   free(c);
 }
@@ -532,9 +546,8 @@ void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, voi
   c->watch = watch;
   c->watch_recv = watch_recv;
   c->stack_size = zyxrt_stack_size();
-  c->stack = zyxrt_stack_map(c->stack_size);
+  c->stack = zyxrt_stack_map(c->stack_size, &c->stack_limit);
   if (!c->stack) zyxrt_panic("out of memory", 13);
-  zyxrt_stack_warm(c->stack, c->stack_size);
   c->ctx = zyxrt_ctx_new(c->stack, c->stack_size);
   /* The region the spawner is running in waits for this coroutine before it
      releases its memory, so the coroutine never reads freed storage. */
@@ -722,15 +735,6 @@ void zyxrt_sched_init(void) {
   atomic_store_explicit(&externals, 0, memory_order_relaxed);
   atomic_store_explicit(&syscall_lanes, 0, memory_order_relaxed);
   zyxrt_note_init(&sched_note);
-#if defined(_WIN32)
-  /* The key the calling threads record themselves under. */
-  if (self_thread_key == TLS_OUT_OF_INDEXES) {
-    self_thread_key = TlsAlloc();
-    if (self_thread_key == TLS_OUT_OF_INDEXES) {
-      zyxrt_panic("cannot reserve thread storage", 30);
-    }
-  }
-#endif
   incoming_head = NULL;
   incoming_tail = NULL;
   /* A target without threads runs one, whatever ZYX_THREADS says. */

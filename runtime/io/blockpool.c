@@ -67,6 +67,7 @@ static size_t block_pool_size(void) {
    it needs another thread. */
 static void worker(void *arg) {
   (void)arg;
+  zyxrt_sched_thread_none();
   for (;;) {
     zyxrt_lock_hold(&queue_lock);
     idle++;

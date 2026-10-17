@@ -25,6 +25,11 @@ typedef struct zyxrt_panic {
 /* The exception class, which spells ZYXPANIC. */
 #define ZYXXRT_PANIC_CLASS 0x5A595850414E4943ULL
 
+/* root_code is the exit code the process reports when the root coroutine
+   panicked, which the start of the process reads once the runtime has been shut
+   down. */
+static int root_code;
+
 static _Unwind_Reason_Code panic_stop(int version, _Unwind_Action actions,
                                       _Unwind_Exception_Class class,
                                       struct _Unwind_Exception *exc,
@@ -70,13 +75,24 @@ static _Unwind_Reason_Code panic_stop(int version, _Unwind_Action actions,
   /* A panic leaves every enclosing region, so every pending call runs. */
   zyxrt_defer_run(NULL);
   zyxrt_coro *self = zyxrt_sched_current();
-  if (self != NULL && !self->root) {
-    self->panic = p;
-    zyxrt_sched_abandon(self);
+  if (self == NULL) {
+    _exit(root_code == 0 ? 101 : root_code);
   }
-  /* The root coroutine's panic ends the process. */
-  exit(101);
+  if (self->root) {
+    /* The root coroutine's panic ends the process, but not here: the threads
+       the runtime started are still running, and the process must not end under
+       them. The coroutine is left to the scheduler, which hands the code back
+       once everything has been stopped. */
+    root_code = 101;
+  } else {
+    self->panic = p;
+  }
+  zyxrt_sched_abandon(self);
 }
+
+/* zyxrt_panic_code answers the exit code the process reports, which is what the
+   start of the process returns once the runtime has been shut down. */
+int zyxrt_panic_code(void) { return root_code; }
 
 const char *zyxrt_panic_message(const void *panic, size_t *len) {
   const zyxrt_exception *p = (const zyxrt_exception *)panic;

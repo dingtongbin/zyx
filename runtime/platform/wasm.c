@@ -5,6 +5,6 @@
 #include "zyxrt_internal.h"
 
 void zyxrt_ctx_bounds_thread(void) {}
-void zyxrt_ctx_bounds_coro(void *stack, size_t size) { (void)stack; (void)size; }
+void zyxrt_ctx_bounds_coro(zyxrt_coro *c) { (void)c; }
 
 void zyxrt_platform_init(void) {}

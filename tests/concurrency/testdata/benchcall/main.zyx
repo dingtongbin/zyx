@@ -3,9 +3,10 @@ package main
 import "std/fmt"
 import c "stdlib.h"
 
-// One hundred thousand C calls that return at once. A call that may block is
-// made where it stands, so this is the cost of the bracket around it and
-// nothing else: it is what "zero overhead" has to be measured against.
+// Two million C calls that return at once. A call that may block is made where
+// it stands, so what the loop adds to the loop benchmark is the cost of the
+// bracket around the call and nothing else: it is what "zero overhead" has to
+// be measured against.
 
 func sum(n: i64) -> i64 {
     var total: i64 = 0
@@ -16,6 +17,6 @@ func sum(n: i64) -> i64 {
 }
 
 func main() {
-    fmt.PrintI64(sum(100000))
+    fmt.PrintI64(sum(2000000))
     fmt.PrintNl()
 }

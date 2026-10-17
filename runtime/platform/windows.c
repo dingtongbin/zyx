@@ -1,6 +1,14 @@
 /* Platform context layer: Windows uses the hand-written x86-64 stack switch,
    and the fiber API elsewhere. */
 
+/* Winsock comes before the platform headers, because they include the older
+   socket interface otherwise. */
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
+
+#include <winsock2.h>
+
 #include "zyxrt_internal.h"
 
 #include <fcntl.h>
@@ -41,12 +49,12 @@ void zyxrt_ctx_bounds_thread(void) {
   tib->StackLimit = stack_bounds_limit;
 }
 
-void zyxrt_ctx_bounds_coro(void *stack, size_t size) {
+void zyxrt_ctx_bounds_coro(zyxrt_coro *c) {
   NT_TIB *tib;
   stack_bounds();
   tib = (NT_TIB *)NtCurrentTeb();
-  tib->StackBase = (char *)stack + size;
-  tib->StackLimit = (char *)stack;
+  tib->StackBase = (char *)c->stack + c->stack_size;
+  tib->StackLimit = (char *)c->stack_limit;
 }
 
 #else
@@ -69,15 +77,22 @@ void zyxrt_ctx_free(void *ctx) { DeleteFiber(ctx); }
 
 /* A fiber carries its own stack bounds, so there is nothing to update. */
 void zyxrt_ctx_bounds_thread(void) {}
-void zyxrt_ctx_bounds_coro(void *stack, size_t size) { (void)stack; (void)size; }
+void zyxrt_ctx_bounds_coro(zyxrt_coro *c) { (void)c; }
 
 #endif
 
 /* The runtime writes UTF-8 bytes, so a line feed must stay one byte rather
-   than becoming the two bytes of a text-mode line ending. */
+   than becoming the two bytes of a text-mode line ending. The socket library is
+   brought up here rather than with the event loop, because it is a property of
+   the process: a program whose own C calls open sockets needs it whether or not
+   a coroutine ever waits on a descriptor. */
 void zyxrt_platform_init(void) {
+  WSADATA data;
   _setmode(_fileno(stdout), _O_BINARY);
   _setmode(_fileno(stderr), _O_BINARY);
+  if (0 && WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+    zyxrt_panic("cannot start the socket library", 30);
+  }
 }
 
 /* A Windows C runtime expects this symbol as soon as a translation unit

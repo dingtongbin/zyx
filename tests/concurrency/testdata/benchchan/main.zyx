@@ -2,9 +2,8 @@ package main
 
 import "std/fmt"
 
-// Two hundred thousand requests, one at a time, each one parking a coroutine
-// and waking the other. This is the cost of the wake itself, with nothing else
-// mixed in.
+// A million requests, one at a time, each one parking a coroutine and waking
+// the other. This is the cost of the wake itself, with nothing else mixed in.
 
 func responder(requests: chan<i64>, replies: chan<i64>) {
     for {
@@ -22,7 +21,7 @@ func main() {
     var total: i64 = 0
     region {
         spawn responder(requests, replies)
-        for i in 0..200000 {
+        for i in 0..1000000 {
             requests.Send(i)
             var v, ok = replies.Recv()
             if ok {

@@ -192,13 +192,18 @@ func (g *generator) entryPoint() {
 	}
 	fmt.Fprintf(&g.m.funcs, "  ret void\n}\n")
 	fmt.Fprintf(&g.m.funcs, "define i32 @main() {\n")
-	fmt.Fprintf(&g.m.funcs, "  call i32 @zyxrt_run_main(ptr @zyx.main.thunk, ptr null)\n")
+	// The runtime answers with the code the process reports when the root
+	// coroutine panicked, and with nothing otherwise; that code wins over what
+	// the language main returned, because a panic is not a value.
+	fmt.Fprintf(&g.m.funcs, "  %%zyx.runtime = call i32 @zyxrt_run_main(ptr @zyx.main.thunk, ptr null)\n")
 	if result == nil {
-		fmt.Fprintf(&g.m.funcs, "  ret i32 0\n}\n")
+		fmt.Fprintf(&g.m.funcs, "  ret i32 %%zyx.runtime\n}\n")
 		return
 	}
 	fmt.Fprintf(&g.m.funcs, "  %%zyx.status = load i32, ptr @zyx.exit\n")
-	fmt.Fprintf(&g.m.funcs, "  ret i32 %%zyx.status\n}\n")
+	fmt.Fprintf(&g.m.funcs, "  %%zyx.panicked = icmp ne i32 %%zyx.runtime, 0\n")
+	fmt.Fprintf(&g.m.funcs, "  %%zyx.code = select i1 %%zyx.panicked, i32 %%zyx.runtime, i32 %%zyx.status\n")
+	fmt.Fprintf(&g.m.funcs, "  ret i32 %%zyx.code\n}\n")
 }
 
 // funcResult returns the declared result type of a function.
@@ -583,10 +588,13 @@ func (g *generator) function(module string, n *zyxc.Node) {
 	}
 	out.WriteString(strings.Join(parts, ", "))
 	// uwtable keeps the frame's unwind information, which a panic needs to
-	// walk past it.
+	// walk past it. The check reads the frame it just built, so it is asked
+	// for before the frame is written out.
+	check := g.stackCheck()
 	out.WriteString(") uwtable {\n")
 	out.WriteString(g.fn.entry + ":\n")
 	out.WriteString(g.fn.allocas.String())
+	out.WriteString(check)
 	out.WriteString(g.fn.body.String())
 	out.WriteString("}\n")
 	g.m.funcs.WriteString(out.String())

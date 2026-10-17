@@ -93,6 +93,9 @@ void zyxrt_wheel_add(zyxrt_timer *t, uint64_t deadline);
 void zyxrt_wheel_remove(zyxrt_timer *t);
 void zyxrt_wheel_advance(uint64_t now);
 int64_t zyxrt_wheel_next(uint64_t now);
+/* zyxrt_wheel_pending answers how many deadlines the wheel holds, so the
+   scheduler can skip reading the clock when there are none. */
+size_t zyxrt_wheel_pending(void);
 
 /* A coroutine. It runs on its own stack; the stack switch itself comes from
    the platform layer, which uses fibers on Windows and the ucontext
@@ -133,6 +136,11 @@ typedef struct zyxrt_coro {
   _Atomic int preempt;
   void *stack;
   size_t stack_size;
+  /* stack_limit is the low end of what is committed of the stack, which the
+     thread record of whichever thread runs the coroutine points its stack probe
+     at, and which the prologue check of every function compares a frame with.
+     It is per coroutine rather than per thread because the stack is. */
+  void *stack_limit;
   /* wait_next links a coroutine into a ready queue. */
   struct zyxrt_coro *wait_next;
   /* waiters holds the waiters blocked on this one. They are woken when it
@@ -145,8 +153,11 @@ typedef struct zyxrt_coro {
   size_t region_cap;
   /* region_next links a coroutine into the child list of the region it was
      started in, so that region can wait for it. owner_region is that
-     region, which the coroutine leaves when it is released. */
+     region, which the coroutine leaves when it is released. The list is
+     doubly linked, because a region holds one entry per coroutine it started
+     and releases them one at a time. */
   struct zyxrt_coro *region_next;
+  struct zyxrt_coro *region_prev;
   void *owner_region;
   /* owner is the scheduler thread the coroutine runs on, or
      ZYXXRT_CORO_NO_OWNER until one takes it. A coroutine is resumed only on
@@ -173,15 +184,25 @@ void zyxrt_ctx_free(void *ctx);
    thread's own stack and zyxrt_ctx_bounds_coro names a coroutine's; a
    platform that keeps no such record defines both as nothing. */
 void zyxrt_ctx_bounds_thread(void);
-void zyxrt_ctx_bounds_coro(void *stack, size_t size);
+void zyxrt_ctx_bounds_coro(zyxrt_coro *c);
 
-/* The stack of a coroutine is reserved in full and committed page by page
-   as it is touched, so a coroutine that uses little memory costs little
-   memory and one that uses much still has room. An inaccessible page below
-   the stack turns running off its end into a fault rather than into damage
-   to whatever follows. */
-void *zyxrt_stack_map(size_t size);
-void zyxrt_stack_unmap(void *stack, size_t size);
+/* The stack of a coroutine is reserved in full and committed page by page as it
+   is touched, so a coroutine that uses little memory costs little memory and
+   one that uses much still has room. A target whose kernel grows a stack by
+   itself commits what a coroutine needs as it descends; a target whose kernel
+   does not is told by the check the compiler puts in every function prologue,
+   which calls zyxrt_stack_grow with the low end of the frame about to be used.
+   Either way the reservation is the promise the language makes, so a frame that
+   would pass its low end is a panic rather than a fault. */
+void *zyxrt_stack_map(size_t size, void **limit);
+void zyxrt_stack_unmap(void *stack, size_t size, void *limit);
+/* zyxrt_stack_grow commits more of the running coroutine's stack, because a
+   frame whose low end is the given address is about to be used. It answers
+   nothing: it either commits what the frame needs or panics with "stack
+   overflow". */
+void zyxrt_stack_grow(void *low);
+/* zyxrt_system_page answers the page size of the running system. */
+size_t zyxrt_system_page(void);
 
 /* zyxrt_platform_init prepares the process for the runtime: the platform
    layer puts standard output in the mode the runtime writes in. */
@@ -197,6 +218,10 @@ void zyxrt_sched_ready(zyxrt_coro *c);
 /* zyxrt_sched_thread_index answers which scheduler thread the caller runs on,
    or the number of them when the caller is not one. */
 size_t zyxrt_sched_thread_index(void);
+/* zyxrt_sched_thread_none records that the calling thread is not a scheduler
+   thread, which a thread the runtime starts for something else says of itself
+   before it runs. */
+void zyxrt_sched_thread_none(void);
 
 /* zyxrt_sched_suspend suspends the running coroutine. */
 void zyxrt_sched_suspend(zyxrt_coro *c);
@@ -234,6 +259,10 @@ void zyxrt_sched_wake(void);
 void zyxrt_block_stop(void);
 void zyxrt_loop_stop(void);
 void zyxrt_preempt_stop(void);
+
+/* zyxrt_panic_code answers the exit code the process reports: 101 when the root
+   coroutine panicked, and nothing otherwise. */
+int zyxrt_panic_code(void);
 
 /* A C call that may block is made on the calling thread, which is what keeps it
    cheap: the arguments are passed as they are and no coroutine moves. The
@@ -327,10 +356,8 @@ void zyxrt_preempt_check(void);
 /* The stack a coroutine's reservation holds when ZYX_STACK says nothing. */
 #define ZYXXRT_STACK_DEFAULT (1024u * 1024u)
 
-/* zyxrt_stack_warm commits the pages a new coroutine is expected to use. */
-void zyxrt_stack_warm(void *stack, size_t size);
-
-/* zyxrt_stack_size returns the size a coroutine's stack is reserved with. */
+/* zyxrt_stack_size returns the size a coroutine's stack is reserved with.
+   ZYX_STACK names it in bytes. */
 size_t zyxrt_stack_size(void);
 
 #endif /* ZYXRUNTIME_INTERNAL_H */

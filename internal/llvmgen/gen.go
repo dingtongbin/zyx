@@ -7,6 +7,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"zyx/internal/layout"
 	"zyx/internal/toolchain"
 	"zyx/internal/types"
 	"zyx/internal/zyxc"
@@ -83,6 +84,10 @@ type funcState struct {
 	// function, because a release must land in the function that made the
 	// object.
 	pending []pendingRelease
+	// frameBytes is how much stack the function's locals take, which is what
+	// the prologue check asks the runtime to commit when the frame reaches
+	// below what is committed.
+	frameBytes uint64
 }
 
 // A varSlot is one local variable.
@@ -149,6 +154,7 @@ func (g *generator) label(name string) {
 func (g *generator) alloca(t *types.Type) string {
 	reg := g.newReg()
 	fmt.Fprintf(&g.fn.allocas, "  %s = alloca %s\n", reg, g.llPass(t))
+	g.countFrame(t)
 	return reg
 }
 
@@ -159,7 +165,80 @@ func (g *generator) alloca(t *types.Type) string {
 func (g *generator) allocaSlots(ll string, n int) string {
 	reg := g.newReg()
 	fmt.Fprintf(&g.fn.allocas, "  %s = alloca [%d x %s]\n", reg, n, ll)
+	g.fn.frameBytes += uint64(n) * llSlotBytes(ll)
 	return reg
+}
+
+// countFrame adds the room a local of the type takes to the function's frame.
+// The language size is used for every type, which over-counts a value that is
+// stored as a reference: the check may commit more than the frame needs, which
+// costs memory a coroutine that descends is using anyway.
+func (g *generator) countFrame(t *types.Type) {
+	size, err := layout.Size(t, g.tab, g.target.Layout())
+	if err != nil {
+		g.fn.frameBytes += 8
+		return
+	}
+	g.fn.frameBytes += size
+}
+
+// llSlotBytes answers how many bytes one slot of an LLVM type takes, which is
+// what the frame of an array of them holds.
+func llSlotBytes(ll string) uint64 {
+	switch ll {
+	case "i8", "i1":
+		return 1
+	case "i16":
+		return 2
+	case "i32":
+		return 4
+	case "i64", "ptr", "double":
+		return 8
+	case "float":
+		return 4
+	}
+	return 8
+}
+
+// stackCheck emits the prologue check a coroutine's stack needs on a target
+// whose kernel does not grow one by itself. The low end of the frame the
+// function is about to use is compared with the low end of the committed stack,
+// which the runtime keeps in the thread record, and the runtime commits more of
+// the reservation when the frame would fall past it; a frame that would pass
+// the reservation is a panic. On a target that commits a page as it is touched
+// there is nothing to check, and the compiler emits no code at all.
+func (g *generator) stackCheck() string {
+	if g.target.OS != "windows" || g.target.Arch != "amd64" {
+		return ""
+	}
+	probe := g.newReg()
+	fmt.Fprintf(&g.fn.allocas, "  %s = alloca i8\n", probe)
+	addr := g.newReg()
+	/* The frame the check stands for is what the language allocates plus the
+	   room a frame needs beyond it: registers the compiler spills, the outgoing
+	   argument area, and the alignment it keeps. What matters is that it is not
+	   smaller than the frame, because the frame's low end is what is compared
+	   and committed for. */
+	frame := g.fn.frameBytes + 4096
+	lowest := g.newReg()
+	lowestPtr := g.newReg()
+	limit := g.newReg()
+	low := g.newReg()
+	grow := g.newLabel("stack")
+	body := g.newLabel("body")
+	var b strings.Builder
+	fmt.Fprintf(&b, "  %s = ptrtoint ptr %s to i64\n", addr, probe)
+	fmt.Fprintf(&b, "  %s = sub i64 %s, %d\n", lowest, addr, frame)
+	fmt.Fprintf(&b, "  %s = inttoptr i64 %s to ptr\n", lowestPtr, lowest)
+	fmt.Fprintf(&b, "  %s = call i64 asm sideeffect \"movq %%gs:16, $0\", \"=r,~{dirflag},~{fpsr},~{flags}\"()\n", limit)
+	fmt.Fprintf(&b, "  %s = icmp ult i64 %s, %s\n", low, lowest, limit)
+	fmt.Fprintf(&b, "  br i1 %s, label %%%s, label %%%s\n", low, grow, body)
+	fmt.Fprintf(&b, "%s:\n", grow)
+	g.declareRuntime("zyxrt_stack_grow", "void", "ptr")
+	fmt.Fprintf(&b, "  call void @zyxrt_stack_grow(ptr %s)\n", lowestPtr)
+	fmt.Fprintf(&b, "  br label %%%s\n", body)
+	fmt.Fprintf(&b, "%s:\n", body)
+	return b.String()
 }
 
 // run emits the package this module holds, and declares what the others hold.

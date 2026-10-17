@@ -2,28 +2,25 @@ package main
 
 import "std/fmt"
 
-// Five hundred coroutines, each one handing a value over a channel and ending.
-// This measures the cost of starting a coroutine, of the handoff that reports
-// it finished, and of the wake that follows, all of them together.
-//
-// The count is what it is because a coroutine's stack is committed in full when
-// the coroutine is made: a megabyte each, so a program cannot hold many of them
-// until the stack is committed page by page as it is touched, which needs a
-// check the compiler puts in every function that the runtime has not got yet.
+// Twenty thousand coroutines, each one handing a value over a channel and
+// ending. This measures the cost of starting a coroutine, of the handoff that
+// reports it finished, and of the wake that follows, all of them together, at a
+// count where the program's own work is far larger than what a process costs
+// before it starts and after it ends.
 
 func worker(out: chan<i64>, id: i64) {
     out.Send(id)
 }
 
 func main() {
-    var out = new chan<i64>(500)
+    var out = new chan<i64>(20000)
     region {
-        for i in 0..500 {
+        for i in 0..20000 {
             spawn worker(out, i)
         }
     }
     var total: i64 = 0
-    for i in 0..500 {
+    for i in 0..20000 {
         var v, ok = out.Recv()
         if ok {
             total = total + v

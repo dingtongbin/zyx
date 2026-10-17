@@ -823,6 +823,7 @@ func (g *generator) slotOf(module string, e *zyxc.Node, elem *types.Type) (strin
 func (g *generator) objectAlloca(typ *types.Type) string {
 	reg := g.newReg()
 	fmt.Fprintf(&g.fn.allocas, "  %s = alloca %s\n", reg, g.llType(typ))
+	g.countFrame(typ)
 	return reg
 }
 

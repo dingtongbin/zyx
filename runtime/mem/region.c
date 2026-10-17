@@ -221,7 +221,9 @@ void zyxrt_region_leave(void) {
 }
 
 /* zyxrt_region_adopt records that a coroutine was started in a region, so
-   the region waits for it before it releases its memory. */
+   the region waits for it before it releases its memory. The list is doubly
+   linked, because a coroutine leaves it by being released rather than by being
+   taken, and a region holds one entry per coroutine it started. */
 void zyxrt_region_adopt(void *region, void *coro) {
   zyxrt_region *r = (zyxrt_region *)region;
   zyxrt_coro *c = (zyxrt_coro *)coro;
@@ -229,7 +231,11 @@ void zyxrt_region_adopt(void *region, void *coro) {
     return;
   }
   zyxrt_lock_hold(&r->lock);
+  c->region_prev = NULL;
   c->region_next = r->children;
+  if (r->children != NULL) {
+    r->children->region_prev = c;
+  }
   c->owner_region = r;
   r->children = c;
   zyxrt_lock_drop(&r->lock);
@@ -245,16 +251,17 @@ void zyxrt_region_detach(void *region, void *coro) {
     return;
   }
   zyxrt_lock_hold(&r->lock);
-  zyxrt_coro **link = &r->children;
-  while (*link != NULL) {
-    if (*link == c) {
-      *link = c->region_next;
-      c->region_next = NULL;
-      c->owner_region = NULL;
-      break;
-    }
-    link = &(*link)->region_next;
+  if (c->region_prev != NULL) {
+    c->region_prev->region_next = c->region_next;
+  } else if (r->children == c) {
+    r->children = c->region_next;
   }
+  if (c->region_next != NULL) {
+    c->region_next->region_prev = c->region_prev;
+  }
+  c->region_prev = NULL;
+  c->region_next = NULL;
+  c->owner_region = NULL;
   zyxrt_lock_drop(&r->lock);
 }
 
@@ -269,7 +276,12 @@ void *zyxrt_region_take_child(void *region) {
   zyxrt_coro *c = r->children;
   if (c != NULL) {
     r->children = c->region_next;
+    if (r->children != NULL) {
+      r->children->region_prev = NULL;
+    }
+    c->region_prev = NULL;
     c->region_next = NULL;
+    c->owner_region = NULL;
   }
   zyxrt_lock_drop(&r->lock);
   return c;

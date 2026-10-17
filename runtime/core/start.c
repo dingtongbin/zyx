@@ -29,5 +29,5 @@ int zyxrt_run_main(zyxrt_main_fn fn, void *arg) {
   zyxrt_block_stop();
   zyxrt_loop_stop();
   zyxrt_preempt_stop();
-  return 0;
+  return zyxrt_panic_code();
 }

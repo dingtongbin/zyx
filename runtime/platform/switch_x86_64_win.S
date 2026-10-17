@@ -55,6 +55,17 @@ zyxrt_ctx_switch:
 	popq	%rbp
 	ret
 
+/* __chkstk is what the compiler calls before a frame larger than a page is
+   taken, to walk the pages the frame is about to use. A coroutine's stack is
+   not the thread's, so walking pages the runtime has not committed would fault
+   where nothing can report it. The whole frame is committed by the check the
+   compiler puts in the function's own body, which runs before anything writes
+   to that frame, so this has nothing to walk: the call itself descends one
+   word, which the margin the check keeps below every frame pays for. */
+	.globl	__chkstk
+__chkstk:
+	ret
+
 /* zyxrt_ctx_enter is where a coroutine's first frame returns to. A frame
    resumed by the switch lands with the alignment of a caller rather than of
    a function, so the trampoline sets the alignment a function expects and

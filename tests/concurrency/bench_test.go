@@ -13,9 +13,19 @@ import (
 // Each program counts its operations, so the number of nanoseconds a run takes
 // divided by the count is the cost of one operation:
 //
-//	benchspawn    500 coroutines started, handoffs back, and woken
-//	benchchan  200000 handoffs between two coroutines over two channels
-//	benchcall  100000 C calls that return at once
+//	benchspawn    20000 coroutines started, handoffs back, and woken
+//	benchchan     a million handoffs between two coroutines over two channels
+//	benchchanready  two million channel operations that never park
+//	benchloop      two million loop iterations
+//	benchcall     100000 C calls that return at once
+//
+// A run is a whole process, and a process costs about twenty milliseconds
+// before it does anything, most of it the operating system's: BenchmarkProcess
+// measures that floor through the smallest program of the corpus, and every
+// figure above is on top of it. The four that count in the millions decompose
+// each other as well: a handoff is the cost of a handoff benchmark less the one
+// that never parks, and the channel operation that never parks is its own
+// benchmark less the loop.
 //
 // A run also checks the program's answer, so a benchmark that stops measuring
 // the right thing fails instead of reporting a number.
@@ -46,6 +56,16 @@ func benchRun(b *testing.B, name string) func() {
 	}
 }
 
+// BenchmarkProcess measures what a process costs before and after the work its
+// program does, which is the floor every other benchmark here stands on.
+func BenchmarkProcess(b *testing.B) {
+	run := benchRun(b, "tiny")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		run()
+	}
+}
+
 // BenchmarkCoroutineSpawn measures starting a coroutine, the handoff that
 // reports it finished, and the wake that hands it back, together.
 func BenchmarkCoroutineSpawn(b *testing.B) {
@@ -60,6 +80,26 @@ func BenchmarkCoroutineSpawn(b *testing.B) {
 // channels, with nothing else mixed in.
 func BenchmarkChannelWake(b *testing.B) {
 	run := benchRun(b, "benchchan")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		run()
+	}
+}
+
+// BenchmarkChannelReady measures a channel operation that finds its channel
+// ready, so no coroutine parks and the scheduler is not involved.
+func BenchmarkChannelReady(b *testing.B) {
+	run := benchRun(b, "benchchanready")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		run()
+	}
+}
+
+// BenchmarkLoop measures two million iterations of a loop, which is what the
+// benchmarks above do not measure about themselves.
+func BenchmarkLoop(b *testing.B) {
+	run := benchRun(b, "benchloop")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		run()
