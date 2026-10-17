@@ -16,14 +16,31 @@
 #include "wakeup.h"
 
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+
+/* How many finished stacks a thread keeps for the coroutines it starts next,
+   per tier. The stack layer's list is shared by every thread, so a stack that
+   goes back to it puts a shared word on the path a coroutine is started on; a
+   thread that starts and finishes coroutines in a loop keeps its own instead.
+   The bound is what a program that started many coroutines once pays: the
+   stacks it does not keep go back to the shared list. */
+#define ZYXXRT_STACK_KEEP 8
 
 /* A scheduler thread. Every thread owns a queue of coroutines to run and the
    context a suspended coroutine switches back to. */
 typedef struct zyxrt_thread {
-  zyxrt_coro *head;
-  zyxrt_coro *tail;
+  /* head and tail are the queue this thread owns. The head is read without the
+     lock by a thread that is looking for work, because the answer is only a
+     reason to look at the queue properly: a thread that has just handed work
+     over must not be made to wait for a thread that is about to park. */
+  _Atomic(zyxrt_coro *) head;
+  _Atomic(zyxrt_coro *) tail;
   zyxrt_lock lock;
   /* ctx is the thread's own context, which a suspended coroutine switches
      back to. */
@@ -31,6 +48,15 @@ typedef struct zyxrt_thread {
   /* current is the coroutine the thread is running, or NULL. */
   zyxrt_coro *current;
   size_t index;
+  /* runnext is the coroutine this thread runs next. A coroutine a thread makes
+     runnable while it is running is handed over on its next turn rather than
+     through the queue, which is what makes a handoff between two coroutines
+     that run on one thread cost a store rather than a lock; a coroutine that
+     makes itself runnable goes on the queue instead, so that the next turn
+     belongs to another one. It holds at most one, and the one it displaces goes
+     on the queue. Only the thread itself puts a coroutine in it, and only the
+     thread itself takes one out, so reading it needs no lock. */
+  _Atomic(zyxrt_coro *) runnext;
   /* handle is what the thread that started this one waits on before the
      process ends. The program's own thread is the one that waits, so its own
      slot carries none. */
@@ -40,6 +66,17 @@ typedef struct zyxrt_thread {
      its own, so the path a coroutine is started on takes no lock at all. */
   zyxrt_coro *free_objs;
   size_t free_depth;
+  /* stacks holds the stacks this thread has finished and will hand to the
+     coroutines it starts next, one list per tier, and stack_depth is how many
+     each holds. A stack is kept with how far down it is committed, because a
+     stack given back directly is not gone through the stack layer, which is
+     what would compute that. A thread reads and writes only its own, so a stack
+     a coroutine is started on costs no lock when the thread has one. */
+  struct {
+    void *stack;
+    void *limit;
+  } stacks[2][ZYXXRT_STACK_KEEP];
+  size_t stack_depth[2];
 } zyxrt_thread;
 
 /* self is the thread state of the scheduler thread the caller runs on, or
@@ -123,17 +160,28 @@ void zyxrt_sched_external(int delta) {
   atomic_fetch_add_explicit(&externals, delta, memory_order_acq_rel);
 }
 
+/* coros_live counts the coroutines that have been started and have not
+   finished. Every lane asleep with nothing to run is the end of the program
+   when this is zero and a deadlock when it is not: what is left is a coroutine
+   waiting for something no other coroutine will do. The count is raised before
+   a coroutine can be taken from anywhere a thread runs it and lowered as its
+   finish is published, so a thread that reads it after seeing every lane asleep
+   is not reading a coroutine that is on its way. */
+static _Atomic size_t coros_live;
+
 /* queue_push links a coroutine onto a queue. The lock covers the links, and
    the scheduling word says which queue may hold it at all. */
-static void queue_push(zyxrt_coro **head, zyxrt_coro **tail, zyxrt_lock *lock, zyxrt_coro *c) {
+static void queue_push(_Atomic(zyxrt_coro *) *head, _Atomic(zyxrt_coro *) *tail,
+                       zyxrt_lock *lock, zyxrt_coro *c) {
   c->wait_next = NULL;
   zyxrt_lock_hold(lock);
-  if (*tail != NULL) {
-    (*tail)->wait_next = c;
+  zyxrt_coro *last = atomic_load_explicit(tail, memory_order_relaxed);
+  if (last != NULL) {
+    last->wait_next = c;
   } else {
-    *head = c;
+    atomic_store_explicit(head, c, memory_order_relaxed);
   }
-  *tail = c;
+  atomic_store_explicit(tail, c, memory_order_relaxed);
   zyxrt_lock_drop(lock);
 }
 
@@ -143,13 +191,14 @@ static void queue_push(zyxrt_coro **head, zyxrt_coro **tail, zyxrt_lock *lock, z
    queue holds is one a thread may run. A second entry for a coroutine that
    another thread has already taken is dropped rather than run, so two threads
    can never share one stack. */
-static zyxrt_coro *queue_pop(zyxrt_coro **head, zyxrt_coro **tail, zyxrt_lock *lock) {
+static zyxrt_coro *queue_pop(_Atomic(zyxrt_coro *) *head, _Atomic(zyxrt_coro *) *tail,
+                             zyxrt_lock *lock) {
   zyxrt_lock_hold(lock);
-  zyxrt_coro *c = *head;
+  zyxrt_coro *c = atomic_load_explicit(head, memory_order_relaxed);
   if (c != NULL) {
-    *head = c->wait_next;
-    if (*head == NULL) {
-      *tail = NULL;
+    atomic_store_explicit(head, c->wait_next, memory_order_relaxed);
+    if (c->wait_next == NULL) {
+      atomic_store_explicit(tail, NULL, memory_order_relaxed);
     }
     c->wait_next = NULL;
   }
@@ -160,6 +209,19 @@ static zyxrt_coro *queue_pop(zyxrt_coro **head, zyxrt_coro **tail, zyxrt_lock *l
                                               memory_order_acq_rel);
     if ((word & ZYXXRT_CORO_QUEUED) == 0) return NULL;
   }
+  return c;
+}
+
+/* runnext_pop takes the coroutine this thread handed to itself, or NULL. It is
+   claimed the same way one taken off a queue is, so a coroutine is run once
+   even when a waker offers it again while it waits for its turn. */
+static zyxrt_coro *runnext_pop(zyxrt_thread *t) {
+  zyxrt_coro *c = atomic_exchange_explicit(&t->runnext, NULL, memory_order_relaxed);
+  if (c == NULL) return NULL;
+  unsigned word = atomic_fetch_and_explicit(&c->sched,
+                                            ~(ZYXXRT_CORO_QUEUED | ZYXXRT_CORO_PARKED),
+                                            memory_order_acq_rel);
+  if ((word & ZYXXRT_CORO_QUEUED) == 0) return NULL;
   return c;
 }
 
@@ -179,6 +241,7 @@ static void sched_start_lane(size_t limit) {
   zyxrt_thread *t = &threads[live];
   t->head = NULL;
   t->tail = NULL;
+  atomic_store_explicit(&t->runnext, NULL, memory_order_relaxed);
   t->current = NULL;
   t->ctx = NULL;
   t->index = live;
@@ -202,6 +265,18 @@ static void sched_push(zyxrt_coro *c) {
     target = owner == ZYXXRT_CORO_NO_OWNER ? self : &threads[owner];
   }
   if (target != NULL) {
+    if (target == self && c != self->current) {
+      /* A coroutine this thread makes runnable runs on this thread next, so it
+         is handed over rather than put on the queue: the queue would hold a
+         coroutine the thread would take on the same turn, and the handoff costs
+         a lock to put it there. A coroutine that makes itself runnable is not
+         handed over, because the next turn has to belong to another one. What
+         the one-slot path displaces goes on the queue, which is where a
+         coroutine that waits longer belongs. */
+      zyxrt_coro *old = atomic_exchange_explicit(&self->runnext, c, memory_order_relaxed);
+      if (old != NULL) queue_push(&self->head, &self->tail, &self->lock, old);
+      return;
+    }
     queue_push(&target->head, &target->tail, &target->lock, c);
     /* A coroutine goes to the thread that owns it, and that thread looks only
        at its own queue, so the wake has to reach it: one signal would do if it
@@ -289,17 +364,20 @@ static zyxrt_coro *incoming_pop(void) {
   return c;
 }
 
-/* take_ready returns the next coroutine this thread should run: work that
-   arrived from outside the scheduler, which no thread owns yet, then its own
-   next, and then a share of what another thread has left, which keeps one busy
-   thread from leaving the others idle. A coroutine taken from another thread
-   is run here and belongs to this thread from then on. */
+/* take_ready returns the next coroutine this thread should run: the one it
+   handed to itself, then work that arrived from outside the scheduler, which no
+   thread owns yet, then its own next, and then a share of what another thread
+   has left, which keeps one busy thread from leaving the others idle. A
+   coroutine taken from another thread is run here and belongs to this thread
+   from then on. */
 static zyxrt_coro *take_ready(zyxrt_thread *t) {
+  zyxrt_coro *c = runnext_pop(t);
+  if (c != NULL) return c;
   if (incoming_ready()) {
-    zyxrt_coro *c = incoming_pop();
+    c = incoming_pop();
     if (c != NULL) return c;
   }
-  zyxrt_coro *c = queue_pop(&t->head, &t->tail, &t->lock);
+  c = queue_pop(&t->head, &t->tail, &t->lock);
   if (c != NULL) return c;
   c = incoming_pop();
   if (c != NULL) return c;
@@ -344,6 +422,11 @@ static void sched_finish(zyxrt_coro *c) {
   c->done = 1;
   zyxrt_wait_wake(&c->waiters);
   zyxrt_lock_drop(&c->lock);
+  /* The coroutine is nothing a thread can run again, so it is no longer one the
+     deadlock check has to see. The thread that ran it holds the count down
+     before it looks for work, which is what keeps a thread that finds every
+     lane asleep from reading a count this one has not lowered yet. */
+  atomic_fetch_sub_explicit(&coros_live, 1, memory_order_acq_rel);
 }
 
 /* run_once runs one ready coroutine until it suspends or finishes. It answers
@@ -450,14 +533,15 @@ void zyxrt_sched_advance(void) {
   zyxrt_wheel_advance(zyxrt_now());
 }
 
-/* queues_empty reports whether any thread's queue holds a coroutine. A wake
-   from another thread lands on its owner's queue, so a thread that finds
-   nothing of its own still has to see whether work waits for another one
-   before the program can be over. */
+/* queues_empty reports whether any thread's queue holds a coroutine, or has one
+   handed to itself waiting for its next turn. A wake from another thread lands
+   on its owner's queue, so a thread that finds nothing of its own still has to
+   see whether work waits for another one before the program can be over. */
 static int queues_empty(void) {
   for (size_t i = 0; i < thread_cap; i++) {
+    if (atomic_load_explicit(&threads[i].runnext, memory_order_relaxed) != NULL) return 0;
     zyxrt_lock_hold(&threads[i].lock);
-    int empty = threads[i].head == NULL;
+    int empty = atomic_load_explicit(&threads[i].head, memory_order_relaxed) == NULL;
     zyxrt_lock_drop(&threads[i].lock);
     if (!empty) return 0;
   }
@@ -577,12 +661,44 @@ static void coro_give(zyxrt_coro *c) {
   free(c);
 }
 
+/* stack_take answers a stack to start a coroutine of the tier on: one this
+   thread finished earlier, or one from the list every thread shares. A stack a
+   thread kept is committed as far as its tier asks, so it is handed out here;
+   the layer computes that for the one it gives. */
+static void *stack_take(int tier, void **limit) {
+  size_t which = tier == ZYXXRT_STACK_FULL ? 1 : 0;
+  zyxrt_thread *t = self_thread();
+  if (t != NULL && t->stack_depth[which] > 0) {
+    t->stack_depth[which]--;
+    *limit = t->stacks[which][t->stack_depth[which]].limit;
+    return t->stacks[which][t->stack_depth[which]].stack;
+  }
+  return zyxrt_stack_map(zyxrt_stack_size(), tier, limit);
+}
+
+/* stack_give keeps a finished stack for the next coroutine this thread starts,
+   or gives it back to the shared list when it has kept enough. A coroutine may
+   be released on a thread other than the one that started it, so the shared
+   list is what a thread with none of its own asks and what a thread with too
+   many returns to. */
+static void stack_give(void *stack, void *limit, int tier) {
+  size_t which = tier == ZYXXRT_STACK_FULL ? 1 : 0;
+  zyxrt_thread *t = self_thread();
+  if (t != NULL && t->stack_depth[which] < ZYXXRT_STACK_KEEP) {
+    t->stacks[which][t->stack_depth[which]].stack = stack;
+    t->stacks[which][t->stack_depth[which]].limit = limit;
+    t->stack_depth[which]++;
+    return;
+  }
+  zyxrt_stack_unmap(stack, zyxrt_stack_size(), limit);
+}
+
 /* free_coro releases a finished coroutine. */
 static void free_coro(zyxrt_coro *c) {
   /* The region that was waiting for this coroutine must not wait for it
      again. */
   zyxrt_region_detach(c->owner_region, c);
-  if (c->stack) zyxrt_stack_unmap(c->stack, c->stack_size, c->stack_limit);
+  if (c->stack) stack_give(c->stack, c->stack_limit, c->stack_tier);
   free(c->regions);
   coro_give(c);
 }
@@ -599,7 +715,7 @@ void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, voi
   c->watch_recv = watch_recv;
   c->stack_tier = tier;
   c->stack_size = zyxrt_stack_size();
-  c->stack = zyxrt_stack_map(c->stack_size, tier, &c->stack_limit);
+  c->stack = stack_take(tier, &c->stack_limit);
   if (!c->stack) zyxrt_panic("out of memory", 13);
   c->ctx = zyxrt_ctx_reset(c->ctx, c->stack, c->stack_size);
   /* The region the spawner is running in waits for this coroutine before it
@@ -612,6 +728,10 @@ void *zyxrt_coro_spawn_watched(zyxrt_fn fn, void *arg, zyxrt_watch_fn watch, voi
   /* No thread has this one on its stack yet, so a waker may queue it at once
      rather than leave the offer for a thread to pick up. */
   atomic_store_explicit(&c->sched, ZYXXRT_CORO_PARKED, memory_order_relaxed);
+  /* The count of coroutines that have not finished is raised before this one can
+     be taken from a queue, so a thread that sees it there also sees the
+     count. */
+  atomic_fetch_add_explicit(&coros_live, 1, memory_order_acq_rel);
   zyxrt_sched_ready(c);
   return c;
 }
@@ -742,6 +862,41 @@ void zyxrt_sched_poll(size_t held) {
   sched_start_lane(thread_cap);
 }
 
+/* How many times a thread looks for work before it parks. A thread that has
+   parked pays a system call to be woken, and work that is on its way is often
+   only a moment behind: looking a few times first is what keeps a handoff
+   between two threads from crossing into the kernel. What the look reads is the
+   flag work from outside the scheduler arrives on and the thread's own queue,
+   so it costs nothing but a pause and disturbs no other thread. */
+#define ZYXXRT_LANE_SPINS 30
+
+/* lane_spin looks again for work that is on its way, and answers whether there
+   is a reason to look at the queues properly. It is a reason and not a fact: a
+   queue that was emptied between the look and the read only costs another
+   look. */
+static int lane_spin(zyxrt_thread *t) {
+  for (int i = 0; i < ZYXXRT_LANE_SPINS; i++) {
+    zyxrt_cpu_relax();
+    if (incoming_ready() ||
+        atomic_load_explicit(&t->runnext, memory_order_relaxed) != NULL ||
+        atomic_load_explicit(&t->head, memory_order_relaxed) != NULL) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/* deadlock reports that the program cannot continue because every coroutine is
+   asleep and none can be woken. It is written the way a fault is, as one line
+   on standard error and a non-zero exit, and it is written by the thread that
+   decided it, because the coroutine that would have printed it is asleep. */
+static void deadlock(void) {
+  fflush(stdout);
+  fputs("fatal: all coroutines are asleep: deadlock\n", stderr);
+  fflush(stderr);
+  _exit(101);
+}
+
 /* zyxrt_sched_run is the scheduler loop of the calling thread: take in what
    arrived, run what is ready, and stop when every thread has nothing left to do
    and nothing is on its way. */
@@ -750,6 +905,7 @@ void zyxrt_sched_run(void) {
   for (;;) {
     zyxrt_sched_advance();
     if (run_once(t)) continue;
+    if (lane_spin(t)) continue;
     /* Nothing to run here. Two threads may arrive at this at once, so the
        decision is made under the lock, and the evidence for it is read under
        the same lock: a deadline added after the wait was computed belongs to a
@@ -764,6 +920,14 @@ void zyxrt_sched_run(void) {
     int64_t wait = sched_idle_wait();
     int over = idle == live && wait == -1 && !incoming_ready() && queues_empty();
     if (over) {
+      /* Every lane is asleep and nothing can wake one. The program is over when
+         every coroutine has finished; one that is still started waits for
+         something no other coroutine will do, and the program is left to hang
+         unless that is reported here. */
+      if (atomic_load_explicit(&coros_live, memory_order_acquire) > 0) {
+        zyxrt_lock_drop(&state_lock);
+        deadlock();
+      }
       atomic_store_explicit(&stopping, 1, memory_order_release);
     }
     zyxrt_lock_drop(&state_lock);
@@ -788,6 +952,7 @@ void zyxrt_sched_init(void) {
   atomic_store_explicit(&idle_threads, 0, memory_order_relaxed);
   atomic_store_explicit(&stopping, 0, memory_order_relaxed);
   atomic_store_explicit(&externals, 0, memory_order_relaxed);
+  atomic_store_explicit(&coros_live, 0, memory_order_relaxed);
   zyxrt_note_init(&sched_note);
   incoming_head = NULL;
   incoming_tail = NULL;
@@ -802,7 +967,9 @@ void zyxrt_sched_init(void) {
   threads = (zyxrt_thread *)calloc(thread_cap, sizeof(zyxrt_thread));
   if (!threads) zyxrt_panic("out of memory", 13);
   for (size_t i = 0; i < thread_cap; i++) {
-    threads[i].head = threads[i].tail = NULL;
+    threads[i].head = NULL;
+    threads[i].tail = NULL;
+    atomic_store_explicit(&threads[i].runnext, NULL, memory_order_relaxed);
     threads[i].current = NULL;
     threads[i].ctx = NULL;
     threads[i].index = i;

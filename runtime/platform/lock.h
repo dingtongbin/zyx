@@ -34,6 +34,18 @@ static inline void zyxrt_spin_drop(zyxrt_spin *s) {
   atomic_store_explicit(s, 0, memory_order_release);
 }
 
+/* zyxrt_cpu_relax tells the processor that the calling thread is waiting on
+   another thread, which frees the execution slot the spin would otherwise take
+   from the thread it waits for. A target with no instruction for it does
+   nothing. */
+static inline void zyxrt_cpu_relax(void) {
+#if defined(__x86_64__) || defined(__i386__)
+  __builtin_ia32_pause();
+#elif defined(__aarch64__)
+  __builtin_arm_yield();
+#endif
+}
+
 #if defined(__wasm__)
 
 typedef int zyxrt_lock;

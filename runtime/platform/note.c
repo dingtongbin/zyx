@@ -66,8 +66,14 @@ void zyxrt_note_signal_all(zyxrt_note *n, size_t count) {
 }
 
 void zyxrt_note_wait(zyxrt_note *n, int64_t ns) {
-  LONG seen = atomic_load_explicit(&n->word, memory_order_acquire);
+  /* A wake that arrived before this wait is taken rather than slept through:
+     the word is left at zero by every wait, so a caller that finds one has
+     something to look at and does, and a signal that arrives between this and
+     the kernel call is not lost, because the kernel compares the word with the
+     zero this wait left it at. */
+  LONG seen = atomic_exchange_explicit(&n->word, 0, memory_order_acquire);
   DWORD ms = INFINITE;
+  if (seen != 0) return;
   if (ns >= 0) {
     ms = (DWORD)((ns + 999999) / 1000000);
     if (ms == 0) ms = 1;
@@ -100,9 +106,13 @@ void zyxrt_note_signal_all(zyxrt_note *n, size_t count) {
 }
 
 void zyxrt_note_wait(zyxrt_note *n, int64_t ns) {
-  int seen = atomic_load_explicit(&n->word, memory_order_acquire);
+  /* A wake that arrived before this wait is taken rather than slept through,
+     and the kernel call compares the word with the zero this wait left it at,
+     so a signal that arrives in between is not lost. */
+  int seen = atomic_exchange_explicit(&n->word, 0, memory_order_acquire);
   struct timespec ts;
   const struct timespec *timeout = NULL;
+  if (seen != 0) return;
   if (ns >= 0) {
     ts.tv_sec = (time_t)(ns / 1000000000u);
     ts.tv_nsec = (long)(ns % 1000000000u);
@@ -145,10 +155,18 @@ void zyxrt_note_signal_all(zyxrt_note *n, size_t count) {
 
 void zyxrt_note_wait(zyxrt_note *n, int64_t ns) {
   struct pollfd pfd;
+  int timeout = -1;
+  char one;
   pfd.fd = n->fd_read;
   pfd.events = POLLIN;
   pfd.revents = 0;
-  int timeout = -1;
+  /* A wake that arrived before this wait is taken rather than slept through,
+     which is what the other targets do by consuming the word they wait on. */
+  if (poll(&pfd, 1, 0) > 0) {
+    ssize_t got = read(n->fd_read, &one, 1);
+    (void)got;
+    return;
+  }
   if (ns >= 0) {
     timeout = (int)((ns + 999999) / 1000000);
     if (timeout == 0) timeout = 1;
@@ -156,7 +174,6 @@ void zyxrt_note_wait(zyxrt_note *n, int64_t ns) {
   if (poll(&pfd, 1, timeout) > 0) {
     /* One byte is one wake. A wait that took more than one would swallow the
        wakes of the threads that never got to read them. */
-    char one;
     ssize_t got = read(n->fd_read, &one, 1);
     (void)got;
   }

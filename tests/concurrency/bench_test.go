@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"zyx/internal/toolchain"
 )
@@ -15,6 +16,7 @@ import (
 //
 //	benchspawn    20000 coroutines started, handoffs back, and woken
 //	benchchurn    20000 coroutines started and finished one at a time
+//	benchchurnlanes  many coroutines churning at once, one on each thread
 //	benchchan     a million handoffs between two coroutines over two channels
 //	benchchanready  two million channel operations that never park
 //	benchloop      two million loop iterations
@@ -126,6 +128,45 @@ func BenchmarkCoroutineChurn(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		run()
 	}
+}
+
+// BenchmarkCoroutineChurnLanes measures the same thing with every scheduler
+// thread churning at once, which is where the tables a thread keeps for its own
+// finished coroutines and stacks show: one program churning alone only ever
+// touches the table of the thread it runs on. The program prints how many
+// coroutines it started and finished, so what one of them costs is the time of
+// a whole run divided by that count.
+func BenchmarkCoroutineChurnLanes(b *testing.B) {
+	if _, err := toolchain.Locate(); err != nil {
+		b.Skipf("the toolchain is not available: %v", err)
+	}
+	src := filepath.Join("testdata", "benchchurnlanes")
+	dir := b.TempDir()
+	copyTree(b, src, dir)
+	path := builtProgram(b, dir)
+	want, err := os.ReadFile(filepath.Join(src, "want.txt"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	count := number(b, string(want), "coroutines=")
+	if count == 0 {
+		b.Fatal("the program started no coroutines")
+	}
+	b.ResetTimer()
+	var spent time.Duration
+	for i := 0; i < b.N; i++ {
+		begin := time.Now()
+		out, err := runAt(b, path, "")
+		spent += time.Since(begin)
+		if err != nil {
+			b.Fatalf("the program did not finish cleanly: %v\n%s", err, out)
+		}
+		if out != string(want) {
+			b.Fatalf("the program printed\n%s\nwant\n%s", out, want)
+		}
+	}
+	b.StopTimer()
+	b.ReportMetric(float64(spent.Nanoseconds())/float64(int64(b.N)*count), "ns/coroutine")
 }
 
 // BenchmarkCoroutineScale measures what a coroutine costs when a program keeps
