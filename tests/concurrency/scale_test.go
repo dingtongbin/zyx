@@ -13,10 +13,11 @@ import (
 // over what the corpus measures.
 const packedBytesPerCoroutine = 4 * 1024
 
-// TestPackedCoroutinesAreSmall keeps a hundred thousand coroutines alive at once
-// and holds the runtime to what each of them commits. The same number of bytes
-// per coroutine is what ten million of them would cost, so this is what decides
-// whether a program of that many fits in memory at all.
+// TestPackedCoroutinesAreSmall keeps a million coroutines alive at once and
+// holds the runtime to what each of them commits. The same number of bytes per
+// coroutine is what ten million of them would cost, and the cost is linear in
+// the count, so this is what decides whether a program of that many fits in
+// memory at all.
 func TestPackedCoroutinesAreSmall(t *testing.T) {
 	if _, err := toolchain.Locate(); err != nil {
 		t.Skipf("the toolchain is not available: %v", err)
@@ -40,7 +41,7 @@ func TestPackedCoroutinesAreSmall(t *testing.T) {
 }
 
 // number reads the value after a prefix of what a program printed.
-func number(t *testing.T, out, prefix string) int64 {
+func number(t testing.TB, out, prefix string) int64 {
 	t.Helper()
 	at := strings.Index(out, prefix)
 	if at < 0 {

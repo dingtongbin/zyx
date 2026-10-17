@@ -6,8 +6,8 @@ import c "zyxrt.h" {
     fast zyxrt_stack_committed
 }
 
-// Keeps many coroutines alive at once, to answer what one of them costs. Every
-// coroutine parks on a receive, so what the runtime has committed for their
+// Keeps a million coroutines alive at once, to answer what one of them costs.
+// Every coroutine parks on a receive, so what the runtime has committed for their
 // stacks is what a program of that many coroutines pays before any of them does
 // any work. A test reads the two numbers and holds the runtime to what a
 // coroutine of the packed tier is allowed to commit.
@@ -20,7 +20,7 @@ func idle(go: chan<i64>) {
 }
 
 func main() {
-    var count: i64 = 100000
+    var count: i64 = 1000000
     var go = new chan<i64>(0)
     region {
         for i in 0..count {

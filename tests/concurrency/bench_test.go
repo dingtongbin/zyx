@@ -115,3 +115,31 @@ func BenchmarkCCall(b *testing.B) {
 		run()
 	}
 }
+
+// BenchmarkCoroutineScale measures what a coroutine costs when a program keeps
+// many of them alive at once: the bytes each of them commits, which is what
+// decides whether ten million fit in memory at all, and the time the program
+// takes to start them. The number of bytes is what one coroutine costs and not
+// what the program's count makes it, so the program here is the one the scale
+// test runs, and the count only has to be large enough to be read.
+func BenchmarkCoroutineScale(b *testing.B) {
+	if _, err := toolchain.Locate(); err != nil {
+		b.Skipf("the toolchain is not available: %v", err)
+	}
+	dir := b.TempDir()
+	copyTree(b, "scale", dir)
+	path := builtProgram(b, dir)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		out, err := runAt(b, path, "")
+		if err != nil {
+			b.Fatalf("the program did not finish: %v\n%s", err, out)
+		}
+		count := number(b, out, "coroutines=")
+		committed := number(b, out, "committed=")
+		if count == 0 {
+			b.Fatal("the program kept no coroutines")
+		}
+		b.ReportMetric(float64(committed)/float64(count), "bytes/coroutine")
+	}
+}
