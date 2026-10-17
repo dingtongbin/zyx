@@ -49,22 +49,69 @@ static const char *fault_what(DWORD code) {
   }
 }
 
-static LONG CALLBACK fatal_handler(PEXCEPTION_POINTERS info) {
+/* The exceptions the trap reports itself: a fault of the program, which no one
+   can carry on from. The trap has to claim these because it is the only handler
+   that runs on every thread. The threads the runtime starts to run coroutines are
+   raw system threads, and the filter the C runtime set is called by a frame such
+   a thread does not have, so a fault there reaches nothing but the trap.
+
+   An exception the language does not name - a C++ library's own, the
+   thread-naming exception a debugger's convention uses, a platform's - is left to
+   the dispatch, which is what a library that raises and catches its own exception
+   needs: a VEH runs before the dispatch, so claiming an exception there takes it
+   away from the handler the library wrote. Such an exception that reaches the top
+   with no handler at all is reported by the filter below. */
+static int fault_of_the_program(DWORD code) {
+  switch (code) {
+  case EXCEPTION_ACCESS_VIOLATION:
+  case EXCEPTION_IN_PAGE_ERROR:
+  case EXCEPTION_ILLEGAL_INSTRUCTION:
+  case EXCEPTION_PRIV_INSTRUCTION:
+  case EXCEPTION_INT_DIVIDE_BY_ZERO:
+  case EXCEPTION_FLT_DIVIDE_BY_ZERO:
+  case EXCEPTION_INT_OVERFLOW:
+  case EXCEPTION_FLT_INVALID_OPERATION:
+  case EXCEPTION_FLT_OVERFLOW:
+  case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:
+  case EXCEPTION_STACK_OVERFLOW:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+/* The faults that are not a fault of the program: a debugger's business, and the
+   C runtime's own abort, which brings its message with it. */
+static int reported_by_another(DWORD code) {
+  return code == EXCEPTION_BREAKPOINT || code == EXCEPTION_SINGLE_STEP || code == 0x40000015u;
+}
+
+static void report(PEXCEPTION_POINTERS info) {
   DWORD code = info->ExceptionRecord->ExceptionCode;
   void *address = NULL;
-  if (code == EXCEPTION_BREAKPOINT || code == EXCEPTION_SINGLE_STEP) {
-    /* A debugger's business, not a fault of the program. */
-    return EXCEPTION_CONTINUE_SEARCH;
-  }
-  if (code == 0x40000015u) {
-    /* The C runtime's own abort, which brings its message with it. */
-    return EXCEPTION_CONTINUE_SEARCH;
-  }
   if ((code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR) &&
       info->ExceptionRecord->NumberParameters >= 2) {
     address = (void *)info->ExceptionRecord->ExceptionInformation[1];
   }
   zyxrt_fatal_report(fault_what(code), address, (void *)info->ContextRecord->Rsp);
+}
+
+static LONG CALLBACK fatal_handler(PEXCEPTION_POINTERS info) {
+  if (!fault_of_the_program(info->ExceptionRecord->ExceptionCode)) {
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+  report(info);
+  return EXCEPTION_EXECUTE_HANDLER;
+}
+
+/* The backstop for what the trap does not claim: an exception that reached the top
+   of a thread the C runtime started with no handler at all is reported the same
+   way, rather than ending the process in silence. */
+static LONG WINAPI unhandled_handler(PEXCEPTION_POINTERS info) {
+  if (reported_by_another(info->ExceptionRecord->ExceptionCode)) {
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+  report(info);
   return EXCEPTION_EXECUTE_HANDLER;
 }
 
@@ -74,6 +121,7 @@ void zyxrt_fault_install(void) {
   static _Atomic int installed;
   if (atomic_exchange_explicit(&installed, 1, memory_order_acq_rel)) return;
   AddVectoredExceptionHandler(1, fatal_handler);
+  SetUnhandledExceptionFilter(unhandled_handler);
 }
 
 #elif defined(__wasm__)
