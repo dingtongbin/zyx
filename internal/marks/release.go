@@ -23,8 +23,24 @@ func (b *builder) markDeferred(call ast.Expr) {
 
 // noteDeferred records one value a deferred call names.
 func (b *builder) noteDeferred(e ast.Expr) {
+	b.hold(e)
+}
+
+// holdValue records the objects a callee value holds. A bound method carries
+// its receiver inside the value, so a coroutine started through one reads the
+// receiver after the statement that started it has ended, while the value was
+// never an argument the walk recorded.
+func (b *builder) holdValue(fn ast.Expr) {
+	if sel, ok := fn.(*ast.SelectorExpr); ok {
+		b.hold(sel.X)
+	}
+	b.hold(fn)
+}
+
+// hold records one object a call that runs later names.
+func (b *builder) hold(e ast.Expr) {
 	if a := b.allocFor(e); a != nil {
-		b.deferred[a] = true
+		b.held[a] = true
 	}
 }
 
@@ -32,11 +48,12 @@ func (b *builder) noteDeferred(e ast.Expr) {
 // release point, and the object's memory returns to the pool there rather
 // than at region exit.
 func (b *builder) release(a *allocation) {
-	if b.deferred[a] {
-		// A deferred call names this object and runs when the region leaves, so
-		// the region's own release is the earliest point that is safe. Leaving
-		// the release marks off keeps the object where the region put it, which
-		// the batch release gives back after the deferred calls have run.
+	if b.held[a] {
+		// A call that runs later names this object: a deferred call once its
+		// region leaves, or a coroutine started through a value that carries
+		// it. The region's own release is then the earliest point that is safe.
+		// Leaving the release marks off keeps the object where the region put
+		// it, which the batch release gives back after those calls have run.
 		return
 	}
 	last := b.lastUse[a]

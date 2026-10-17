@@ -662,6 +662,59 @@ func Work() -> i64 {
 	}
 }
 
+// TestSpawnedMethodValueKeepsTheReceiver checks that a coroutine started
+// through a bound method value keeps its receiver alive. The receiver crosses
+// the boundary inside the value the call carries, so the walk never sees it as
+// an argument of the spawn, and releasing it at the spawning statement would
+// let the coroutine read a released object. The control shows the marks are not
+// simply missing: the same object used only by a plain call is still released.
+func TestSpawnedMethodValueKeepsTheReceiver(t *testing.T) {
+	src := `package server
+
+struct Item {
+	tag: i64
+
+	func Tag() -> i64 {
+		return self.tag
+	}
+}
+
+func Work() {
+	var item = Item { tag: 41 }
+	region {
+		spawn item.Tag()
+	}
+}
+`
+	info, diags := marksOf(t, src)
+	wantClean(t, diags)
+	wantMark(t, info, "coro:spawn")
+	if n := countMark(info, "static-release"); n != 0 {
+		t.Errorf("the receiver of a spawned method value is released early: %d release mark(s) in %v", n, allMarks(info))
+	}
+
+	control := `package server
+
+struct Item {
+	tag: i64
+
+	func Tag() -> i64 {
+		return self.tag
+	}
+}
+
+func Work() -> i64 {
+	var item = Item { tag: 41 }
+	return item.Tag()
+}
+`
+	info, diags = marksOf(t, control)
+	wantClean(t, diags)
+	if n := countMark(info, "static-release"); n == 0 {
+		t.Errorf("an object named only by a plain call is not released: %v", allMarks(info))
+	}
+}
+
 // TestTopLevelInitializerIsWalked checks that a top-level binding whose
 // initializer is an array literal is analysed rather than crashing the pass. A
 // top-level initializer used to be walked with none of the state a function

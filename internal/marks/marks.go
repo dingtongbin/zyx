@@ -139,10 +139,11 @@ type builder struct {
 	// point the walk has reached, so a structural modification of the
 	// container can be reported while one is.
 	borrows []viewBorrow
-	// deferred holds the objects a deferred call names. Such a call runs when
-	// its region leaves, so an object it names is given back by the region
-	// rather than at a use the walk happened to reach last.
-	deferred map[*allocation]bool
+	// held holds the objects a call that runs later names: the arguments of a
+	// deferred call and what a coroutine's callee value holds. Such an object
+	// is given back by the region rather than at a use the walk happened to
+	// reach last.
+	held map[*allocation]bool
 	// scopes holds one entry per block the walk is inside, which is how many
 	// borrows were live when the block opened.
 	scopes []int
@@ -233,7 +234,7 @@ func (b *builder) startAnalysis(fn *ast.FuncDecl) {
 	b.allocsByNode = map[ast.Expr]*allocation{}
 	b.allocsBySym = map[string]*allocation{}
 	b.escapes = map[*allocation]escapeKind{}
-	b.deferred = map[*allocation]bool{}
+	b.held = map[*allocation]bool{}
 	b.borrows = nil
 	b.scopes = nil
 }
@@ -629,6 +630,10 @@ func (b *builder) spawn(v *ast.SpawnExpr) {
 			b.escapesTo(a, escapeCoroutine)
 		}
 		b.expr(call.Fn)
+		// A callee that is a function value carries what it holds beside the
+		// arguments, so a bound method's receiver crosses the boundary inside
+		// the value and the walk never reaches it as an argument of this call.
+		b.holdValue(call.Fn)
 	} else {
 		b.expr(v.X)
 	}

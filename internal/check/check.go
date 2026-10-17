@@ -332,6 +332,9 @@ type checker struct {
 	// freestanding marks a build that leaves the runtime out, which has no
 	// coroutines, channels, regions, or runtime allocator.
 	freestanding bool
+	// inCFunc marks a `c func` body, which runs on a blocking-pool thread
+	// with no coroutine and no region of its own.
+	inCFunc bool
 	// inRegion counts the enclosing region blocks, which spawn requires.
 	inRegion int
 	// addrOK marks a C call argument list, where &x is allowed.

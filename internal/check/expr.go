@@ -947,8 +947,7 @@ func (c *checker) arrayLitType(v *ast.ArrayLitExpr, want *types.Type) *types.Typ
 		return types.ArrayOf(elem, want.Len)
 	}
 	out := types.Array.Instantiate(elem)
-	c.freestandingLiteral(v, out)
-	return out
+	return c.cFuncLiteral(v, c.freestandingLiteral(v, out))
 }
 
 // arrayRepeatType checks `[expr] * n`.
@@ -973,14 +972,14 @@ func (c *checker) arrayRepeatType(v *ast.ArrayRepeatExpr, want *types.Type) *typ
 		elem = types.Int64
 	}
 	out := types.Array.Instantiate(elem)
-	c.freestandingLiteral(v, out)
-	return out
+	return c.cFuncLiteral(v, c.freestandingLiteral(v, out))
 }
 
 // newType checks `new T(args)`: a struct through its init, or a
 // pre-imported container through its runtime constructor.
 func (c *checker) newType(v *ast.NewExpr) *types.Type {
 	c.freestandingNew(v)
+	c.cFuncNew(v)
 	typ := c.buildType(v.Type)
 	if typ == nil {
 		c.checkExprs(v.Args)
@@ -1134,11 +1133,11 @@ func (c *checker) aggregateType(v *ast.AggregateLitExpr, want *types.Type) *type
 			"%s is an enum", typ)
 	case d != nil && (typ.Kind == types.KindStruct || typ.Kind == types.KindExternStruct ||
 		typ.Kind == types.KindUnion):
-		return c.freestandingLiteral(v, c.checkStructLiteral(v, typ, d))
+		return c.cFuncLiteral(v, c.freestandingLiteral(v, c.checkStructLiteral(v, typ, d)))
 	case typ.Kind == types.KindContainer && typ.Name == "Map":
-		return c.freestandingLiteral(v, c.checkMapLiteral(v, typ))
+		return c.cFuncLiteral(v, c.freestandingLiteral(v, c.checkMapLiteral(v, typ)))
 	case typ.Kind == types.KindContainer && typ.Name == "Set":
-		return c.freestandingLiteral(v, c.checkSetLiteral(v, typ))
+		return c.cFuncLiteral(v, c.freestandingLiteral(v, c.checkSetLiteral(v, typ)))
 	default:
 		c.errorHelp(diag.CodeTypeMismatch, v.Type.Span(),
 			"build a struct, a union, a Map, or a Set with a literal",

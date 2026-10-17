@@ -609,6 +609,112 @@ func Work(n: i64) -> i64 {
 	})
 }
 
+// TestCFuncBodySubsetIsRejected checks what a `c func` body may not do. The
+// body runs on the blocking-pool thread that C called it on: it has no
+// coroutine to park and no region to allocate from, so the constructs that need
+// either are refused, each with its own code. The last case is the subset that
+// stays: value types, raw, and the Try forms, which answer instead of waiting.
+func TestCFuncBodySubsetIsRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		code diag.Code
+	}{
+		{"new", `package server
+
+c func Callback() {
+	var xs = new Array<i64>(0)
+}
+`, diag.CodeCFuncNew},
+		{"literal", `package server
+
+struct Holder {
+	v: i64
+}
+
+c func Callback() {
+	var h = Holder { v: 1 }
+}
+`, diag.CodeCFuncLiteral},
+		{"chan", `package server
+
+c func Callback(ch: chan<i64>) {
+	ch.Send(1)
+}
+`, diag.CodeCFuncChan},
+		{"select", `package server
+
+c func Callback(ch: chan<i64>) {
+	select {
+		recv (ch) -> v, ok {
+		}
+	}
+}
+`, diag.CodeCFuncSelect},
+		{"join", `package server
+
+c func Callback(h: JoinHandle<i64>) {
+	h.Join()
+}
+`, diag.CodeCFuncJoin},
+		{"io", `package server
+
+import c "test.h"
+
+c func Callback() {
+	c.zyxrt_loop_wait(0, 1)
+}
+`, diag.CodeCFuncIO},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, diags := checkSource(t, "server", nil, nil, c.src)
+			wantCode(t, diags, c.code)
+		})
+	}
+
+	t.Run("mutex", func(t *testing.T) {
+		rdep, cdep := checkedDep(t, "std/sync", `package sync
+
+struct Mutex<T> {
+	func Lock() {
+	}
+	func TryLock() -> bool {
+		return true
+	}
+}
+`)
+		src := `package server
+
+import "std/sync"
+
+c func Callback(m: sync.Mutex<i64>) {
+	m.Lock()
+}
+`
+		_, diags := checkSource(t, "server",
+			resolveDeps{"std/sync": rdep}, checkDeps{"std/sync": cdep}, src)
+		wantCode(t, diags, diag.CodeCFuncMutex)
+	})
+
+	t.Run("the subset that stays", func(t *testing.T) {
+		src := `package server
+
+c func Callback(ch: chan<i64>, p: raw) -> usize {
+	var ok = ch.TrySend(1)
+	var v, got = ch.TryRecv()
+	var xs: [i64; 3] = [1, 2, 3]
+	if ok && got {
+		return usize(v) + usize(xs[0])
+	}
+	return usize(p) + usize(xs[2])
+}
+`
+		_, diags := checkSource(t, "server", nil, nil, src)
+		wantClean(t, diags)
+	})
+}
+
 func TestInterfaceDefaultParam(t *testing.T) {
 	src := `package server
 

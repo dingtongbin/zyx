@@ -28,6 +28,12 @@ func (c *checker) checkCall(v *ast.CallExpr, want *types.Type) *types.Type {
 	if t := c.calleeType(v.Fn); t != nil {
 		return c.checkConvert(t, firstArg(v), v.Sp)
 	}
+	// The language's own panic is predeclared rather than declared, so nothing
+	// else gives its argument a type, and an argument the checker leaves untyped
+	// reaches the emitter with no type at all.
+	if c.isPanicCall(v) {
+		return c.checkPanicCall(v)
+	}
 	if sel, ok := v.Fn.(*ast.SelectorExpr); ok {
 		return c.checkSelectorCall(sel, v, want)
 	}
@@ -60,6 +66,31 @@ func firstArg(v *ast.CallExpr) ast.Expr {
 		return nil
 	}
 	return v.Args[0]
+}
+
+// checkPanicCall checks the language's own panic, whose message is a string.
+// Nothing else types it: panic is predeclared rather than declared, so it has no
+// signature, and an argument the checker leaves untyped reaches the emitter with
+// no type of its own. A selector written inside an interpolated message is then
+// unreadable there, which is what the type of the argument decides.
+func (c *checker) checkPanicCall(v *ast.CallExpr) *types.Type {
+	if len(v.Args) != 1 {
+		c.errorHelp(diag.CodeArgCount, v.Sp,
+			"pass the message panic reports",
+			"panic takes one message, got %d", len(v.Args))
+		c.checkExprs(v.Args)
+		return void
+	}
+	got := c.checkExpr(v.Args[0], types.Str)
+	if got == nil || got.Kind == types.Invalid {
+		return void
+	}
+	if !c.accepts(types.Str, v.Args[0], got) {
+		c.errorHelp(diag.CodeTypeMismatch, v.Args[0].Span(),
+			"pass a str message, and interpolate the values into it",
+			"panic takes a str message, got %s", got)
+	}
+	return void
 }
 
 // checkValueCall checks a call through a function value.
@@ -127,6 +158,7 @@ func (c *checker) checkSelectorCall(sel *ast.SelectorExpr, v *ast.CallExpr, want
 	if recv == nil || recv.Kind == types.Invalid {
 		return nil
 	}
+	c.cFuncMethod(recv, sel.Name)
 	if sel.Name.Name == "clone" {
 		return c.checkClone(recv, sel.Name.Sp)
 	}
@@ -190,6 +222,7 @@ func (c *checker) checkQualifiedCall(sel *ast.SelectorExpr, v *ast.CallExpr, pkg
 // declaration and the call answers with the declaration's result.
 func (c *checker) checkCCall(sel *ast.SelectorExpr, v *ast.CallExpr) *types.Type {
 	name := sel.Name.Name
+	c.cFuncIO(sel)
 	fn, ok := c.cFunction(name)
 	if !ok {
 		c.errorHelp(diag.CodeUndefinedName, sel.Name.Sp,

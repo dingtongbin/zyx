@@ -267,6 +267,27 @@ const (
 	// CodeSelectArms reports a select arm combination the language
 	// forbids.
 	CodeSelectArms Code = "E6003"
+	// CodeCFuncNew reports a runtime allocation in a `c func` body, which
+	// runs on a blocking-pool thread with no region to allocate from.
+	CodeCFuncNew Code = "E6004"
+	// CodeCFuncLiteral reports a literal that builds a reference type in a
+	// `c func` body, which has no region to build it in.
+	CodeCFuncLiteral Code = "E6005"
+	// CodeCFuncChan reports a channel operation that suspends in a `c func`
+	// body, which has no coroutine to park. The Try forms do not suspend.
+	CodeCFuncChan Code = "E6006"
+	// CodeCFuncSelect reports a select in a `c func` body, which has no
+	// coroutine to park.
+	CodeCFuncSelect Code = "E6007"
+	// CodeCFuncJoin reports a join in a `c func` body, which has no coroutine
+	// to park. TryJoin does not wait.
+	CodeCFuncJoin Code = "E6008"
+	// CodeCFuncMutex reports a mutex wait in a `c func` body, which has no
+	// coroutine to park. TryLock does not wait.
+	CodeCFuncMutex Code = "E6009"
+	// CodeCFuncIO reports the language's own input or output wait in a
+	// `c func` body, which has no coroutine to park.
+	CodeCFuncIO Code = "E6010"
 )
 
 // Comptime diagnostics occupy the E7001-E7099 range.
