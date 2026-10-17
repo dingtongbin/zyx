@@ -1,0 +1,29 @@
+package main
+
+import "std/fmt"
+
+// Two hundred thousand coroutines, one at a time: each is started, hands a value
+// over a channel and ends before the next one begins. This measures what a
+// program that starts a coroutine for every piece of work pays for one of them,
+// including the object it runs in, which a program that keeps its coroutines
+// alive at once never reuses.
+
+func worker(out: chan<i64>, id: i64) {
+    out.Send(id)
+}
+
+func main() {
+    var out = new chan<i64>(1)
+    var total: i64 = 0
+    for i in 0..200000 {
+        region {
+            spawn worker(out, i)
+        }
+        var v, ok = out.Recv()
+        if ok {
+            total = total + v
+        }
+    }
+    fmt.PrintI64(total)
+    fmt.PrintNl()
+}

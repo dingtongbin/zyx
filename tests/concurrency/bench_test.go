@@ -14,6 +14,7 @@ import (
 // divided by the count is the cost of one operation:
 //
 //	benchspawn    20000 coroutines started, handoffs back, and woken
+//	benchchurn    20000 coroutines started and finished one at a time
 //	benchchan     a million handoffs between two coroutines over two channels
 //	benchchanready  two million channel operations that never park
 //	benchloop      two million loop iterations
@@ -110,6 +111,17 @@ func BenchmarkLoop(b *testing.B) {
 // the whole cost of the bracket around it.
 func BenchmarkCCall(b *testing.B) {
 	run := benchRun(b, "benchcall")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		run()
+	}
+}
+
+// BenchmarkCoroutineChurn measures a program that starts a coroutine for every
+// piece of work and lets each one finish before the next begins, which is what a
+// program pays for a coroutine it uses and gives up.
+func BenchmarkCoroutineChurn(b *testing.B) {
+	run := benchRun(b, "benchchurn")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		run()
