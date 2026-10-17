@@ -1,9 +1,9 @@
 /* The event loop. A coroutine that waits on a pollable file descriptor parks,
-   and a poller thread watches the descriptors and hands the ready ones to the
-   scheduler. Only the scheduler thread ever readies a coroutine, so the poller
-   records what became ready and the scheduler turns that into ready
-   coroutines. */
-void zyxrt_loop_stop(void);
+   and a poller thread watches the descriptors and readies the coroutines that
+   wait on the ones that became ready, which wakes the thread that owns them.
+   The loop comes up the first time a coroutine waits on a descriptor, so a
+   program that waits on none pays for neither the kernel facility nor the
+   thread that watches it. */
 
 #include "zyxrt_internal.h"
 
@@ -24,20 +24,18 @@ static zyxrt_lock loop_lock;
 static zyxrt_fd_entry *table;
 static size_t table_cap;
 static size_t table_used;
+
+/* loop_started says the backend answered, which happens the first time a
+   coroutine waits on a descriptor: a program that waits on none pays for
+   neither the backend's own wakeup pair nor the thread that watches it. */
 static int loop_started;
 
-/* A readiness the poller found is turned into ready coroutines where it is
-   found, and the wake reaches the thread that owns them. */
-
-/* polled marks a loop a poller thread drives; a target without threads drives
-   the loop from the scheduler instead. */
-static int polled;
-
-/* quitting tells the poller thread to leave, and live counts the ones that
-   have not, because the program's own thread ends the process and must not do
-   that while the poller is inside the kernel. */
+/* quitting tells the poller threads to leave. Their handles are kept, because
+   the program's own thread ends the process and must not do that while a poller
+   is inside the kernel. */
 static _Atomic int quitting;
-static _Atomic size_t live;
+static zyxrt_thread_handle *poller_handles;
+static size_t pollers_live;
 
 /* entry_of answers the entry of a descriptor, growing the table when the
    descriptor is past its end. The caller holds the loop lock. */
@@ -84,7 +82,6 @@ static void poller(void *arg) {
   (void)arg;
   int fds[ZYXRT_LOOP_BATCH];
   int events[ZYXRT_LOOP_BATCH];
-  atomic_fetch_add_explicit(&live, 1, memory_order_acq_rel);
   for (;;) {
     int n = zyxrt_loop_backend_wait(fds, events, ZYXRT_LOOP_BATCH, -1);
     if (atomic_load_explicit(&quitting, memory_order_acquire)) break;
@@ -94,18 +91,19 @@ static void poller(void *arg) {
       ready_fd(fds[i], events[i]);
     }
   }
-  atomic_fetch_sub_explicit(&live, 1, memory_order_acq_rel);
 }
 
-/* zyxrt_loop_stop tells the poller thread to leave and waits until it has. */
+/* zyxrt_loop_stop tells the poller threads to leave and waits until each has.
+   The wake makes the kernel call return, so the thread sees the flag rather
+   than waiting on a descriptor that will not become ready. */
 void zyxrt_loop_stop(void) {
-  if (!loop_started || !polled) return;
+  if (!loop_started || poller_handles == NULL) return;
   atomic_store_explicit(&quitting, 1, memory_order_release);
-  /* The wake makes the wait return so the thread sees the flag. */
   zyxrt_loop_backend_wake();
-  while (atomic_load_explicit(&live, memory_order_acquire) > 0) {
-    zyxrt_sleep(1000000u);
+  for (size_t i = 0; i < pollers_live; i++) {
+    zyxrt_thread_join(poller_handles[i]);
   }
+  pollers_live = 0;
 }
 
 /* loop_poller_count returns the number of poller threads, which ZYX_POLLERS
@@ -119,25 +117,41 @@ static size_t loop_poller_count(void) {
   return 1;
 }
 
-void zyxrt_loop_start(void) {
-  zyxrt_lock_init(&loop_lock);
+void zyxrt_loop_start(void) { zyxrt_lock_init(&loop_lock); }
+
+/* loop_ensure starts the loop the first time something waits on a descriptor:
+   the backend, which is what the kernel call belongs to, and the threads that
+   drive it. */
+static void loop_ensure(void) {
+  zyxrt_lock_hold(&loop_lock);
+  if (loop_started) {
+    zyxrt_lock_drop(&loop_lock);
+    return;
+  }
   if (zyxrt_loop_backend_init() != 0) {
     /* A target without an event loop leaves every wait to the blocking
        pool. */
+    zyxrt_lock_drop(&loop_lock);
     return;
   }
   loop_started = 1;
-  size_t pollers = loop_poller_count();
-  for (size_t i = 0; i < pollers; i++) {
-    zyxrt_thread_start(poller, NULL);
+  /* A target whose threads are absent runs the wait on the scheduler thread. */
+  if (zyxrt_threads()) {
+    size_t count = loop_poller_count();
+    poller_handles = (zyxrt_thread_handle *)calloc(count, sizeof(zyxrt_thread_handle));
+    if (!poller_handles) zyxrt_panic("out of memory", 13);
+    for (size_t i = 0; i < count; i++) {
+      poller_handles[i] = zyxrt_thread_start(poller, NULL);
+      pollers_live = i + 1;
+    }
   }
-  /* A target whose threads are absent runs the wait on the scheduler
-     thread. */
-  polled = zyxrt_threads();
+  zyxrt_lock_drop(&loop_lock);
 }
 
 int zyxrt_loop_poll_once(int64_t timeout_ns) {
-  if (!loop_started || polled) return 0;
+  if (zyxrt_threads()) return 0;
+  loop_ensure();
+  if (!loop_started) return 0;
   int timeout_ms = -1;
   if (timeout_ns >= 0) {
     timeout_ms = (int)((timeout_ns + 999999) / 1000000);
@@ -177,6 +191,7 @@ size_t zyxrt_loop_snapshot(int *fds, int *events, size_t max) {
 }
 
 int zyxrt_loop_wait(int fd, int events) {
+  loop_ensure();
   if (!loop_started) return 2;
   zyxrt_coro *self = zyxrt_sched_current();
   if (self == NULL || fd < 0 || events == 0) return 2;

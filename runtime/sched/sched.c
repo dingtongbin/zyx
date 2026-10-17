@@ -6,9 +6,14 @@
  * default, and each thread has a queue of its own. A coroutine may run on any
  * of them, and may move from one to another, so everything the scheduler
  * shares is either owned by one thread (a queue) or guarded (the count of
- * idle threads, the decision that the program is over). */
+ * idle threads, the decision that the program is over).
+ *
+ * A scheduler thread is started when there is work for it and none is free,
+ * and it is waited for when the program is over. Programs therefore pay for
+ * the threads they use rather than for the ones the machine could run. */
 
 #include "zyxrt_internal.h"
+#include "wakeup.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -26,9 +31,10 @@ typedef struct zyxrt_thread {
   /* current is the coroutine the thread is running, or NULL. */
   zyxrt_coro *current;
   size_t index;
-  /* spare marks a thread started because every lane was inside a C call. Such
-     a thread leaves again once a lane is free. */
-  int spare;
+  /* handle is what the thread that started this one waits on before the
+     process ends. The program's own thread is the one that waits, so its own
+     slot carries none. */
+  zyxrt_thread_handle handle;
 } zyxrt_thread;
 
 /* self is the thread state of the scheduler thread the caller runs on, or
@@ -51,28 +57,35 @@ static void self_thread_set(zyxrt_thread *t) { self_thread_holder = t; }
 #endif
 
 static zyxrt_thread *threads;
+/* thread_count is how many threads may run coroutines at once, and thread_cap
+   is how many slots the array holds: the ones the program asked for plus the
+   ones a C call may need, because a thread inside one runs no coroutine. A
+   thread is started when there is work for it and none is free, so a program
+   that runs one coroutine at a time starts one thread and nothing else. */
 static size_t thread_count;
-/* thread_cap is how many slots the array holds: the lanes the program asked
-   for plus the spares a C call may need. thread_slots counts the slots that
-   have been given to a thread, a lane or a spare. */
 static size_t thread_cap;
-static _Atomic size_t thread_slots;
 
-/* spare_threads counts the spare threads that are running, and syscall_lanes
-   counts the lanes that are inside a C call. When every lane is inside one,
-   nothing is running the program's own code, and a spare is started to take it
-   up. */
-static _Atomic int spare_threads;
+/* lanes_live counts the scheduler threads that have been started. A thread that
+   is started stays until the program is over: the scheduler has no other use
+   for the slot, and a thread that leaves and is started again costs more than
+   it saves. */
+static _Atomic size_t lanes_live;
+
+/* syscall_lanes counts the lanes that are inside a C call. When every lane is
+   inside one, nothing is running the program's own code, and one more lane is
+   started to take it up. */
 static _Atomic int syscall_lanes;
 
-/* The most spare threads the runtime starts, however many calls are in flight:
-   a program whose lanes are all blocked is better off with a bounded number of
-   threads than with one per call. */
-#define ZYXXRT_SPARE_MAX 8
+/* The most threads the runtime starts beyond the ones the program asked for,
+   however many calls are in flight: a program whose lanes are all blocked is
+   better off with a bounded number of threads than with one per call. */
+#define ZYXXRT_LANE_EXTRA 8
 
-int zyxrt_sched_syscall_lanes(void) {
-  return atomic_load_explicit(&syscall_lanes, memory_order_acquire);
-}
+/* The wakeup handle of the scheduler's threads, which is what a thread that
+   has nothing to run waits on. */
+static zyxrt_note sched_note;
+
+void zyxrt_sched_wake(void) { zyxrt_note_signal(&sched_note); }
 
 /* Work from outside the scheduler lands here: a blocking pool thread that
    finished a job, a poller thread that found a descriptor ready, the
@@ -84,20 +97,16 @@ static _Atomic(zyxrt_coro *) incoming_head;
 static zyxrt_coro *incoming_tail;
 static zyxrt_lock incoming_lock;
 
-/* state_lock guards the count of idle threads and the decision that the
-   program is over. */
+/* state_lock guards the count of idle threads, the count of threads, and the
+   decision that the program is over. */
 static zyxrt_lock state_lock;
-static size_t idle_threads;
+static _Atomic size_t idle_threads;
 static _Atomic int stopping;
 
 /* externals counts the coroutines waiting for something the scheduler cannot
    see, which is what keeps a thread from deciding the program is over while
    work is still on its way. */
 static _Atomic int externals;
-
-/* threads_live counts the scheduler threads other than the one that started
-   them, so that thread can wait for them to leave before the process ends. */
-static _Atomic size_t threads_live;
 
 void zyxrt_sched_external(int delta) {
   atomic_fetch_add_explicit(&externals, delta, memory_order_acq_rel);
@@ -143,6 +152,33 @@ static zyxrt_coro *queue_pop(zyxrt_coro **head, zyxrt_coro **tail, zyxrt_lock *l
   return c;
 }
 
+static void thread_main(void *arg);
+
+/* sched_start_lane starts one more scheduler thread, up to limit, when there is
+   work for it and no thread is free to run that work. */
+static void sched_start_lane(size_t limit) {
+  zyxrt_lock_hold(&state_lock);
+  size_t live = atomic_load_explicit(&lanes_live, memory_order_relaxed);
+  if (atomic_load_explicit(&stopping, memory_order_acquire) ||
+      atomic_load_explicit(&idle_threads, memory_order_relaxed) > 0 || live >= limit ||
+      live >= thread_cap) {
+    zyxrt_lock_drop(&state_lock);
+    return;
+  }
+  zyxrt_thread *t = &threads[live];
+  t->head = NULL;
+  t->tail = NULL;
+  t->current = NULL;
+  t->ctx = NULL;
+  t->index = live;
+  t->handle = zyxrt_thread_start(thread_main, t);
+  /* The count rises while the lock is held, so no thread decides the program is
+     over between the moment the new thread runs its first coroutine and the
+     moment it is counted among the ones that must be idle for that. */
+  atomic_store_explicit(&lanes_live, live + 1, memory_order_relaxed);
+  zyxrt_lock_drop(&state_lock);
+}
+
 /* sched_push puts a coroutine on the queue of the thread that owns it, which
    is woken when it is sleeping; a coroutine no thread has run yet goes to the
    calling thread's queue, or to the handoff queue when the caller is not a
@@ -160,7 +196,9 @@ static void sched_push(zyxrt_coro *c) {
        at its own queue, so the wake has to reach it: one signal would do if it
        woke a thread that would look, but a signal wakes whichever thread is
        waiting, and that one may have nothing to do and go back to sleep. */
-    if (target != self) zyxrt_wakeup_signal_all(thread_count);
+    if (target == self) return;
+    zyxrt_note_signal_all(&sched_note, thread_cap);
+    sched_start_lane(thread_count);
     return;
   }
   c->wait_next = NULL;
@@ -172,7 +210,8 @@ static void sched_push(zyxrt_coro *c) {
   }
   incoming_tail = c;
   zyxrt_lock_drop(&incoming_lock);
-  zyxrt_wakeup_signal();
+  zyxrt_note_signal(&sched_note);
+  sched_start_lane(thread_count);
 }
 
 /* sched_offer offers a coroutine to a ready queue. A coroutine a thread still
@@ -428,9 +467,9 @@ static void sched_sleep(int64_t wait) {
   if (zyxrt_loop_poll_once(wait)) return;
   if (wait < 0) {
     /* Nothing is waiting, so any arrival is a reason to look again. */
-    zyxrt_wakeup_wait(-1);
+    zyxrt_note_wait(&sched_note, -1);
   } else if (wait > 0) {
-    zyxrt_wakeup_wait(wait);
+    zyxrt_note_wait(&sched_note, wait);
   }
 }
 
@@ -609,69 +648,30 @@ static size_t scheduler_threads(void) {
   return cpus > ZYXXRT_PREEMPT_SLOTS ? ZYXXRT_PREEMPT_SLOTS : cpus;
 }
 
-/* thread_main is where a scheduler thread begins, a lane or a spare. */
+/* thread_main is where a scheduler thread begins. It runs the scheduler loop
+   until the program is over, and the thread that started it waits for it to
+   return. */
 static void thread_main(void *arg) {
   zyxrt_thread *t = (zyxrt_thread *)arg;
   self_thread_set(t);
   t->ctx = zyxrt_ctx_thread();
-  atomic_fetch_add_explicit(&threads_live, 1, memory_order_acq_rel);
   zyxrt_sched_run();
-  /* Leaving, whether as a lane or as a spare. The counts of live threads and of
-     slots fall together under the lock a caller taking a spare's slot holds,
-     and a spare's slot is free only once both have: a slot freed before its
-     count falls is a slot two threads hold at once. */
-  zyxrt_lock_hold(&state_lock);
-  if (t->spare > 0) {
-    atomic_fetch_sub_explicit(&spare_threads, 1, memory_order_acq_rel);
-    t->spare = -1;
-  }
-  atomic_fetch_sub_explicit(&thread_slots, 1, memory_order_acq_rel);
-  atomic_fetch_sub_explicit(&threads_live, 1, memory_order_acq_rel);
-  zyxrt_lock_drop(&state_lock);
-  /* The count of threads is one of the things a sleeping thread weighs when it
-     asks whether the program is over, so leaving has to be said out loud. */
-  zyxrt_wakeup_signal_all(thread_cap);
-}
-
-/* sched_spare starts one more scheduler thread, which takes a slot of its own
-   and leaves again once a lane is free. It is what keeps a program whose lanes
-   are all inside C calls from standing still, and the count of them is bounded
-   because a program with many calls in flight is better off with a few threads
-   than with one per call. */
-static void sched_spare(void) {
-  if (atomic_load_explicit(&spare_threads, memory_order_acquire) >= ZYXXRT_SPARE_MAX) return;
-  zyxrt_lock_hold(&state_lock);
-  for (size_t i = thread_count; i < thread_cap; i++) {
-    if (threads[i].spare < 0) {
-      threads[i].spare = 1;
-      threads[i].head = NULL;
-      threads[i].tail = NULL;
-      threads[i].current = NULL;
-      threads[i].index = i;
-      threads[i].ctx = NULL;
-      atomic_fetch_add_explicit(&thread_slots, 1, memory_order_acq_rel);
-      atomic_fetch_add_explicit(&spare_threads, 1, memory_order_acq_rel);
-      zyxrt_thread_start(thread_main, &threads[i]);
-      break;
-    }
-  }
-  zyxrt_lock_drop(&state_lock);
 }
 
 void zyxrt_entersyscall(void) {
-  int lanes = atomic_fetch_add_explicit(&syscall_lanes, 1, memory_order_acq_rel) + 1;
-  if (lanes < (int)thread_count) return;
+  int inside = atomic_fetch_add_explicit(&syscall_lanes, 1, memory_order_acq_rel) + 1;
+  size_t live = atomic_load_explicit(&lanes_live, memory_order_acquire);
+  if ((size_t)inside < live) return;
   /* Every lane is inside a C call, so nothing is running the program's own
-     code: one more thread takes it up. */
-  sched_spare();
+     code: one more thread takes it up. A program whose threads the user asked
+     for one of keeps its one thread, because a second one would make the
+     program run in parallel after all. */
+  if (thread_count < 2) return;
+  sched_start_lane(thread_cap);
 }
 
 void zyxrt_exitsyscall(void) {
   atomic_fetch_sub_explicit(&syscall_lanes, 1, memory_order_acq_rel);
-  if (atomic_load_explicit(&spare_threads, memory_order_acquire) > 0) {
-    /* A spare may be able to leave now, and only a wake lets it look. */
-    zyxrt_wakeup_signal_all(thread_cap);
-  }
 }
 
 /* zyxrt_sched_run is the scheduler loop of the calling thread: take in what
@@ -682,9 +682,6 @@ void zyxrt_sched_run(void) {
   for (;;) {
     zyxrt_sched_advance();
     if (run_once(t)) continue;
-    /* A spare is only there because every lane was inside a C call; once a
-       lane is free, the program does not need it. */
-    if (t->spare > 0 && zyxrt_sched_syscall_lanes() < (int)thread_count) return;
     /* Nothing to run here. Two threads may arrive at this at once, so the
        decision is made under the lock, and the evidence for it is read under
        the same lock: a deadline added after the wait was computed belongs to a
@@ -694,10 +691,10 @@ void zyxrt_sched_run(void) {
        thread that is about to park, because a thread parks before it goes
        idle. */
     zyxrt_lock_hold(&state_lock);
-    idle_threads++;
+    size_t idle = atomic_fetch_add_explicit(&idle_threads, 1, memory_order_relaxed) + 1;
+    size_t live = atomic_load_explicit(&lanes_live, memory_order_relaxed);
     int64_t wait = sched_idle_wait();
-    int over = idle_threads == thread_slots && wait == -1 &&
-               !incoming_ready() && queues_empty();
+    int over = idle == live && wait == -1 && !incoming_ready() && queues_empty();
     if (over) {
       atomic_store_explicit(&stopping, 1, memory_order_release);
     }
@@ -706,12 +703,12 @@ void zyxrt_sched_run(void) {
       /* Every other thread is waiting on the wakeup handle and nothing will
          wake it, so each one is released; each of them then finds the program
          over and returns. */
-      zyxrt_wakeup_signal_all(thread_cap);
+      zyxrt_note_signal_all(&sched_note, thread_cap);
       return;
     }
     sched_sleep(wait);
     zyxrt_lock_hold(&state_lock);
-    idle_threads--;
+    atomic_fetch_sub_explicit(&idle_threads, 1, memory_order_relaxed);
     zyxrt_lock_drop(&state_lock);
     if (atomic_load_explicit(&stopping, memory_order_acquire)) return;
   }
@@ -720,10 +717,11 @@ void zyxrt_sched_run(void) {
 void zyxrt_sched_init(void) {
   zyxrt_lock_init(&incoming_lock);
   zyxrt_lock_init(&state_lock);
-  idle_threads = 0;
+  atomic_store_explicit(&idle_threads, 0, memory_order_relaxed);
   atomic_store_explicit(&stopping, 0, memory_order_relaxed);
   atomic_store_explicit(&externals, 0, memory_order_relaxed);
-  atomic_store_explicit(&threads_live, 0, memory_order_relaxed);
+  atomic_store_explicit(&syscall_lanes, 0, memory_order_relaxed);
+  zyxrt_note_init(&sched_note);
 #if defined(_WIN32)
   /* The key the calling threads record themselves under. */
   if (self_thread_key == TLS_OUT_OF_INDEXES) {
@@ -737,10 +735,10 @@ void zyxrt_sched_init(void) {
   incoming_tail = NULL;
   /* A target without threads runs one, whatever ZYX_THREADS says. */
   thread_count = zyxrt_threads() ? scheduler_threads() : 1;
-  /* Slots for the lanes and for the spares a C call may need. The preemption
-     monitor watches one slot per index, so the array stays inside what it
-     watches. */
-  thread_cap = thread_count + ZYXXRT_SPARE_MAX;
+  /* Slots for the threads the program asked for and for the ones a C call may
+     need. The preemption monitor watches one slot per index, so the array stays
+     inside what it watches. */
+  thread_cap = thread_count + ZYXXRT_LANE_EXTRA;
   if (thread_cap > ZYXXRT_PREEMPT_SLOTS) thread_cap = ZYXXRT_PREEMPT_SLOTS;
   if (thread_cap < thread_count) thread_cap = thread_count;
   threads = (zyxrt_thread *)calloc(thread_cap, sizeof(zyxrt_thread));
@@ -748,32 +746,28 @@ void zyxrt_sched_init(void) {
   for (size_t i = 0; i < thread_cap; i++) {
     threads[i].head = threads[i].tail = NULL;
     threads[i].current = NULL;
+    threads[i].ctx = NULL;
     threads[i].index = i;
-    /* A lane is always in use; a spare slot is free until a call takes it. */
-    threads[i].spare = i < thread_count ? 0 : -1;
     zyxrt_lock_init(&threads[i].lock);
   }
-  atomic_store_explicit(&thread_slots, thread_count, memory_order_relaxed);
-  atomic_store_explicit(&spare_threads, 0, memory_order_relaxed);
-  atomic_store_explicit(&syscall_lanes, 0, memory_order_relaxed);
-  /* The calling thread is the first of them, so the program's own thread runs
-     coroutines rather than sitting outside the scheduler. */
+  /* The calling thread is the first lane, so the program's own thread runs
+     coroutines rather than sitting outside the scheduler. The rest are started
+     when there is work for them. */
+  atomic_store_explicit(&lanes_live, 1, memory_order_relaxed);
   self_thread_set(&threads[0]);
   threads[0].ctx = zyxrt_ctx_thread();
-  for (size_t i = 1; i < thread_count; i++) {
-    zyxrt_thread_start(thread_main, &threads[i]);
-  }
 }
 
-/* zyxrt_sched_shutdown wakes every thread that is waiting so the process can
-   end, and waits until they have left: the program's own thread ends the
-   process, and it must not do that while a scheduler thread is still running.
-   A thread that is between coroutines is idle by then, so waking it is a
-   courtesy rather than a requirement. */
+/* zyxrt_sched_shutdown wakes every thread that is waiting and waits until each
+   has left: the program's own thread ends the process, and it must not do that
+   while a scheduler thread is still running. A thread that is between
+   coroutines is idle by then, so the wake is what turns its wait into a
+   return. */
 void zyxrt_sched_shutdown(void) {
   atomic_store_explicit(&stopping, 1, memory_order_release);
-  zyxrt_wakeup_signal_all(thread_cap);
-  while (atomic_load_explicit(&threads_live, memory_order_acquire) > 0) {
-    zyxrt_sleep(1000000u);
+  zyxrt_note_signal_all(&sched_note, thread_cap);
+  size_t live = atomic_load_explicit(&lanes_live, memory_order_acquire);
+  for (size_t i = 1; i < live && i < thread_cap; i++) {
+    zyxrt_thread_join(threads[i].handle);
   }
 }

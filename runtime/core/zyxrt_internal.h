@@ -191,7 +191,8 @@ void zyxrt_platform_init(void);
    coroutine that cannot proceed suspends itself and a scheduler thread
    resumes the next ready one. The scheduler runs on as many threads as
    ZYX_THREADS names, each with a queue of its own, and a coroutine is resumed
-   only on the thread that owns it. */
+   only on the thread that owns it. A thread is started when there is work for
+   it and none is free, so a program pays for the threads it uses. */
 void zyxrt_sched_ready(zyxrt_coro *c);
 /* zyxrt_sched_thread_index answers which scheduler thread the caller runs on,
    or the number of them when the caller is not one. */
@@ -223,15 +224,9 @@ void zyxrt_sched_external(int delta);
    ZYXRT_WAIT_EXTERNAL means a coroutine waits outside the scheduler, and a
    negative wait other than that means no deadline is waiting either. */
 #define ZYXRT_WAIT_EXTERNAL (-2)
-/* The wakeup handle. A thread outside the scheduler signals it, and the
-   scheduler waits on it. zyxrt_wakeup_signal releases one waiting thread and
-   zyxrt_wakeup_signal_all releases count of them. */
-void zyxrt_wakeup_init(void);
-void zyxrt_wakeup_signal(void);
-void zyxrt_wakeup_signal_all(size_t count);
-/* zyxrt_wakeup_wait waits for the handle, up to ns nanoseconds, or forever
-   when ns is negative. */
-void zyxrt_wakeup_wait(int64_t ns);
+/* zyxrt_sched_wake tells the scheduler's threads that something new is waiting
+   to be looked at, which the timer wheel does when a deadline is added. */
+void zyxrt_sched_wake(void);
 
 /* Stopping the threads the runtime started. The program's own thread ends the
    process, so each of these tells the threads of one part of the runtime to
@@ -311,16 +306,17 @@ void zyxrt_wait_wake(zyxrt_waitlist *list);
    select uses together with its channel lists. */
 void zyxrt_sched_park(uint64_t deadline);
 
-/* Cooperative preemption. zyxrt_preempt_init starts the monitor thread, which
-   marks every coroutine that has held its scheduler thread for a whole
-   quantum; a scheduler thread is named by its index;
+/* Cooperative preemption. zyxrt_preempt_start starts the monitor thread, which
+   marks every coroutine that has held its scheduler thread for a whole quantum;
    zyxrt_preempt_enter and zyxrt_preempt_leave record which coroutine a thread
-   is running; zyxrt_preempt_check is what a loop back edge calls. */
+   is running; zyxrt_preempt_check is what a loop back edge calls. The scheduler
+   asks for the monitor when a second thread can run coroutines, because with
+   one thread there is no other coroutine to hand that thread to. */
 /* The slots the monitor watches, one per scheduler thread. The scheduler
    starts no more threads than this, because a thread the monitor cannot watch
    is a thread a coroutine can hold for as long as it likes. */
 #define ZYXXRT_PREEMPT_SLOTS 256
-void zyxrt_preempt_init(void);
+void zyxrt_preempt_start(void);
 void zyxrt_preempt_enter(zyxrt_coro *c);
 void zyxrt_preempt_leave(void);
 void zyxrt_preempt_check(void);

@@ -1,8 +1,13 @@
-/* The blocking pool. A C call that may block is handed to a thread of the
-   pool, and the coroutine that made it parks until the call is done. The
+/* The blocking pool. A C call that must not hold a lane is handed to a thread of
+   the pool, and the coroutine that made it parks until the call is done. The
    pool threads are the only part of the runtime that runs off the scheduler's
    thread, so a finished job posts its coroutine to the scheduler rather than
-   readying it from the thread. */
+   readying it from the thread.
+ *
+ * The pool grows with the work it is given: a program that never hands it a
+ * call starts no thread of it at all, and a call that arrives while every pool
+ * thread is busy starts one more, up to the number the program asked for. Every
+ * thread it starts is one the program waits for when the process ends. */
 
 #include "zyxrt_internal.h"
 
@@ -42,7 +47,9 @@ static int started;
    while a pool thread is still inside the allocator or inside the call it was
    given. */
 static _Atomic int quitting;
-static _Atomic size_t live;
+static size_t workers;
+static size_t idle;
+static zyxrt_thread_handle *worker_handles;
 
 /* block_pool_size returns the number of pool threads, which ZYX_BLOCKPOOL
    sets and which defaults to 64. */
@@ -55,15 +62,18 @@ static size_t block_pool_size(void) {
   return 64;
 }
 
-/* worker takes jobs for as long as the process runs. */
+/* worker takes jobs until the pool is told to leave. It counts itself as idle
+   while it waits, which is what lets a caller that arrives then decide whether
+   it needs another thread. */
 static void worker(void *arg) {
   (void)arg;
-  atomic_fetch_add_explicit(&live, 1, memory_order_acq_rel);
   for (;;) {
     zyxrt_lock_hold(&queue_lock);
+    idle++;
     while (queue_head == NULL && !atomic_load_explicit(&quitting, memory_order_acquire)) {
       zyxrt_cond_wait(&queue_cond, &queue_lock);
     }
+    idle--;
     if (queue_head == NULL) {
       zyxrt_lock_drop(&queue_lock);
       break;
@@ -90,23 +100,23 @@ static void worker(void *arg) {
        and wakes the scheduler. */
     zyxrt_sched_ready(coro);
   }
-  atomic_fetch_sub_explicit(&live, 1, memory_order_acq_rel);
 }
 
-/* zyxrt_block_stop tells every pool thread to leave and waits until they have,
+/* zyxrt_block_stop tells every pool thread to leave and waits until each has,
    because the program's own thread ends the process and must not do that while
    one of them is still running. */
 void zyxrt_block_stop(void) {
   if (!started) return;
   atomic_store_explicit(&quitting, 1, memory_order_release);
   zyxrt_lock_hold(&queue_lock);
-  for (size_t i = 0; i < cap; i++) {
-    zyxrt_cond_signal(&queue_cond);
-  }
+  /* Every waiting thread has to be released: a thread is a job of its own, and
+     one signal would leave the rest of them waiting. */
+  zyxrt_cond_broadcast(&queue_cond);
   zyxrt_lock_drop(&queue_lock);
-  while (atomic_load_explicit(&live, memory_order_acquire) > 0) {
-    zyxrt_sleep(1000000u);
+  for (size_t i = 0; i < workers; i++) {
+    zyxrt_thread_join(worker_handles[i]);
   }
+  workers = 0;
 }
 
 void zyxrt_block_start(void) {
@@ -116,9 +126,17 @@ void zyxrt_block_start(void) {
   zyxrt_cond_init(&queue_cond);
   zyxrt_lock_init(&busy_lock);
   cap = block_pool_size();
-  for (size_t i = 0; i < cap; i++) {
-    zyxrt_thread_start(worker, NULL);
-  }
+  worker_handles = (zyxrt_thread_handle *)calloc(cap, sizeof(zyxrt_thread_handle));
+  if (!worker_handles) zyxrt_panic("out of memory", 13);
+}
+
+/* block_grow starts a pool thread when the work that just arrived has none
+   waiting for it. The caller holds the queue lock, so the count of waiting
+   threads and the start of a new one are one decision. */
+static void block_grow(void) {
+  if (idle > 0 || workers >= cap) return;
+  worker_handles[workers] = zyxrt_thread_start(worker, NULL);
+  workers++;
 }
 
 size_t zyxrt_block_busy(void) {
@@ -157,6 +175,7 @@ void zyxrt_block_run(zyxrt_block_fn fn, void *ctx) {
     queue_head = job;
   }
   queue_tail = job;
+  block_grow();
   zyxrt_cond_signal(&queue_cond);
   zyxrt_lock_drop(&queue_lock);
   zyxrt_sched_suspend(self);

@@ -9,11 +9,10 @@ int zyxrt_run_main(zyxrt_main_fn fn, void *arg) {
   zyxrt_platform_init();
   zyxrt_timer_init();
   zyxrt_pool_warm();
-  zyxrt_wakeup_init();
   zyxrt_block_start();
   zyxrt_loop_start();
   zyxrt_wheel_init();
-  zyxrt_preempt_init();
+  zyxrt_preempt_start();
   zyxrt_sched_init();
   zyxrt_coro *root = zyxrt_coro_spawn((zyxrt_fn)fn, arg);
   root->root = 1;

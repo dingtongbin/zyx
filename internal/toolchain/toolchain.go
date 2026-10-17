@@ -255,6 +255,7 @@ func (t *Toolchain) Sources(target Target) []string {
 		filepath.Join(t.Runtime, "io", "blockpool.c"),
 		filepath.Join(t.Runtime, "io", "loop.c"),
 		filepath.Join(t.Runtime, "io", t.loopBackend(target)),
+		filepath.Join(t.Runtime, "platform", "note.c"),
 		filepath.Join(t.Runtime, "chan", "chan.c"),
 		filepath.Join(t.Runtime, "sync", "sync.c"),
 		filepath.Join(t.Runtime, "container", "array.c"),

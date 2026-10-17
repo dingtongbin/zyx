@@ -121,7 +121,7 @@ void zyxrt_wheel_add(zyxrt_timer *t, uint64_t deadline) {
      with the distance to the next deadline, or forever when the wheel was
      empty. A new deadline is a reason to look again, so the waiters are
      woken rather than left waiting for a deadline none of them knew of. */
-  zyxrt_wakeup_signal();
+  zyxrt_sched_wake();
 }
 
 void zyxrt_wheel_remove(zyxrt_timer *t) {

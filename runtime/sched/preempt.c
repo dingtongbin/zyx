@@ -7,6 +7,7 @@
    the quantum pays nothing for the mechanism beyond the load. */
 
 #include "zyxrt_internal.h"
+#include "wakeup.h"
 
 #include <stdatomic.h>
 
@@ -40,19 +41,20 @@ static size_t self_slot(void) {
    thread for a whole one is marked on the next pass. */
 #define ZYXXRT_MONITOR_NS (ZYXXRT_QUANTUM_NS / 2u)
 
-/* monitor_quitting tells the monitor to leave, and monitor_live counts the one
-   that has not, because the program's own thread ends the process and must not
-   do that while the monitor is still reading the slots. */
+/* monitor_quitting tells the monitor to leave. The monitor sleeps on a note of
+   its own, so telling it to leave wakes it rather than waiting for a sleep to
+   end, and the thread that started it waits for it to return. */
+static zyxrt_note monitor_note;
 static _Atomic int monitor_quitting;
-static _Atomic size_t monitor_live;
+static zyxrt_thread_handle monitor_handle;
+static int monitor_started;
 
 /* monitor marks every coroutine that has held its scheduler thread for a whole
    quantum. It runs only where the target has threads. */
 static void monitor(void *arg) {
   (void)arg;
-  atomic_fetch_add_explicit(&monitor_live, 1, memory_order_acq_rel);
   while (!atomic_load_explicit(&monitor_quitting, memory_order_acquire)) {
-    zyxrt_sleep(ZYXXRT_MONITOR_NS);
+    zyxrt_note_wait(&monitor_note, ZYXXRT_MONITOR_NS);
     for (size_t i = 0; i < ZYXXRT_PREEMPT_SLOTS; i++) {
       zyxrt_coro *c = atomic_load_explicit(&running[i], memory_order_acquire);
       if (c == NULL) {
@@ -65,25 +67,25 @@ static void monitor(void *arg) {
       atomic_store_explicit(&c->preempt, 1, memory_order_release);
     }
   }
-  atomic_fetch_sub_explicit(&monitor_live, 1, memory_order_acq_rel);
 }
 
 void zyxrt_preempt_stop(void) {
-  if (!zyxrt_threads()) return;
+  if (!monitor_started) return;
   atomic_store_explicit(&monitor_quitting, 1, memory_order_release);
-  while (atomic_load_explicit(&monitor_live, memory_order_acquire) > 0) {
-    zyxrt_sleep(1000000u);
-  }
+  zyxrt_note_signal(&monitor_note);
+  zyxrt_thread_join(monitor_handle);
 }
 
-void zyxrt_preempt_init(void) {
-  if (!zyxrt_threads()) {
+/* zyxrt_preempt_start starts the monitor. The scheduler asks for it once, so a
+   program that runs coroutines has one and a program that does not pays for
+   none. */
+void zyxrt_preempt_start(void) {
+  if (!zyxrt_threads() || monitor_started) {
     return;
   }
-  for (size_t i = 0; i < ZYXXRT_PREEMPT_SLOTS; i++) {
-    atomic_store_explicit(&running[i], NULL, memory_order_relaxed);
-  }
-  zyxrt_thread_start(monitor, NULL);
+  monitor_started = 1;
+  zyxrt_note_init(&monitor_note);
+  monitor_handle = zyxrt_thread_start(monitor, NULL);
 }
 
 /* zyxrt_preempt_enter records the coroutine the calling thread is about to
