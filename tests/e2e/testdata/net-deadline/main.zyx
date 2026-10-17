@@ -1,0 +1,123 @@
+package main
+
+// A deadline ends a wait. The design fixes a relative timeout and says that the
+// state after a timeout is no timeout, so the wait a deadline ends spends it and
+// the call after that waits without one.
+//
+// Nothing here prints an address, a port, or a clock reading: the port belongs
+// to the machine and the moment, and every line below is the same wherever the
+// program runs.
+
+import "std/fmt"
+import "std/net"
+
+const short: Duration = dur.ms(50)
+
+// say answers whether a label checks out, and stops the program on the line that
+// failed otherwise.
+func say(label: str, answer: bool) {
+    if !answer {
+        panic(f"deadline test: {label}")
+    }
+    fmt.Print(label)
+    fmt.PrintNl()
+}
+
+// timed_out answers whether a failure is the one a deadline gives.
+func timed_out(e: net.Error) -> bool {
+    return i32(e.Kind) == i32(net.ErrorKind.Timeout)
+}
+
+// bytes_of answers the bytes of a text.
+func bytes_of(text: str) -> [u8] {
+    var out = new Buf(0)
+    out.WriteStr(text)
+    return out.Bytes()
+}
+
+// datagram reads a socket nothing sends to, so the deadline is what ends it.
+func datagram() -> Result<bool, net.Error> {
+    var udp = try net.BindUdp("127.0.0.1:0")
+    udp.SetDeadline(short)
+    var b = new Buf(0)
+    var timed = false
+    match udp.ReadFrom(b, 16) {
+        Ok(_) => { say("a datagram read ended at its deadline", false) }
+        Err(e) => {
+            timed = timed_out(e)
+            say("a datagram read ended at its deadline", timed)
+        }
+    }
+    udp.Close()
+    return Result.Ok(timed)
+}
+
+// bound is a listener with the address it took. The two are needed together,
+// because the port belongs to the machine rather than to the program.
+struct bound {
+    listener: net.Listener
+    addr: str
+}
+
+// listen_first listens on a loopback port that is free. The port belongs to the
+// machine, so it is tried rather than chosen, and it never enters the output.
+func listen_first() -> Result<bound, net.Error> {
+    var port: i64 = 24000
+    for port < 24100 {
+        var addr = f"127.0.0.1:{port}"
+        match net.Listen("tcp", addr) {
+            Ok(listener) => { return Result.Ok(bound { listener: listener, addr: addr }) }
+            Err(_) => { port += 1 }
+        }
+    }
+    return Result.Err(net.Error { Kind: net.ErrorKind.AddrInUse, Errno: 0, Msg: "no free port" })
+}
+
+// stream reads a connection the far end says nothing on, and then reads what the
+// far end sends without a deadline: the timeout spent the deadline, so the
+// second read waits for the data rather than failing.
+func stream() -> Result<bool, net.Error> {
+    var at = try listen_first()
+    var listener = at.listener
+    var client = try net.Dial("tcp", at.addr)
+    var server = try listener.Accept()
+
+    server.SetDeadline(short)
+    var b = new Buf(0)
+    match server.Read(b, 16) {
+        Ok(_) => { say("a stream read ended at its deadline", false) }
+        Err(e) => { say("a stream read ended at its deadline", timed_out(e)) }
+    }
+
+    var sent = try client.WriteStr("hello")
+    say("the peer wrote", sent == 5)
+    var answered = false
+    match server.Read(b, 16) {
+        Ok(n) => {
+            answered = n == 5
+            say("the read after a timeout answers", answered)
+        }
+        Err(e) => { say("the read after a timeout answers", false) }
+    }
+
+    server.Close()
+    client.Close()
+    listener.Close()
+    return Result.Ok(answered)
+}
+
+func run() -> Result<bool, net.Error> {
+    var timed = try datagram()
+    var answered = try stream()
+    return Result.Ok(timed && answered)
+}
+
+func main() {
+    match run() {
+        Ok(_) => { }
+        Err(e) => {
+            var message = f"deadline test: {e.Msg}"
+            panic(message)
+        }
+    }
+}

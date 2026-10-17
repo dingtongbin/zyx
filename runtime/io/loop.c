@@ -191,7 +191,18 @@ size_t zyxrt_loop_snapshot(int *fds, int *events, size_t max) {
   return n;
 }
 
+static int loop_wait(int fd, int events, uint64_t deadline);
+
 int zyxrt_loop_wait(int fd, int events) {
+  return loop_wait(fd, events, 0);
+}
+
+/* loop_wait parks the running coroutine until the descriptor is ready, until a
+   release wakes it, or until the deadline passes, whichever comes first; a
+   deadline of zero waits without one. Readiness and a release take the waiter
+   off the entry, and a deadline has to do the same, because the node lives on
+   this frame while the entry outlives it. */
+static int loop_wait(int fd, int events, uint64_t deadline) {
   loop_ensure();
   if (!loop_started) return 2;
   zyxrt_coro *self = zyxrt_sched_current();
@@ -200,6 +211,15 @@ int zyxrt_loop_wait(int fd, int events) {
   w.coro = self;
   w.next = NULL;
   w.closed = 0;
+
+  /* The deadline is on the wheel before the wait arms, so a deadline that has
+     already passed and a readiness that arrives at once are both seen. */
+  zyxrt_timer timer;
+  int timed = deadline != 0;
+  if (timed) {
+    timer.coro = self;
+    zyxrt_wheel_add(&timer, deadline);
+  }
 
   zyxrt_lock_hold(&loop_lock);
   zyxrt_fd_entry *e = entry_of(fd);
@@ -263,9 +283,42 @@ int zyxrt_loop_wait(int fd, int events) {
   zyxrt_sched_suspend(self);
   zyxrt_sched_external(-1);
 
+  /* The wheel takes a timer out when it fires, so a timer that is no longer in
+     the wheel is what readied this coroutine: the waiter is still linked on the
+     entry, and nobody else is about to take it off, so it is taken off here,
+     the way the failure path does. */
+  int expired = timed && timer.level < 0;
+  if (expired) {
+    zyxrt_lock_hold(&loop_lock);
+    zyxrt_fd_entry *back = entry_of(fd);
+    if (back != NULL) {
+      if (back->readers == &w) back->readers = w.next;
+      if (back->writers == &w) back->writers = w.next;
+      if (back->used && back->readers == NULL && back->writers == NULL) {
+        back->used = 0;
+        back->events = 0;
+        table_used--;
+      }
+    }
+    zyxrt_lock_drop(&loop_lock);
+  }
+  if (timed) zyxrt_wheel_remove(&timer);
+  if (expired) return 3;
+
   /* Whoever readied the coroutine took the waiter off the entry first, so the
      node is free by now and only its verdict is left to read. */
   return w.closed ? 1 : 0;
+}
+
+/* zyxrt_loop_wait_until is the wait above with a deadline: it answers 3 when the
+   deadline ended the wait instead of 0. The deadline is absolute, in the clock
+   the timer wheel reads. */
+int zyxrt_loop_wait_until(int fd, int events, uint64_t deadline) {
+  return loop_wait(fd, events, deadline);
+}
+
+uint64_t zyxrt_deadline_after(uint64_t ns) {
+  return zyxrt_now() + ns;
 }
 
 void zyxrt_loop_release(int fd) {

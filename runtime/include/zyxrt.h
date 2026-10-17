@@ -342,6 +342,18 @@ void zyxrt_chan_close(void *ch);
 #define ZYXRT_FD_READ 1
 #define ZYXRT_FD_WRITE 2
 int zyxrt_loop_wait(int fd, int events);
+
+/* zyxrt_loop_wait_until waits for readiness or for a deadline, whichever comes
+   first: 0 the descriptor is ready, 1 it was released, 2 this target has no
+   event loop or the wait cannot be made, 3 the deadline passed first. A deadline
+   of zero is no deadline, and the wait is then the one without one. The deadline
+   is absolute, in the clock's own units. */
+int zyxrt_loop_wait_until(int fd, int events, uint64_t deadline);
+
+/* zyxrt_deadline_after answers the absolute deadline a relative wait of ns
+   nanoseconds ends at, in the clock the event loop reads, so a program states a
+   timeout as a duration and never as a reading of a clock it does not own. */
+uint64_t zyxrt_deadline_after(uint64_t ns);
 void zyxrt_loop_release(int fd);
 size_t zyxrt_loop_fds(void);
 

@@ -23,6 +23,10 @@ import c "zyxnet.h" {
     fast zyxnet_recv, zyxnet_send, zyxnet_recv_from, zyxnet_send_to
 }
 
+// zyxtime_duration_ns answers the count of nanoseconds a Duration is, which is
+// what a deadline is stated in. The symbol belongs to std/time.
+extern func zyxtime_duration_ns(d: Duration) -> i64
+
 // ErrorKind is what went wrong. Every system package reports failures in this
 // shape, so one program reads them the same way wherever they come from.
 
@@ -194,18 +198,27 @@ func flag_of(on: bool) -> i32 {
 }
 
 // wait_readable parks the calling coroutine until the descriptor can be read
-// from.
-func wait_readable(fd: i32) -> Result<(), Error> {
-    match rt.WaitReadable(fd) {
-        Ok(_) => { return Result.Ok() }
-        Err(e) => { return Result.Err(wait_error(e)) }
+// from or the deadline passes. A deadline of zero waits without one.
+func wait_readable(fd: i32, deadline: u64) -> Result<(), Error> {
+    if deadline == 0 {
+        return wait_answer(rt.WaitReadable(fd))
     }
+    return wait_answer(rt.WaitReadableUntil(fd, deadline))
 }
 
-// wait_writable parks the calling coroutine until the descriptor can be
-// written to.
-func wait_writable(fd: i32) -> Result<(), Error> {
-    match rt.WaitWritable(fd) {
+// wait_writable parks the calling coroutine until the descriptor can be written
+// to or the deadline passes.
+func wait_writable(fd: i32, deadline: u64) -> Result<(), Error> {
+    if deadline == 0 {
+        return wait_answer(rt.WaitWritable(fd))
+    }
+    return wait_answer(rt.WaitWritableUntil(fd, deadline))
+}
+
+// wait_answer reads the answer of one of the runtime's waits as a failure of
+// this package where it is one.
+func wait_answer(r: Result<(), rt.Error>) -> Result<(), Error> {
+    match r {
         Ok(_) => { return Result.Ok() }
         Err(e) => { return Result.Err(wait_error(e)) }
     }
@@ -213,12 +226,32 @@ func wait_writable(fd: i32) -> Result<(), Error> {
 
 // wait_error reads a failure of the runtime's own wait as a failure of this
 // package. A wait that ended because the descriptor was closed or released is
-// a closed failure; anything else is a wait this target could not make.
+// a closed failure, one that ended because its deadline passed is a timeout,
+// and anything else is a wait this target could not make.
 func wait_error(e: rt.Error) -> Error {
     if i32(e.Kind) == i32(rt.ErrorKind.Closed) {
         return Error { Kind: ErrorKind.Closed, Errno: e.Errno, Msg: e.Msg }
     }
+    if i32(e.Kind) == i32(rt.ErrorKind.Timeout) {
+        return Error { Kind: ErrorKind.Timeout, Errno: e.Errno, Msg: e.Msg }
+    }
     return Error { Kind: ErrorKind.Other, Errno: e.Errno, Msg: e.Msg }
+}
+
+// deadline_of answers the absolute deadline a relative timeout names. A duration
+// of zero or less means no deadline, which the waits read as zero.
+func deadline_of(d: Duration) -> u64 {
+    var ns = zyxtime_duration_ns(d)
+    if ns <= 0 {
+        return 0
+    }
+    return rt.DeadlineAfter(u64(ns))
+}
+
+// spent answers whether a wait ended because its deadline passed, which is the
+// one answer that spends the deadline it was given.
+func spent(e: Error) -> bool {
+    return i32(e.Kind) == i32(ErrorKind.Timeout)
 }
 
 // A Conn is a connection to another program: a stream socket a program reads
@@ -230,6 +263,12 @@ struct Conn {
     fd: i32
     closed: bool
     blocking: bool
+    // read_deadline and write_deadline are absolute times on the runtime's
+    // clock, or zero when that direction has none. A wait that ended because
+    // its deadline passed spends it, so the next call waits without one, which
+    // is what the design fixes.
+    read_deadline: u64
+    write_deadline: u64
 
     impl SyncSafe { }
 
@@ -243,7 +282,7 @@ struct Conn {
         }
         var n = c.zyxnet_recv(self.handle, b, max)
         for n < 0 && c.zyxnet_error_kind() == c.ZYXNET_WOULD_BLOCK && self.blocking == false {
-            try wait_readable(self.fd)
+            try self.wait_read()
             n = c.zyxnet_recv(self.handle, b, max)
         }
         if n < 0 {
@@ -274,7 +313,7 @@ struct Conn {
         }
         var n = c.zyxnet_send(self.handle, b)
         for n < 0 && c.zyxnet_error_kind() == c.ZYXNET_WOULD_BLOCK && self.blocking == false {
-            try wait_writable(self.fd)
+            try self.wait_write()
             n = c.zyxnet_send(self.handle, b)
         }
         if n < 0 {
@@ -455,11 +494,65 @@ struct Conn {
         }
         c.zyxnet_set_keep_alive(self.handle, flag_of(on))
     }
+    // SetDeadline sets the timeout of both directions, as an offset from now. A
+    // call that waits longer than the offset fails with Timeout, and the
+    // deadline is spent by that wait: the call after it waits without one. An
+    // offset that is zero or less clears the deadline.
+    func SetDeadline(d: Duration) {
+        var at = deadline_of(d)
+        self.read_deadline = at
+        self.write_deadline = at
+    }
+
+    // SetReadDeadline sets the timeout of a read, as SetDeadline does.
+    func SetReadDeadline(d: Duration) {
+        self.read_deadline = deadline_of(d)
+    }
+
+    // SetWriteDeadline sets the timeout of a write, as SetDeadline does.
+    func SetWriteDeadline(d: Duration) {
+        self.write_deadline = deadline_of(d)
+    }
+
+    // wait_read waits for the connection to be readable, and gives the read
+    // deadline up when that wait is what the deadline ended.
+    func wait_read() -> Result<(), Error> {
+        match wait_readable(self.fd, self.read_deadline) {
+            Ok(_) => { return Result.Ok() }
+            Err(e) => {
+                if spent(e) {
+                    self.read_deadline = 0
+                }
+                return Result.Err(e)
+            }
+        }
+    }
+
+    // wait_write waits for the connection to be writable, and gives the write
+    // deadline up when that wait is what the deadline ended.
+    func wait_write() -> Result<(), Error> {
+        match wait_writable(self.fd, self.write_deadline) {
+            Ok(_) => { return Result.Ok() }
+            Err(e) => {
+                if spent(e) {
+                    self.write_deadline = 0
+                }
+                return Result.Err(e)
+            }
+        }
+    }
 }
 
 // conn_of builds the connection a call just made.
 func conn_of(handle: raw) -> Conn {
-    return Conn { handle: handle, fd: c.zyxnet_fd(handle), closed: false, blocking: false }
+    return Conn {
+        handle: handle
+        fd: c.zyxnet_fd(handle)
+        closed: false
+        blocking: false
+        read_deadline: 0
+        write_deadline: 0
+    }
 }
 
 // discard gives up a connection the call that made it never handed to the
@@ -476,6 +569,9 @@ struct Listener {
     handle: raw
     fd: i32
     closed: bool
+    // deadline is the absolute time a wait for a connection ends at, or zero
+    // when it has none.
+    deadline: u64
 
     // Accept waits for a connection and answers it.
     func Accept() -> Result<Conn, Error> {
@@ -484,7 +580,7 @@ struct Listener {
         }
         var handle = c.zyxnet_accept(self.handle)
         for c.zyxnet_error_kind() == c.ZYXNET_WOULD_BLOCK {
-            try wait_readable(self.fd)
+            try self.wait_accept()
             handle = c.zyxnet_accept(self.handle)
         }
         if c.zyxnet_error_kind() != 0 {
@@ -508,6 +604,27 @@ struct Listener {
         return Result.Ok()
     }
 
+    // SetDeadline sets the timeout of the wait for a connection, as an offset
+    // from now. Accept fails with Timeout when nothing arrives before it, and
+    // that wait spends the deadline. An offset that is zero or less clears it.
+    func SetDeadline(d: Duration) {
+        self.deadline = deadline_of(d)
+    }
+
+    // wait_accept waits for a connection to arrive, and gives the deadline up
+    // when that wait is what the deadline ended.
+    func wait_accept() -> Result<(), Error> {
+        match wait_readable(self.fd, self.deadline) {
+            Ok(_) => { return Result.Ok() }
+            Err(e) => {
+                if spent(e) {
+                    self.deadline = 0
+                }
+                return Result.Err(e)
+            }
+        }
+    }
+
     // Close gives the listener up, waking every coroutine waiting on it. It is
     // idempotent, and a call on it afterwards is refused.
     func Close() {
@@ -528,6 +645,11 @@ struct UdpConn {
     fd: i32
     closed: bool
     blocking: bool
+    // read_deadline and write_deadline are absolute times on the runtime's
+    // clock, or zero when that direction has none, as they are on a stream
+    // connection.
+    read_deadline: u64
+    write_deadline: u64
 
     // ReadFrom reads one datagram into b and answers how many bytes it held
     // and where it came from.
@@ -538,7 +660,7 @@ struct UdpConn {
         var from = new Buf(0)
         var n = c.zyxnet_recv_from(self.handle, b, max, from)
         for n < 0 && c.zyxnet_error_kind() == c.ZYXNET_WOULD_BLOCK && self.blocking == false {
-            try wait_readable(self.fd)
+            try self.wait_read()
             from = new Buf(0)
             n = c.zyxnet_recv_from(self.handle, b, max, from)
         }
@@ -559,7 +681,7 @@ struct UdpConn {
         }
         var n = c.zyxnet_send_to(self.handle, b, a.host.Bytes(), a.port)
         for n < 0 && c.zyxnet_error_kind() == c.ZYXNET_WOULD_BLOCK && self.blocking == false {
-            try wait_writable(self.fd)
+            try self.wait_write()
             n = c.zyxnet_send_to(self.handle, b, a.host.Bytes(), a.port)
         }
         if n < 0 {
@@ -579,6 +701,53 @@ struct UdpConn {
         c.zyxnet_close(self.handle)
     }
 
+    // SetDeadline sets the timeout of both directions of a datagram socket, as
+    // an offset from now. A call that waits longer fails with Timeout, and that
+    // wait spends the deadline. An offset that is zero or less clears it.
+    func SetDeadline(d: Duration) {
+        var at = deadline_of(d)
+        self.read_deadline = at
+        self.write_deadline = at
+    }
+
+    // SetReadDeadline sets the timeout of a read, as SetDeadline does.
+    func SetReadDeadline(d: Duration) {
+        self.read_deadline = deadline_of(d)
+    }
+
+    // SetWriteDeadline sets the timeout of a write, as SetDeadline does.
+    func SetWriteDeadline(d: Duration) {
+        self.write_deadline = deadline_of(d)
+    }
+
+    // wait_read waits to receive, and gives the read deadline up when that wait
+    // is what the deadline ended.
+    func wait_read() -> Result<(), Error> {
+        match wait_readable(self.fd, self.read_deadline) {
+            Ok(_) => { return Result.Ok() }
+            Err(e) => {
+                if spent(e) {
+                    self.read_deadline = 0
+                }
+                return Result.Err(e)
+            }
+        }
+    }
+
+    // wait_write waits to send, and gives the write deadline up when that wait
+    // is what the deadline ended.
+    func wait_write() -> Result<(), Error> {
+        match wait_writable(self.fd, self.write_deadline) {
+            Ok(_) => { return Result.Ok() }
+            Err(e) => {
+                if spent(e) {
+                    self.write_deadline = 0
+                }
+                return Result.Err(e)
+            }
+        }
+    }
+
     // SetBlocking makes the descriptor wait inside the call rather than park
     // the coroutine.
     func SetBlocking(on: bool) {
@@ -594,7 +763,14 @@ struct UdpConn {
 
 // udp_of builds the datagram socket a call just made.
 func udp_of(handle: raw) -> UdpConn {
-    return UdpConn { handle: handle, fd: c.zyxnet_fd(handle), closed: false, blocking: false }
+    return UdpConn {
+        handle: handle
+        fd: c.zyxnet_fd(handle)
+        closed: false
+        blocking: false
+        read_deadline: 0
+        write_deadline: 0
+    }
 }
 
 // Listen listens on addr for the connections of a network. The network is
@@ -607,7 +783,7 @@ func Listen(network: str, addr: str) -> Result<Listener, Error> {
     if c.zyxnet_error_kind() != 0 {
         return Result.Err(error_of())
     }
-    return Result.Ok(Listener { handle: handle, fd: c.zyxnet_fd(handle), closed: false })
+    return Result.Ok(Listener { handle: handle, fd: c.zyxnet_fd(handle), closed: false, deadline: 0 })
 }
 
 // Dial connects to the address addr names over the network. A network of
@@ -627,7 +803,7 @@ func Dial(network: str, addr: str) -> Result<Conn, Error> {
     // returns; one that has to travel is still in progress, and the coroutine
     // waits for the descriptor to become writable.
     if c.zyxnet_connect_pending(handle) != 0 {
-        match wait_writable(conn.fd) {
+        match wait_writable(conn.fd, conn.write_deadline) {
             Ok(_) => { }
             Err(e) => {
                 discard(conn)
