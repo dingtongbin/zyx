@@ -1,0 +1,183 @@
+package main
+
+// A WebSocket over a connection the http server upgraded. The server takes the
+// connection from the request it is answering and speaks the protocol on it, the
+// client dials and speaks the same protocol back, and both ends are the library's
+// own.
+
+import "std/fmt"
+import "std/http"
+import "std/net"
+import "std/time"
+import "std/ws"
+
+const pause: Duration = dur.ms(2)
+
+// pick_port answers a loopback port that is free at the moment. A port already
+// taken is passed over, because which port the program gets is not part of what
+// it prints.
+func pick_port() -> i32 {
+    var port = 26000 + i32(time.UnixMilli() % 2000)
+    var tries: i32 = 0
+    for tries < 64 {
+        match net.Listen("tcp", f"127.0.0.1:{i64(port)}") {
+            Ok(listener) => {
+                listener.Close()
+                return port
+            }
+            Err(_) => {
+                port += 1
+            }
+        }
+        tries += 1
+    }
+    return port
+}
+
+// serve answers requests until the server is closed.
+func serve(addr: str, s: http.Server) {
+    match s.ListenAndServe(addr) {
+        Ok(_) => { }
+        Err(_) => { }
+    }
+}
+
+// say answers whether a label checks out, and stops the program on the line that
+// failed otherwise.
+func say(label: str, answer: bool) {
+    if !answer {
+        panic(f"ws test: {label}")
+    }
+    fmt.Print(label)
+    fmt.PrintNl()
+}
+
+// echo upgrades the connection the request arrived on and sends back what it is
+// sent, until the client says it is done.
+struct echo {
+    impl http.Handler {
+        func Serve(req: http.Request, resp: http.Response) {
+            var conn = resp.TakeConn()
+            match ws.Upgrade(conn, req) {
+                Ok(socket) => {
+                    var going = true
+                    for going {
+                        var b = new Buf(0)
+                        match socket.Recv(b, 4096) {
+                            Ok(pair) => {
+                                if pair.0 == 8 {
+                                    going = false
+                                } else {
+                                    match socket.Send(pair.0, b.Bytes()) {
+                                        Ok(_) => { }
+                                        Err(_) => { going = false }
+                                    }
+                                }
+                            }
+                            Err(_) => { going = false }
+                        }
+                    }
+                    socket.Close(1000, "bye")
+                }
+                Err(_) => { conn.Close() }
+            }
+        }
+    }
+}
+
+// big_payload answers bytes that no caller of the test takes in one message.
+func big_payload() -> [u8] {
+    var out = new Buf(0)
+    var i: usize = 0
+    for i < 2000 {
+        out.WriteByte(u8(65))
+        i += 1
+    }
+    return out.Bytes()
+}
+
+func run(addr: str) -> Result<bool, ws.Error> {
+    var socket = try ws.Dial(f"ws://{addr}/echo")
+    say("a connection was upgraded", true)
+
+    try socket.SendStr("hello")
+    var text = new Buf(0)
+    match socket.Recv(text, 1024) {
+        Ok(pair) => { say("a text message came back", pair.0 == 1 && text.Str() == "hello") }
+        Err(e) => { say("a text message came back", false) }
+    }
+
+    var payload = new Buf(0)
+    payload.WriteByte(0)
+    payload.WriteByte(255)
+    payload.WriteByte(7)
+    try socket.Send(2, payload.Bytes())
+    var binary = new Buf(0)
+    match socket.Recv(binary, 1024) {
+        Ok(pair) => {
+            var same = pair.0 == 2 && pair.1 == 3
+            if same {
+                var got = binary.Bytes()
+                same = got[0] == 0 && got[1] == 255 && got[2] == 7
+            }
+            say("a binary message came back", same)
+        }
+        Err(_) => { say("a binary message came back", false) }
+    }
+
+    try socket.Send(2, big_payload())
+    var too_big = new Buf(0)
+    match socket.Recv(too_big, 1024) {
+        Ok(_) => { say("a message longer than the caller takes is refused", false) }
+        Err(e) => { say("a message longer than the caller takes is refused", i32(e.Kind) == i32(ws.ErrorKind.Invalid)) }
+    }
+
+    match socket.Close(1000, "") {
+        Ok(_) => { }
+        Err(_) => { }
+    }
+    say("the socket was closed", true)
+    return Result.Ok(true)
+}
+
+func main() {
+    var port = pick_port()
+    var addr = f"127.0.0.1:{i64(port)}"
+    var srv = new http.Server(echo { })
+
+    region {
+        spawn serve(addr, srv)
+
+        // Wait for the server to answer; the first request may arrive before its
+        // listener is bound.
+        var ready = false
+        var tries: i32 = 0
+        for tries < 200 && !ready {
+            match ws.Dial(f"ws://{addr}/echo") {
+                Ok(socket) => {
+                    match socket.Close(1000, "") {
+                        Ok(_) => { }
+                        Err(_) => { }
+                    }
+                    ready = true
+                }
+                Err(_) => {
+                    time.Sleep(pause)
+                }
+            }
+            tries += 1
+        }
+        say("the server answers", ready)
+
+        match run(addr) {
+            Ok(_) => { }
+            Err(e) => { panic(f"ws test: {e.Msg}") }
+        }
+
+        // The server is left to the end of the region: the handler of the last
+        // connection is still finishing when the client is done, and closing the
+        // server underneath it would close a connection the handler still holds.
+        time.Sleep(pause)
+        srv.Close()
+    }
+}

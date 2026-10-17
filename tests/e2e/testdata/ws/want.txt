@@ -1,0 +1,6 @@
+the server answers
+a connection was upgraded
+a text message came back
+a binary message came back
+a message longer than the caller takes is refused
+the socket was closed

@@ -124,8 +124,19 @@ func serve_connection(conn: net.Conn, s: Server, id: i64) {
         }
         match read_request(r) {
             Ok(pair) => {
-                var resp = Response { Status: 200, Header: new Header(), Body: new Buf(0) }
+                var resp = Response { Status: 200, Header: new Header(), Body: new Buf(0), conn: conn, taken: false }
                 s.handler.Serve(pair.req, resp)
+                if resp.taken {
+                    // The handler answers with a protocol of its own from here on:
+                    // the connection is its until that protocol ends, so nothing is
+                    // written here and nothing is closed here. The server's own
+                    // record of the connection goes, because the handler owns it
+                    // now and the server's Close must not reach it.
+                    s.open.Lock()
+                    s.open.Data.Remove(id)
+                    s.open.Unlock()
+                    return
+                }
                 match write_response(conn, resp, pair.keep, pair.req.Method == "HEAD") {
                     Ok(_) => { }
                     Err(_) => {

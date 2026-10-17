@@ -398,7 +398,7 @@ func read_response(r: message_reader, head: bool) -> Result<outbound, Error> {
     try read_fields(r, h)
     var body = new Buf(0)
     var reusable = try read_body(r, h, body, head, i32(status), true)
-    var resp = Response { Status: i32(status), Header: h, Body: body }
+    var resp = Response { Status: i32(status), Header: h, Body: body, conn: r.conn, taken: false }
     return Result.Ok(outbound { resp: resp, keep: keeps_alive(parts[0], h) && reusable })
 }
 

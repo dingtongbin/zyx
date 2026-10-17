@@ -525,9 +525,23 @@ struct Request {
 }
 
 // A Response is what a server sends and a client reads. Status is the number
-// of the status line.
+// of the status line. conn is the connection the request arrived on, and taken
+// records whether the handler has taken it over: a handler that answers with a
+// protocol of its own, as a WebSocket upgrade does, takes the connection, writes
+// its own bytes, and the server then writes nothing and closes nothing.
 struct Response {
     Status: i32
     Header: Header
     Body: Buf
+
+    conn: net.Conn
+    taken: bool
+
+    // TakeConn gives the handler the connection the request arrived on, which is
+    // what an upgrade to another protocol needs: the bytes of that protocol then
+    // travel on a connection the handler owns.
+    func TakeConn() -> net.Conn {
+        self.taken = true
+        return self.conn
+    }
 }
