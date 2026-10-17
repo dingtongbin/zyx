@@ -35,6 +35,8 @@ typedef struct zyxrt_region {
   /* bootstrap marks the region the runtime made before the pools were
      ready, which allocates from the system throughout. */
   int bootstrap;
+  /* pool_next links a region into the list of regions kept for reuse. */
+  struct zyxrt_region *pool_next;
 } zyxrt_region;
 
 /* The pool's class count, which the region asks for on creation. */
@@ -66,8 +68,36 @@ static void *alloc_big(zyxrt_region *r, size_t size, size_t align) {
   return (unsigned char *)run + header;
 }
 
+/* A region a program is done with is kept rather than freed: a program that
+   enters a region block in a loop pays three allocations and three releases for
+   each of them otherwise, and the arrays a region needs are the same size every
+   time. The list is shared by every lane, so it is a short critical section, and
+   it is bounded, so a program that entered many regions once does not keep them
+   for the rest of its life. */
+#define ZYXXRT_REGION_POOL 64
+
+static zyxrt_region *pool_regions;
+static size_t pool_depth;
+static zyxrt_spin region_lock;
+
 void *zyxrt_region_new(void) {
-  zyxrt_region *r = (zyxrt_region *)calloc(1, sizeof(zyxrt_region));
+  zyxrt_region *r = NULL;
+  zyxrt_spin_hold(&region_lock);
+  if (pool_regions != NULL) {
+    r = pool_regions;
+    pool_regions = r->pool_next;
+    pool_depth--;
+  }
+  zyxrt_spin_drop(&region_lock);
+  if (r != NULL) {
+    /* What the last user left in it: the chains are empty because releasing the
+       region returned every slab, the runs are gone, the children have all
+       finished, and the lists of released objects point at memory the region no
+       longer holds. */
+    r->big = NULL;
+    return r;
+  }
+  r = (zyxrt_region *)calloc(1, sizeof(zyxrt_region));
   if (r == NULL) {
     zyxrt_panic("out of memory", 13);
   }
@@ -86,36 +116,52 @@ void *zyxrt_region_new(void) {
 
 void zyxrt_region_free(void *region) {
   zyxrt_region *r = (zyxrt_region *)region;
+  size_t class;
   if (r == NULL) {
     return;
   }
   zyxrt_lock_hold(&r->lock);
-  if (!r->bootstrap) {
-    for (size_t class = 0; class < r->classes; class++) {
-      zyxrt_slab *slab = r->slabs[class];
-      while (slab != NULL) {
-        zyxrt_slab *next = slab->next;
-        zyxrt_pool_release(class, slab);
-        slab = next;
-      }
-    }
-  } else {
-    for (size_t class = 0; class < r->classes; class++) {
-      zyxrt_slab *slab = r->slabs[class];
-      while (slab != NULL) {
-        zyxrt_slab *next = slab->next;
+  for (class = 0; class < r->classes; class++) {
+    zyxrt_slab *slab = r->slabs[class];
+    r->slabs[class] = NULL;
+    while (slab != NULL) {
+      zyxrt_slab *next = slab->next;
+      if (r->bootstrap) {
         free(slab);
-        slab = next;
+      } else {
+        zyxrt_pool_release(class, slab);
       }
+      slab = next;
     }
   }
-  zyxrt_big *run = r->big;
-  while (run != NULL) {
-    zyxrt_big *next = run->next;
-    free(run);
-    run = next;
+  {
+    zyxrt_big *run = r->big;
+    while (run != NULL) {
+      zyxrt_big *next = run->next;
+      free(run);
+      run = next;
+    }
+  }
+  r->children = NULL;
+  r->big = NULL;
+  if (!r->bootstrap) {
+    /* The lists of released objects name memory the region no longer holds. */
+    memset(r->free_objects, 0, r->classes * sizeof(void *));
   }
   zyxrt_lock_drop(&r->lock);
+  /* The bootstrap region belongs to the runtime, not to a program, so it is not
+     one the pool keeps. */
+  if (!r->bootstrap) {
+    zyxrt_spin_hold(&region_lock);
+    if (pool_depth < ZYXXRT_REGION_POOL) {
+      r->pool_next = pool_regions;
+      pool_regions = r;
+      pool_depth++;
+      zyxrt_spin_drop(&region_lock);
+      return;
+    }
+    zyxrt_spin_drop(&region_lock);
+  }
   free(r->free_objects);
   free(r->slabs);
   free(r);

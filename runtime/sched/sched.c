@@ -35,6 +35,11 @@ typedef struct zyxrt_thread {
      process ends. The program's own thread is the one that waits, so its own
      slot carries none. */
   zyxrt_thread_handle handle;
+  /* free_objs holds the coroutines this thread has finished and will start
+     again, and free_depth is how many are there. A thread reads and writes only
+     its own, so the path a coroutine is started on takes no lock at all. */
+  zyxrt_coro *free_objs;
+  size_t free_depth;
 } zyxrt_thread;
 
 /* self is the thread state of the scheduler thread the caller runs on, or
@@ -525,27 +530,23 @@ void zyxrt_wait_wake(zyxrt_waitlist *list) {
 /* A finished coroutine is kept rather than freed, because a program that starts
    coroutines in a loop otherwise pays the allocator for every one of them: the
    object is the same shape every time, and so is the word the switch keeps a
-   stack pointer in. The list is shared by the lanes like the stacks are, and it
-   is bounded, so a program that started many coroutines once does not keep their
-   objects for the rest of its life. */
+   stack pointer in. Each thread keeps the ones it finished for the ones it
+   starts, so the path a coroutine takes to begin and end touches no shared word
+   at all; the list is bounded, so a program that started many coroutines once
+   does not keep their objects for the rest of its life. */
 #define ZYXXRT_CORO_POOL 1024
 
-static zyxrt_coro *pool_free;
-static size_t pool_depth;
-static zyxrt_spin pool_lock;
-
-/* coro_take answers a coroutine to start: one a finished coroutine left behind,
-   with everything it carried cleared, or a new one. */
+/* coro_take answers a coroutine to start: one this thread finished earlier, with
+   everything it carried cleared, or a new one. */
 static zyxrt_coro *coro_take(void) {
   void *ctx = NULL;
+  zyxrt_thread *t = self_thread();
   zyxrt_coro *c = NULL;
-  zyxrt_spin_hold(&pool_lock);
-  if (pool_free != NULL) {
-    c = pool_free;
-    pool_free = c->wait_next;
-    pool_depth--;
+  if (t != NULL && t->free_objs != NULL) {
+    c = t->free_objs;
+    t->free_objs = c->wait_next;
+    t->free_depth--;
   }
-  zyxrt_spin_drop(&pool_lock);
   if (c != NULL) {
     /* What the last coroutine left in the object goes, except the context,
        which is put back on a stack when the next one starts; the region it ran
@@ -562,18 +563,16 @@ static zyxrt_coro *coro_take(void) {
   return c;
 }
 
-/* coro_give keeps a finished coroutine for the next one, or gives it up when
-   the pool is full. */
+/* coro_give keeps a finished coroutine for the next one this thread starts, or
+   gives it up when it has kept enough. */
 static void coro_give(zyxrt_coro *c) {
-  zyxrt_spin_hold(&pool_lock);
-  if (pool_depth < ZYXXRT_CORO_POOL) {
-    c->wait_next = pool_free;
-    pool_free = c;
-    pool_depth++;
-    zyxrt_spin_drop(&pool_lock);
+  zyxrt_thread *t = self_thread();
+  if (t != NULL && t->free_depth < ZYXXRT_CORO_POOL) {
+    c->wait_next = t->free_objs;
+    t->free_objs = c;
+    t->free_depth++;
     return;
   }
-  zyxrt_spin_drop(&pool_lock);
   if (c->ctx) zyxrt_ctx_free(c->ctx);
   free(c);
 }
