@@ -1,1 +1,1067 @@
 package compress
+
+// Compressing bytes and reading them back, in the language itself. Three
+// formats are here, each the one its own document fixes: raw DEFLATE (RFC
+// 1951), the zlib wrapper that adds a two-byte header and an Adler-32 trailer
+// (RFC 1950), and the gzip wrapper that adds a header, a CRC-32 and a length
+// (RFC 1952).
+//
+// The encoder writes one block or a run of stored blocks, whichever is
+// smaller; the decoder reads every block kind the format allows, so a stream
+// written by another implementation reads here even where this encoder would
+// have written it differently.
+
+// Error is what a codec refuses. Truncated and Corrupt name a stream that ended
+// early or does not follow its format, Checksum names a trailer that does not
+// match the bytes read, and Level carries the level an encoder was asked for
+// when it is outside the range the codec takes.
+enum Error {
+    Truncated
+    Corrupt
+    Checksum
+    Level(i32)
+}
+
+// length counts the bytes of a view. A slice carries its length, but the
+// language gives no method for it, so the count is taken by walking once.
+func length(src: [u8]) -> usize {
+    var n: usize = 0
+    for _ in src {
+        n += 1
+    }
+    return n
+}
+
+// reverse_bits answers the low n bits of v in the other order, which is how a
+// Huffman code is packed into a DEFLATE stream: the encoder writes the high bit
+// of a code first, and the writer appends the low bit of a value first.
+func reverse_bits(v: u32, n: u32) -> u32 {
+    var r: u32 = 0
+    var i: u32 = 0
+    for i < n {
+        r = (r << u32(1)) | (v & u32(1))
+        v >>= u32(1)
+        i += 1
+    }
+    return r
+}
+
+// crc_byte folds one byte into a running CRC-32 in the reflected form RFC 1952
+// uses. The polynomial is the one the format names, and no table is built
+// because the running value is what a table would have indexed anyway.
+func crc_byte(crc: u32, b: u8) -> u32 {
+    var acc = crc ^ u32(b)
+    var i: u32 = 0
+    for i < 8 {
+        if acc & u32(1) != 0 {
+            acc = (acc >> u32(1)) ^ u32(0xedb88320)
+        } else {
+            acc = acc >> u32(1)
+        }
+        i += 1
+    }
+    return acc
+}
+
+// crc32 answers the CRC-32 of src.
+func crc32(src: [u8]) -> u32 {
+    var running: u32 = u32(0xffffffff)
+    var n = length(src)
+    var i: usize = 0
+    for i < n {
+        running = crc_byte(running, src[i])
+        i += 1
+    }
+    return ~running
+}
+
+// adler32 answers the Adler-32 of src, the checksum RFC 1950 puts in a zlib
+// trailer. Both running halves stay below the modulus because one subtraction
+// after each add keeps them there.
+func adler32(src: [u8]) -> u32 {
+    var a: u32 = 1
+    var b: u32 = 0
+    var n = length(src)
+    var i: usize = 0
+    for i < n {
+        a += u32(src[i])
+        if a >= u32(65521) {
+            a -= u32(65521)
+        }
+        b += a
+        if b >= u32(65521) {
+            b -= u32(65521)
+        }
+        i += 1
+    }
+    return (b << u32(16)) | a
+}
+
+// A bit_writer appends bits to a buffer, least significant bit first, which is
+// the order a DEFLATE stream is packed in.
+struct bit_writer {
+    out: Buf
+    bits: u64
+    count: u32
+
+    // init builds a writer that appends to out.
+    func init(out: Buf) -> Self {
+        return bit_writer { out: out, bits: u64(0), count: u32(0) }
+    }
+
+    // write appends the low n bits of v.
+    func write(v: u32, n: u32) {
+        self.bits |= u64(v) << u64(self.count)
+        self.count += n
+        for self.count >= 8 {
+            self.out.WriteByte(u8(self.bits & u64(0xff)))
+            self.bits >>= u64(8)
+            self.count -= 8
+        }
+    }
+
+    // align drops the whole bytes written so far and leaves the partial byte to
+    // be padded with zeros, which is where a stored block begins.
+    func align() {
+        if self.count > 0 {
+            self.out.WriteByte(u8(self.bits & u64(0xff)))
+            self.bits = u64(0)
+            self.count = u32(0)
+        }
+    }
+}
+
+// A bit_reader reads bits from a view, least significant bit first. Reading
+// past the end answers zeros and records that it happened, so a stream that
+// ended early is reported rather than decoded from padding.
+struct bit_reader {
+    src: [u8]
+    total: usize
+    pos: usize
+    bits: u64
+    count: u32
+    overrun: bool
+
+    // init builds a reader over src.
+    func init(src: [u8]) -> Self {
+        return bit_reader { src: src, total: length(src), pos: 0, bits: u64(0), count: u32(0), overrun: false }
+    }
+
+    // read answers the next n bits.
+    func read(n: u32) -> u32 {
+        for self.count < n {
+            var b: u64 = u64(0)
+            if self.pos < self.total {
+                b = u64(self.src[self.pos])
+                self.pos += 1
+            } else {
+                self.overrun = true
+            }
+            self.bits |= b << u64(self.count)
+            self.count += 8
+        }
+        var mask = (u64(1) << u64(n)) - u64(1)
+        var v = u32(self.bits & mask)
+        self.bits >>= u64(n)
+        self.count -= n
+        return v
+    }
+
+    // align skips to the next byte boundary.
+    func align() {
+        self.bits = u64(0)
+        self.count = u32(0)
+    }
+}
+
+// A huffman is a canonical code: counts holds how many codes of each length
+// there are, and symbols lists the symbols by code, shortest first. left is
+// what building the code left over: zero for a complete code, positive for an
+// incomplete one, negative for one that was given too many codes.
+struct huffman {
+    counts: Array<u32>
+    symbols: Array<u32>
+    left: i32
+
+    // init builds an empty code.
+    func init() -> Self {
+        var counts = new Array<u32>(0)
+        for _ in 0 .. 16 {
+            counts.Push(u32(0))
+        }
+        return huffman { counts: counts, symbols: new Array<u32>(0), left: 0 }
+    }
+
+    // decode reads one symbol. Each round takes one more bit, which is how a
+    // canonical code is read without a table.
+    func decode(br: bit_reader) -> Result<u32, Error> {
+        var code: i32 = 0
+        var first: i32 = 0
+        var index: i32 = 0
+        var len: usize = 1
+        for len < 16 {
+            code |= i32(br.read(u32(1)))
+            var count = i32(self.counts[len])
+            if code - count < first {
+                return Result.Ok(self.symbols[usize(index + (code - first))])
+            }
+            index += count
+            first += count
+            first = first << 1
+            code = code << 1
+            len += 1
+        }
+        return Result.Err(Error.Corrupt)
+    }
+}
+
+// construct builds the canonical code of the given symbol lengths, one length
+// per symbol. A length outside the fifteen bits a code may have is refused.
+func construct(lengths: Array<u32>) -> huffman {
+    var tree = new huffman()
+    var i: usize = 0
+    for i < lengths.Len() {
+        var l = lengths[i]
+        if l > u32(15) {
+            tree.left = -1
+            return tree
+        }
+        tree.counts[usize(l)] += u32(1)
+        i += 1
+    }
+    var left: i32 = 1
+    var len: usize = 1
+    for len < 16 {
+        left = left << 1
+        left -= i32(tree.counts[len])
+        len += 1
+    }
+    tree.left = left
+    var offsets = new Array<u32>(0)
+    for _ in 0 .. 16 {
+        offsets.Push(u32(0))
+    }
+    var sum: u32 = 0
+    len = 1
+    for len < 16 {
+        offsets[len] = sum
+        sum += tree.counts[len]
+        len += 1
+    }
+    var syms = new Array<u32>(0)
+    for _ in 0 .. usize(sum) {
+        syms.Push(u32(0))
+    }
+    var sym: usize = 0
+    for sym < lengths.Len() {
+        if lengths[sym] != u32(0) {
+            var l = lengths[sym]
+            syms[usize(offsets[usize(l)])] = u32(sym)
+            offsets[usize(l)] += u32(1)
+        }
+        sym += 1
+    }
+    tree.symbols = syms
+    return tree
+}
+
+// length_bases is the first length each length code stands for, in code order
+// from 257 to 285.
+func length_bases() -> Array<u32> {
+    var a = new Array<u32>(0)
+    a.Push(u32(3))
+    a.Push(u32(4))
+    a.Push(u32(5))
+    a.Push(u32(6))
+    a.Push(u32(7))
+    a.Push(u32(8))
+    a.Push(u32(9))
+    a.Push(u32(10))
+    a.Push(u32(11))
+    a.Push(u32(13))
+    a.Push(u32(15))
+    a.Push(u32(17))
+    a.Push(u32(19))
+    a.Push(u32(23))
+    a.Push(u32(27))
+    a.Push(u32(31))
+    a.Push(u32(35))
+    a.Push(u32(43))
+    a.Push(u32(51))
+    a.Push(u32(59))
+    a.Push(u32(67))
+    a.Push(u32(83))
+    a.Push(u32(99))
+    a.Push(u32(115))
+    a.Push(u32(131))
+    a.Push(u32(163))
+    a.Push(u32(195))
+    a.Push(u32(227))
+    a.Push(u32(258))
+    return a
+}
+
+// length_extras is how many extra bits each length code carries, in the same
+// order as length_bases.
+func length_extras() -> Array<u32> {
+    var a = new Array<u32>(0)
+    var i: usize = 0
+    for i < 8 {
+        a.Push(u32(0))
+        i += 1
+    }
+    for i < 12 {
+        a.Push(u32(1))
+        i += 1
+    }
+    for i < 16 {
+        a.Push(u32(2))
+        i += 1
+    }
+    for i < 20 {
+        a.Push(u32(3))
+        i += 1
+    }
+    for i < 24 {
+        a.Push(u32(4))
+        i += 1
+    }
+    for i < 28 {
+        a.Push(u32(5))
+        i += 1
+    }
+    a.Push(u32(0))
+    return a
+}
+
+// distance_bases is the first distance each distance code stands for.
+func distance_bases() -> Array<u32> {
+    var a = new Array<u32>(0)
+    a.Push(u32(1))
+    a.Push(u32(2))
+    a.Push(u32(3))
+    a.Push(u32(4))
+    a.Push(u32(5))
+    a.Push(u32(7))
+    a.Push(u32(9))
+    a.Push(u32(13))
+    a.Push(u32(17))
+    a.Push(u32(25))
+    a.Push(u32(33))
+    a.Push(u32(49))
+    a.Push(u32(65))
+    a.Push(u32(97))
+    a.Push(u32(129))
+    a.Push(u32(193))
+    a.Push(u32(257))
+    a.Push(u32(385))
+    a.Push(u32(513))
+    a.Push(u32(769))
+    a.Push(u32(1025))
+    a.Push(u32(1537))
+    a.Push(u32(2049))
+    a.Push(u32(3073))
+    a.Push(u32(4097))
+    a.Push(u32(6145))
+    a.Push(u32(8193))
+    a.Push(u32(12289))
+    a.Push(u32(16385))
+    a.Push(u32(24577))
+    return a
+}
+
+// distance_extras is how many extra bits each distance code carries, in the
+// same order as distance_bases.
+func distance_extras() -> Array<u32> {
+    var a = new Array<u32>(0)
+    var i: usize = 0
+    for i < 4 {
+        a.Push(u32(0))
+        i += 1
+    }
+    for i < 30 {
+        var extra = (i - 2) / 2
+        a.Push(u32(extra))
+        i += 1
+    }
+    return a
+}
+
+// code_length_order is the order the lengths of the code-length code are sent
+// in, which is neither the order of the alphabet nor sorted.
+func code_length_order() -> Array<u32> {
+    var a = new Array<u32>(0)
+    a.Push(u32(16))
+    a.Push(u32(17))
+    a.Push(u32(18))
+    a.Push(u32(0))
+    a.Push(u32(8))
+    a.Push(u32(7))
+    a.Push(u32(9))
+    a.Push(u32(6))
+    a.Push(u32(10))
+    a.Push(u32(5))
+    a.Push(u32(11))
+    a.Push(u32(4))
+    a.Push(u32(12))
+    a.Push(u32(3))
+    a.Push(u32(13))
+    a.Push(u32(2))
+    a.Push(u32(14))
+    a.Push(u32(1))
+    a.Push(u32(15))
+    return a
+}
+
+// fixed_literal is the literal/length code every decoder must know: lengths
+// eight, nine, seven and eight over the four runs of symbols.
+func fixed_literal() -> huffman {
+    var lengths = new Array<u32>(0)
+    for _ in 0 .. 288 {
+        lengths.Push(u32(0))
+    }
+    var i: usize = 0
+    for i < 144 {
+        lengths[i] = u32(8)
+        i += 1
+    }
+    for i < 256 {
+        lengths[i] = u32(9)
+        i += 1
+    }
+    for i < 280 {
+        lengths[i] = u32(7)
+        i += 1
+    }
+    for i < 288 {
+        lengths[i] = u32(8)
+        i += 1
+    }
+    return construct(lengths)
+}
+
+// fixed_distance is the distance code every decoder must know: five bits for
+// each of the thirty-two symbols.
+func fixed_distance() -> huffman {
+    var lengths = new Array<u32>(0)
+    for _ in 0 .. 32 {
+        lengths.Push(u32(5))
+    }
+    return construct(lengths)
+}
+
+// An inflate_state decodes a stream into the bytes it stands for. The output is
+// held in an array until the whole stream has read, so a stream that turns out
+// to be broken leaves the caller's buffer alone.
+struct inflate_state {
+    out: Array<u8>
+    lit: huffman
+    dist: huffman
+    length_base: Array<u32>
+    length_extra: Array<u32>
+    distance_base: Array<u32>
+    distance_extra: Array<u32>
+
+    // init builds a decoder with the tables the format fixes.
+    func init() -> Self {
+        return inflate_state { out: new Array<u8>(0), lit: new huffman(), dist: new huffman(),
+            length_base: length_bases(), length_extra: length_extras(),
+            distance_base: distance_bases(), distance_extra: distance_extras() }
+    }
+
+    // run reads src to its end and reports what it found.
+    func run(src: [u8]) -> Result<(), Error> {
+        var br = new bit_reader(src)
+        for {
+            var last = br.read(u32(1))
+            var kind = br.read(u32(2))
+            match kind {
+                0 => try self.stored(br)
+                1 => {
+                    self.lit = fixed_literal()
+                    self.dist = fixed_distance()
+                    try self.block(br)
+                }
+                2 => {
+                    try self.dynamic(br)
+                    try self.block(br)
+                }
+                _ => return Result.Err(Error.Corrupt)
+            }
+            if last == u32(1) {
+                break
+            }
+        }
+        if br.overrun {
+            return Result.Err(Error.Truncated)
+        }
+        return Result.Ok()
+    }
+
+    // stored reads a block whose bytes are written as they are.
+    func stored(br: bit_reader) -> Result<(), Error> {
+        br.align()
+        var len = br.read(u32(16))
+        var nlen = br.read(u32(16))
+        if (len ^ nlen) != u32(0xffff) {
+            return Result.Err(Error.Corrupt)
+        }
+        var i: u32 = 0
+        for i < len {
+            self.out.Push(u8(br.read(u32(8))))
+            i += 1
+        }
+        return Result.Ok()
+    }
+
+    // dynamic reads the code lengths of a block and builds its codes.
+    func dynamic(br: bit_reader) -> Result<(), Error> {
+        var hlit = br.read(u32(5)) + u32(257)
+        var hdist = br.read(u32(5)) + u32(1)
+        var hclen = br.read(u32(4)) + u32(4)
+        var order = code_length_order()
+        var lengths = new Array<u32>(0)
+        for _ in 0 .. 19 {
+            lengths.Push(u32(0))
+        }
+        var i: u32 = 0
+        for i < hclen {
+            var code_len = br.read(u32(3))
+            lengths[usize(order[usize(i)])] = code_len
+            i += 1
+        }
+        var cl = construct(lengths)
+        if cl.left != 0 {
+            return Result.Err(Error.Corrupt)
+        }
+        var total = usize(hlit + hdist)
+        var seq = new Array<u32>(0)
+        for _ in 0 .. total {
+            seq.Push(u32(0))
+        }
+        var pos: usize = 0
+        for pos < total {
+            var sym = try cl.decode(br)
+            if sym < u32(16) {
+                seq[pos] = sym
+                pos += 1
+            } else if sym == u32(16) {
+                if pos == 0 {
+                    return Result.Err(Error.Corrupt)
+                }
+                var repeat = usize(br.read(u32(2))) + 3
+                if pos + repeat > total {
+                    return Result.Err(Error.Corrupt)
+                }
+                var prev = seq[pos - 1]
+                var k: usize = 0
+                for k < repeat {
+                    seq[pos] = prev
+                    pos += 1
+                    k += 1
+                }
+            } else if sym == u32(17) {
+                var repeat = usize(br.read(u32(3))) + 3
+                if pos + repeat > total {
+                    return Result.Err(Error.Corrupt)
+                }
+                var k: usize = 0
+                for k < repeat {
+                    seq[pos] = u32(0)
+                    pos += 1
+                    k += 1
+                }
+            } else if sym == u32(18) {
+                var repeat = usize(br.read(u32(7))) + 11
+                if pos + repeat > total {
+                    return Result.Err(Error.Corrupt)
+                }
+                var k: usize = 0
+                for k < repeat {
+                    seq[pos] = u32(0)
+                    pos += 1
+                    k += 1
+                }
+            } else {
+                return Result.Err(Error.Corrupt)
+            }
+        }
+        var lit_lengths = new Array<u32>(0)
+        var j: usize = 0
+        for j < usize(hlit) {
+            lit_lengths.Push(seq[j])
+            j += 1
+        }
+        self.lit = construct(lit_lengths)
+        if self.lit.left != 0 {
+            return Result.Err(Error.Corrupt)
+        }
+        var dist_lengths = new Array<u32>(0)
+        j = 0
+        for j < usize(hdist) {
+            dist_lengths.Push(seq[usize(hlit) + j])
+            j += 1
+        }
+        self.dist = construct(dist_lengths)
+        if self.dist.left < 0 {
+            return Result.Err(Error.Corrupt)
+        }
+        if self.dist.left > 0 && self.dist.symbols.Len() > 1 {
+            return Result.Err(Error.Corrupt)
+        }
+        return Result.Ok()
+    }
+
+    // block reads the symbols of a block with the codes that are current.
+    func block(br: bit_reader) -> Result<(), Error> {
+        for {
+            var sym = try self.lit.decode(br)
+            if sym < u32(256) {
+                self.out.Push(u8(sym))
+            } else if sym == u32(256) {
+                return Result.Ok()
+            } else if sym <= u32(285) {
+                var li = usize(sym - u32(257))
+                var len = self.length_base[li] + br.read(self.length_extra[li])
+                var dsym = try self.dist.decode(br)
+                if dsym > u32(29) {
+                    return Result.Err(Error.Corrupt)
+                }
+                var distance = self.distance_base[usize(dsym)] + br.read(self.distance_extra[usize(dsym)])
+                if usize(distance) > self.out.Len() {
+                    return Result.Err(Error.Corrupt)
+                }
+                var start = self.out.Len() - usize(distance)
+                var k: usize = 0
+                for k < usize(len) {
+                    var b = self.out[start + k]
+                    self.out.Push(b)
+                    k += 1
+                }
+            } else {
+                return Result.Err(Error.Corrupt)
+            }
+        }
+        return Result.Err(Error.Corrupt)
+    }
+}
+
+// hash3 folds the three bytes at one position into the index of a chain, so a
+// match is looked for only where three bytes already began the same way.
+func hash3(src: [u8], i: usize) -> usize {
+    var v = (u64(src[i]) << u64(16)) | (u64(src[i + 1]) << u64(8)) | u64(src[i + 2])
+    return usize((v * u64(2654435761)) & u64(32767))
+}
+
+// A deflator writes one fixed-code block over a source, choosing matches with a
+// chain of the three-byte prefixes seen so far. The chain length follows the
+// level, so a higher level looks further back and usually writes less.
+struct deflator {
+    bw: bit_writer
+    head: Array<u32>
+    prev: Array<u32>
+    length_base: Array<u32>
+    length_extra: Array<u32>
+    distance_base: Array<u32>
+    distance_extra: Array<u32>
+    max_chain: u32
+
+    // init builds a deflator that writes into bw with a source of n bytes.
+    func init(bw: bit_writer, n: usize, level: u32) -> Self {
+        var head = new Array<u32>(0)
+        for _ in 0 .. 32768 {
+            head.Push(u32(0xffffffff))
+        }
+        var prev = new Array<u32>(0)
+        for _ in 0 .. n {
+            prev.Push(u32(0xffffffff))
+        }
+        return deflator { bw: bw, head: head, prev: prev,
+            length_base: length_bases(), length_extra: length_extras(),
+            distance_base: distance_bases(), distance_extra: distance_extras(),
+            max_chain: level * u32(4) }
+    }
+
+    // run encodes src as one fixed-code block.
+    func run(src: [u8]) {
+        var n = length(src)
+        self.bw.write(u32(1), u32(1))
+        self.bw.write(u32(1), u32(2))
+        var i: usize = 0
+        for i < n {
+            var found = self.find(src, i, n)
+            if found.0 >= 3 {
+                self.emit_match(found.0, found.1)
+                var j: usize = 0
+                for j < found.0 {
+                    self.insert(src, i + j, n)
+                    j += 1
+                }
+                i += found.0
+            } else {
+                self.emit_literal(src[i])
+                self.insert(src, i, n)
+                i += 1
+            }
+        }
+        self.bw.write(reverse_bits(u32(0), u32(7)), u32(7))
+        self.bw.align()
+    }
+
+    // find answers the longest match at i, or zero lengths when there is none.
+    // A chain older than the window, or shorter than the one already found, is
+    // abandoned.
+    func find(src: [u8], i: usize, n: usize) -> (usize, usize) {
+        if i + 2 >= n {
+            return (0, 0)
+        }
+        var h = hash3(src, i)
+        var candidate = self.head[h]
+        var best_len: usize = 0
+        var best_dist: usize = 0
+        var limit = n - i
+        if limit > 258 {
+            limit = 258
+        }
+        var chain: u32 = 0
+        for chain < self.max_chain {
+            if candidate == u32(0xffffffff) {
+                break
+            }
+            var dist = i - usize(candidate)
+            if dist > 32768 {
+                break
+            }
+            var l: usize = 0
+            for l < limit && src[usize(candidate) + l] == src[i + l] {
+                l += 1
+            }
+            if l > best_len {
+                best_len = l
+                best_dist = dist
+                if l == limit {
+                    break
+                }
+            }
+            candidate = self.prev[usize(candidate)]
+            chain += 1
+        }
+        if best_len < 3 {
+            return (0, 0)
+        }
+        return (best_len, best_dist)
+    }
+
+    // insert records position i at the head of the chain for its three bytes.
+    func insert(src: [u8], i: usize, n: usize) {
+        if i + 2 >= n {
+            return
+        }
+        var h = hash3(src, i)
+        self.prev[i] = self.head[h]
+        self.head[h] = u32(i)
+    }
+
+    // emit_literal writes one byte as its literal code.
+    func emit_literal(b: u8) {
+        var sym = u32(b)
+        if sym < u32(144) {
+            self.bw.write(reverse_bits(u32(0x30) + sym, u32(8)), u32(8))
+        } else {
+            self.bw.write(reverse_bits(u32(0x190) + sym - u32(144), u32(9)), u32(9))
+        }
+    }
+
+    // emit_match writes a length and a distance as a match.
+    func emit_match(len: usize, dist: usize) {
+        var sym = self.length_symbol(len)
+        var li = usize(sym - u32(257))
+        if sym < u32(280) {
+            self.bw.write(reverse_bits(sym - u32(256), u32(7)), u32(7))
+        } else {
+            self.bw.write(reverse_bits(u32(0xc0) + sym - u32(280), u32(8)), u32(8))
+        }
+        self.bw.write(u32(len) - self.length_base[li], self.length_extra[li])
+        var dsym = self.distance_symbol(dist)
+        self.bw.write(reverse_bits(dsym, u32(5)), u32(5))
+        self.bw.write(u32(dist) - self.distance_base[usize(dsym)], self.distance_extra[usize(dsym)])
+    }
+
+    // length_symbol answers the code for a match length. A length of 258 has a
+    // code of its own, so it does not fall into the last range.
+    func length_symbol(len: usize) -> u32 {
+        if len == 258 {
+            return u32(285)
+        }
+        var li: usize = 0
+        for li < 28 {
+            var base = self.length_base[li]
+            var extra = self.length_extra[li]
+            var top = base + (u32(1) << extra) - u32(1)
+            if u32(len) >= base && u32(len) <= top {
+                return u32(257) + u32(li)
+            }
+            li += 1
+        }
+        return u32(285)
+    }
+
+    // distance_symbol answers the code for a match distance.
+    func distance_symbol(dist: usize) -> u32 {
+        var di: usize = 0
+        for di < 30 {
+            var base = self.distance_base[di]
+            var extra = self.distance_extra[di]
+            var top = base + (u32(1) << extra) - u32(1)
+            if u32(dist) >= base && u32(dist) <= top {
+                return u32(di)
+            }
+            di += 1
+        }
+        return u32(0)
+    }
+}
+
+// write_stored writes src as stored blocks, the last one closing the stream.
+func write_stored(dst: Buf, src: [u8]) {
+    var n = length(src)
+    var bw = new bit_writer(dst)
+    var at: usize = 0
+    for {
+        var chunk = n - at
+        if chunk > 65535 {
+            chunk = 65535
+        }
+        var last: u32 = 0
+        if at + chunk >= n {
+            last = u32(1)
+        }
+        bw.write(last, u32(1))
+        bw.write(u32(0), u32(2))
+        bw.align()
+        bw.write(u32(chunk), u32(16))
+        bw.write((~u32(chunk)) & u32(0xffff), u32(16))
+        var k: usize = 0
+        for k < chunk {
+            dst.WriteByte(src[at + k])
+            k += 1
+        }
+        at += chunk
+        if last == u32(1) {
+            break
+        }
+    }
+}
+
+// deflate_into appends the compressed form of src to dst. One fixed-code block
+// is tried first, and stored blocks are used when they are shorter, which is
+// what happens on input that does not compress.
+func deflate_into(dst: Buf, src: [u8], level: i32) -> Result<(), Error> {
+    if level < 0 || level > 9 {
+        return Result.Err(Error.Level(level))
+    }
+    if level == 0 {
+        write_stored(dst, src)
+        return Result.Ok()
+    }
+    var n = length(src)
+    var tmp = new Buf(0)
+    var bw = new bit_writer(tmp)
+    var coder = new deflator(bw, n, u32(level))
+    coder.run(src)
+    var stored = n + 5 * ((n + 65534) / 65535)
+    if n > 0 && tmp.Len() > stored {
+        write_stored(dst, src)
+    } else {
+        dst.Write(tmp.Bytes())
+    }
+    return Result.Ok()
+}
+
+// DeflateEncode appends the raw DEFLATE stream of src to dst. The level is
+// between 0 and 9: zero stores the bytes, and a higher level searches further
+// back for a match and usually writes less.
+func DeflateEncode(dst: Buf, src: [u8], level: i32) -> Result<(), Error> {
+    return deflate_into(dst, src, level)
+}
+
+// DeflateDecode appends the bytes a raw DEFLATE stream stands for to dst.
+func DeflateDecode(dst: Buf, src: [u8]) -> Result<(), Error> {
+    var state = new inflate_state()
+    try state.run(src)
+    dst.Write(state.out[0..state.out.Len()])
+    return Result.Ok()
+}
+
+// write_le32 appends v least significant byte first.
+func write_le32(dst: Buf, v: u32) {
+    dst.WriteByte(u8(v))
+    dst.WriteByte(u8(v >> u32(8)))
+    dst.WriteByte(u8(v >> u32(16)))
+    dst.WriteByte(u8(v >> u32(24)))
+}
+
+// write_be32 appends v most significant byte first.
+func write_be32(dst: Buf, v: u32) {
+    dst.WriteByte(u8(v >> u32(24)))
+    dst.WriteByte(u8(v >> u32(16)))
+    dst.WriteByte(u8(v >> u32(8)))
+    dst.WriteByte(u8(v))
+}
+
+// ZlibEncode appends the zlib stream of src to dst: a two-byte header, the
+// DEFLATE stream, and an Adler-32 of the input. The level is between 0 and 9.
+func ZlibEncode(dst: Buf, src: [u8], level: i32) -> Result<(), Error> {
+    if level < 0 || level > 9 {
+        return Result.Err(Error.Level(level))
+    }
+    var cmf = u8(0x78)
+    var flevel = u8(0)
+    if level >= 2 && level < 6 {
+        flevel = u8(1)
+    } else if level == 6 {
+        flevel = u8(2)
+    } else if level > 6 {
+        flevel = u8(3)
+    }
+    var flg = flevel << u8(6)
+    var rem = (u32(cmf) * u32(256) + u32(flg)) % u32(31)
+    if rem != 0 {
+        flg = flg + u8(31 - rem)
+    }
+    dst.WriteByte(cmf)
+    dst.WriteByte(flg)
+    try deflate_into(dst, src, level)
+    write_be32(dst, adler32(src))
+    return Result.Ok()
+}
+
+// ZlibDecode appends the bytes a zlib stream stands for to dst.
+func ZlibDecode(dst: Buf, src: [u8]) -> Result<(), Error> {
+    var n = length(src)
+    if n < 8 {
+        return Result.Err(Error.Truncated)
+    }
+    var cmf = src[0]
+    var flg = src[1]
+    if cmf & u8(15) != u8(8) {
+        return Result.Err(Error.Corrupt)
+    }
+    if u32(cmf) >> u32(4) > u32(7) {
+        return Result.Err(Error.Corrupt)
+    }
+    if (u32(cmf) * u32(256) + u32(flg)) % u32(31) != 0 {
+        return Result.Err(Error.Corrupt)
+    }
+    if flg & u8(32) != 0 {
+        return Result.Err(Error.Corrupt)
+    }
+    var payload = src[2..n - 4]
+    var state = new inflate_state()
+    try state.run(payload)
+    var got = (u32(src[n - 4]) << u32(24)) | (u32(src[n - 3]) << u32(16)) | (u32(src[n - 2]) << u32(8)) | u32(src[n - 1])
+    if adler32(state.out[0..state.out.Len()]) != got {
+        return Result.Err(Error.Checksum)
+    }
+    dst.Write(state.out[0..state.out.Len()])
+    return Result.Ok()
+}
+
+// skip_zero answers the position after the next zero byte.
+func skip_zero(src: [u8], at: usize) -> Result<usize, Error> {
+    var n = length(src)
+    var i = at
+    for i < n {
+        if src[i] == u8(0) {
+            return Result.Ok(i + 1)
+        }
+        i += 1
+    }
+    return Result.Err(Error.Truncated)
+}
+
+// GzipEncode appends the gzip stream of src to dst: a fixed header with no
+// name and no timestamp, the DEFLATE stream, a CRC-32 of the input, and its
+// length modulo 2^32.
+func GzipEncode(dst: Buf, src: [u8]) -> Result<(), Error> {
+    dst.WriteByte(u8(0x1f))
+    dst.WriteByte(u8(0x8b))
+    dst.WriteByte(u8(8))
+    dst.WriteByte(u8(0))
+    var i: usize = 0
+    for i < 4 {
+        dst.WriteByte(u8(0))
+        i += 1
+    }
+    dst.WriteByte(u8(0))
+    dst.WriteByte(u8(3))
+    try deflate_into(dst, src, i32(6))
+    write_le32(dst, crc32(src))
+    write_le32(dst, u32(length(src)))
+    return Result.Ok()
+}
+
+// GzipDecode appends the bytes a gzip stream stands for to dst. The optional
+// header fields are skipped, and the header's own checksum is verified when it
+// is present.
+func GzipDecode(dst: Buf, src: [u8]) -> Result<(), Error> {
+    var n = length(src)
+    if n < 18 {
+        return Result.Err(Error.Truncated)
+    }
+    if src[0] != u8(0x1f) || src[1] != u8(0x8b) {
+        return Result.Err(Error.Corrupt)
+    }
+    if src[2] != u8(8) {
+        return Result.Err(Error.Corrupt)
+    }
+    var flg = src[3]
+    if flg & u8(0xe0) != 0 {
+        return Result.Err(Error.Corrupt)
+    }
+    var at: usize = 10
+    if flg & u8(4) != 0 {
+        if at + 2 > n {
+            return Result.Err(Error.Truncated)
+        }
+        var xlen = usize(src[at]) | (usize(src[at + 1]) << 8)
+        at += 2
+        if at + xlen > n {
+            return Result.Err(Error.Truncated)
+        }
+        at += xlen
+    }
+    if flg & u8(8) != 0 {
+        at = try skip_zero(src, at)
+    }
+    if flg & u8(16) != 0 {
+        at = try skip_zero(src, at)
+    }
+    if flg & u8(2) != 0 {
+        if at + 2 > n {
+            return Result.Err(Error.Truncated)
+        }
+        var want = u32(src[at]) | (u32(src[at + 1]) << u32(8))
+        if crc32(src[0..at]) & u32(0xffff) != want {
+            return Result.Err(Error.Checksum)
+        }
+        at += 2
+    }
+    if at + 8 > n {
+        return Result.Err(Error.Truncated)
+    }
+    var payload = src[at..n - 8]
+    var state = new inflate_state()
+    try state.run(payload)
+    var size = u32(state.out.Len())
+    var got_crc = u32(src[n - 8]) | (u32(src[n - 7]) << u32(8)) | (u32(src[n - 6]) << u32(16)) | (u32(src[n - 5]) << u32(24))
+    var got_size = u32(src[n - 4]) | (u32(src[n - 3]) << u32(8)) | (u32(src[n - 2]) << u32(16)) | (u32(src[n - 1]) << u32(24))
+    if crc32(state.out[0..state.out.Len()]) != got_crc {
+        return Result.Err(Error.Checksum)
+    }
+    if size != got_size {
+        return Result.Err(Error.Checksum)
+    }
+    dst.Write(state.out[0..state.out.Len()])
+    return Result.Ok()
+}

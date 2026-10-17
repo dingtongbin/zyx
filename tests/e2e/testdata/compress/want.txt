@@ -1,0 +1,52 @@
+deflate empty true 0300
+deflate a true 4b0400
+deflate hello true cb48cdc9c90700
+deflate repeats true 9
+deflate stored true 010500faff68656c6c6f
+zlib hello true 789ccb48cdc9c90700062c0215
+gzip hello true 1f8b0800000000000003cb48cdc9c9070086a6103605000000
+decode empty true 0
+decode stored true 5
+decode two stored true 6
+decode fixed repeat true 23
+decode dynamic lorem true 2280
+decode dynamic digits true 4000
+decode zlib hello true 5
+decode gzip hello true 5
+decode gzip empty true 0
+decode gzip named true 5
+decode gzip extra true 5
+decode gzip comment true 5
+decode gzip hcrc true 5
+decode gzip all true 5
+empty 0 deflate 2 true zlib 8 true gzip 20 true
+one 1 deflate 3 true zlib 9 true gzip 21 true
+run 1000 deflate 10 true zlib 16 true gzip 28 true
+noise 1000 deflate 1005 true zlib 1011 true gzip 1023 true
+text 2280 deflate 78 true zlib 84 true gzip 96 true
+distance 60000 deflate 32010 true zlib 32016 true gzip 32028 true
+level 0 2285 true
+level 1 78 true
+level 2 78 true
+level 3 78 true
+level 4 78 true
+level 5 78 true
+level 6 78 true
+level 7 78 true
+level 8 78 true
+level 9 78 true
+bad kind corrupt
+truncated fixed truncated
+zlib short truncated
+zlib bad fcheck corrupt
+zlib truncated truncated
+zlib bad adler checksum
+gzip bad magic corrupt
+gzip bad crc checksum
+gzip bad size checksum
+gzip bad hcrc checksum
+deflate level 10 level
+deflate level -1 level
+zlib level 10 level
+keep on refuse checksum
+kept keep
