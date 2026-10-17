@@ -1,0 +1,41 @@
+null null
+true true
+false false
+whole 3
+negative -12
+fraction 1.5
+zero 0
+decimal 123.456
+power-up 1e+21
+power-down 1e-07
+infinity null
+negative-infinity null
+not-a-number null
+empty-text ""
+text "two words"
+escaped-text "\"\\\n\t\r\b\f\u0001"
+accented 34 195 169 34 
+array-empty []
+array-one [1]
+array-many [null,true,"x"]
+array-nested [[1],[]]
+object-empty {}
+object-sorted {"a":1,"b":2,"c":"z"}
+object-nested {"flag":false,"list":[null,true,"x"],"nil":null}
+{"flag":false,"list":[null,true,"x"],"nil":null}
+{
+  "flag": false,
+  "list": [
+    null,
+    true,
+    "x"
+  ],
+  "nil": null
+}
+[
+  null,
+  true,
+  "x"
+]
+[]
+1

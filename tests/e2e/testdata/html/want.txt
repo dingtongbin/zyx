@@ -1,0 +1,100 @@
+empty
+1|html
+text
+1|html
+ 3||hello
+one-element
+1|p
+ 3||hi
+nested
+1|div
+ 1|span
+  3||a
+ 1|span
+  3||b
+two-roots
+1|html
+ 1|p
+  3||a
+ 1|p
+  3||b
+comment
+1|html
+ 8|| note 
+ 3||x
+text-and-element
+1|html
+ 3||lead 
+ 1|p
+  3||body
+ 3|| tail
+doctype
+1|html
+ 1|body
+  3||x
+void
+1|p
+ 3||a
+ 1|br
+ 3||b
+void-list
+1|html
+ 1|img
+ 1|input
+ 1|hr
+self-closing
+1|p
+ 1|span
+empty-tag
+1|p
+unclosed
+1|div
+ 1|p
+  3||unclosed
+stray-end
+1|html
+ 3||text
+li-siblings
+1|ul
+ 1|li
+  3||a
+ 1|li
+  3||b
+li-unclosed
+1|ul
+ 1|li
+  3||a
+  1|li
+   3||b
+angle
+1|html
+ 3||a 
+ 3||<
+ 3|| b
+text-entities
+1|p
+ 3||&amp;&lt;
+tag-newline
+1|div
+ 3||t
+tag-junk
+1|p
+ 3||t
+id x
+class a b
+data-y z
+bare 
+missing none
+case x
+upper-tag div
+upper-id X
+text-attr none
+root-attr none
+comment-unclosed
+html: a comment is not closed
+comment-then-tag
+1|html
+ 8||a
+ 1|p
+  3||b
+ 8||c

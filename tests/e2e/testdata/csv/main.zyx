@@ -1,0 +1,196 @@
+package main
+
+import "std/fmt"
+import "std/csv"
+
+// The whole surface of std/csv: every record a reader can meet, every fault it
+// names, and a writer that puts back what the reader takes. A byte that is not
+// printable is written as its escape, so every line of the answer is readable.
+
+// visible prints a text with the bytes that end a line written out.
+func visible(s: str) {
+    var n = s.Len()
+    var i: usize = 0
+    for i < n {
+        var b = s[i]
+        if b == 13 {
+            fmt.Print("\\r")
+        } else if b == 10 {
+            fmt.Print("\\n")
+        } else if b == 9 {
+            fmt.Print("\\t")
+        } else {
+            fmt.PrintChar(char(u32(b)))
+        }
+        i += 1
+    }
+}
+
+// dump reads every record of a text and prints the fields of each.
+func dump(label: str, src: str) {
+    fmt.Print(label)
+    fmt.Print(" ")
+    var reader = new csv.Reader(src)
+    var rounds: i64 = 0
+    for rounds < 20 {
+        match reader.Read() {
+            Some(r) => match r {
+                Ok(row) => {
+                    fmt.Print("[")
+                    var i: usize = 0
+                    for i < row.Len() {
+                        if i > 0 {
+                            fmt.Print(",")
+                        }
+                        fmt.Print("<")
+                        visible(row[i])
+                        fmt.Print(">")
+                        i += 1
+                    }
+                    fmt.Print("]")
+                }
+                Err(e) => {
+                    fmt.Print("err(")
+                    fmt.PrintValue(e)
+                    fmt.Print(")")
+                }
+            }
+            None => {
+                fmt.Print(" end")
+                break
+            }
+        }
+        rounds += 1
+    }
+    fmt.PrintNl()
+}
+
+// write prints what a writer puts out for one record.
+func write(label: str, row: Array<str>, semicolon: bool) {
+    var dst = new Buf(0)
+    var w = new csv.Writer(dst)
+    if semicolon {
+        w.SetComma(';')
+    }
+    match w.Write(row) {
+        Err(e) => fmt.PrintValue(e)
+        Ok(_) => { }
+    }
+    match w.Flush() {
+        Err(e) => fmt.PrintValue(e)
+        Ok(_) => { }
+    }
+    fmt.Print(label)
+    fmt.Print(" ")
+    visible(dst.Str())
+    fmt.PrintNl()
+}
+
+// round prints whether a record written and read again holds the same fields.
+func round(label: str, row: Array<str>) {
+    var dst = new Buf(0)
+    var w = new csv.Writer(dst)
+    match w.Write(row) {
+        Err(e) => fmt.PrintValue(e)
+        Ok(_) => { }
+    }
+    var reader = new csv.Reader(dst.Str())
+    fmt.Print(label)
+    fmt.Print(" ")
+    match reader.Read() {
+        Some(r) => match r {
+            Ok(got) => {
+                fmt.PrintBool(got.Len() == row.Len())
+                fmt.Print(" ")
+                var same = true
+                var i: usize = 0
+                for i < row.Len() {
+                    if got[i] != row[i] {
+                        same = false
+                    }
+                    i += 1
+                }
+                fmt.PrintBool(same)
+            }
+            Err(e) => fmt.PrintValue(e)
+        }
+        None => fmt.Print("none")
+    }
+    fmt.PrintNl()
+}
+
+func row_of(a: str, b: str) -> Array<str> {
+    var row = new Array<str>(0)
+    row.Push(a)
+    row.Push(b)
+    return row
+}
+
+func main() {
+    // Reading: the ends of a text, both line endings, empty fields, and a
+    // quoted field of every kind.
+    dump("empty", "")
+    dump("one", "a")
+    dump("one-nl", "a\n")
+    dump("two", "a,b")
+    dump("crlf", "a,b\r\nc\r\n")
+    dump("lf", "a\nb\r\n")
+    dump("trailing", "a,b\r\n\r\n")
+    dump("empty-fields", ",,\r\n")
+    dump("empty-last", "a,\r\n")
+    dump("quoted", "\"a,b\",c\r\n")
+    dump("quoted-quote", "\"a\"\"b\",c\r\n")
+    dump("quoted-empty", "\"\",x\r\n")
+    dump("quoted-newline", "\"a\nb\",c\r\n")
+    dump("quoted-crlf", "\"a\r\nb\",c\r\n")
+    dump("spaces", " a , b \r\n")
+    dump("bare-cr", "a\rb\r\n")
+    dump("cr-at-end", "a\r")
+    dump("last-no-end", "a,b")
+
+    // Reading: the faults.
+    dump("bare-quote", "a\"b,c\r\n")
+    dump("stray", "\"a\"x,c\r\n")
+    dump("unterminated", "\"abc")
+    dump("unterminated-empty", "\"")
+
+    // A separator other than a comma.
+    var other = new csv.Reader("a;b\n")
+    other.SetComma(';')
+    fmt.Print("semicolon ")
+    match other.Read() {
+        Some(r) => match r {
+            Ok(row) => {
+                fmt.PrintI64(i64(row.Len()))
+                fmt.Print(" ")
+                visible(row[1])
+            }
+            Err(e) => fmt.PrintValue(e)
+        }
+        None => fmt.Print("none")
+    }
+    fmt.PrintNl()
+
+    // Writing: quoting where the format asks for it, and nothing where it does
+    // not.
+    write("w-empty", new Array<str>(0), false)
+    var single = new Array<str>(0)
+    single.Push("a")
+    write("w-one", single, false)
+    write("w-two", row_of("a", "b"), false)
+    write("w-comma", row_of("a,b", "c"), false)
+    write("w-quote", row_of("a\"b", "c"), false)
+    write("w-newline", row_of("a\nb", "c"), false)
+    write("w-cr", row_of("a\rb", "c"), false)
+    write("w-empty-fields", row_of("", ""), false)
+    write("w-spaces", row_of(" a ", " b"), false)
+    write("w-semicolon", row_of("a", ";b"), true)
+    write("w-semicolon-quote", row_of("a;b", "c"), true)
+
+    // Writing then reading answers the same fields.
+    round("r-simple", row_of("a", "b"))
+    round("r-marked", row_of("a,b", "c\"d"))
+    round("r-multiline", row_of("a\nb", "c\r\nd"))
+    round("r-empty", row_of("", ""))
+    round("r-spaces", row_of(" a ", ""))
+}

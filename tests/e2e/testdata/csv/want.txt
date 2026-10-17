@@ -1,0 +1,39 @@
+empty  end
+one [<a>] end
+one-nl [<a>] end
+two [<a>,<b>] end
+crlf [<a>,<b>][<c>] end
+lf [<a>][<b>] end
+trailing [<a>,<b>][<>] end
+empty-fields [<>,<>,<>] end
+empty-last [<a>,<>] end
+quoted [<a,b>,<c>] end
+quoted-quote [<a"b>,<c>] end
+quoted-empty [<>,<x>] end
+quoted-newline [<a\nb>,<c>] end
+quoted-crlf [<a\r\nb>,<c>] end
+spaces [< a >,< b >] end
+bare-cr [<a\rb>] end
+cr-at-end [<a\r>] end
+last-no-end [<a>,<b>] end
+bare-quote err(csv: a quote stands in a field that is not quoted)err(csv: a quoted field is not closed) end
+stray err(csv: text follows a quoted field)[<x>,<c>] end
+unterminated err(csv: a quoted field is not closed) end
+unterminated-empty err(csv: a quoted field is not closed) end
+semicolon 2 b
+w-empty \r\n
+w-one a\r\n
+w-two a,b\r\n
+w-comma "a,b",c\r\n
+w-quote "a""b",c\r\n
+w-newline "a\nb",c\r\n
+w-cr "a\rb",c\r\n
+w-empty-fields ,\r\n
+w-spaces  a , b\r\n
+w-semicolon a;";b"\r\n
+w-semicolon-quote "a;b";c\r\n
+r-simple true true
+r-marked true true
+r-multiline true true
+r-empty true true
+r-spaces true true

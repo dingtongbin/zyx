@@ -1,1 +1,425 @@
 package html
+
+// HTML read into a tree. The parser is tolerant the way a browser is: a tag
+// that is never closed is closed where its parent ends, an end tag with no
+// start tag is dropped, and a start tag that names a void element opens
+// nothing. No schema is checked, because none is written here.
+//
+// A document that is one element is that element; anything else is held by a
+// root element named html, so a caller always has one node to walk. Element and
+// attribute names are folded to lower case, which is how HTML reads them.
+
+// Error is a fault the parser cannot read past.
+enum Error {
+    // UnterminatedComment is a comment the text ends inside, which swallows
+    // everything after it.
+    UnterminatedComment
+
+    impl Show {
+        func Show(w: Buf) {
+            w.WriteStr("html: a comment is not closed")
+        }
+    }
+}
+
+// A Node is one element, one text run, or one comment. An element holds its
+// children, so the tree is walked by following them.
+//
+// Kind is 1 for an element, 3 for text, and 8 for a comment.
+struct Node {
+    Kind: i32
+    Tag: str
+    Text: str
+    Children: Array<Node>
+    // attrs is an element's attributes in the order they were written, which is
+    // what Attr reads. A name is folded to lower case when it is read.
+    attrs: Array<(str, str)>
+
+    // Attr answers the value of an attribute of an element, or nothing when the
+    // node is not an element or the attribute is not there. A name is compared
+    // without regard to case.
+    func Attr(name: str) -> Option<str> {
+        if self.Kind != 1 {
+            return Option.None
+        }
+        var want = lower(name)
+        var n = self.attrs.Len()
+        var i: usize = 0
+        for i < n {
+            var pair = self.attrs[i]
+            if pair.0 == want {
+                return Option.Some(pair.1)
+            }
+            i += 1
+        }
+        return Option.None
+    }
+}
+
+// The bytes the parser gives a meaning to.
+const lt: u8 = 60
+const gt: u8 = 62
+const slash: u8 = 47
+const dash: u8 = 45
+const bang: u8 = 33
+const question: u8 = 63
+const equals: u8 = 61
+const double_quote: u8 = 34
+const single_quote: u8 = 39
+const space: u8 = 32
+const tab: u8 = 9
+const carriage_return: u8 = 13
+const line_feed: u8 = 10
+
+// Parse reads a text into a tree and answers its root.
+func Parse(s: str) -> Result<Node, Error> {
+    var root = new_element("html", new Array<(str, str)>(0))
+    var stack = new Array<Node>(0)
+    stack.Push(root)
+    var p = Parser { src: s, at: 0 }
+    match p.run(stack) {
+        Some(e) => return Result.Err(e)
+        None => { }
+    }
+    if root.Children.Len() == 1 {
+        var only = root.Children[0]
+        if only.Kind == 1 {
+            return Result.Ok(only)
+        }
+    }
+    return Result.Ok(root)
+}
+
+// A Parser holds the text and how far into it the reading has gone.
+struct Parser {
+    src: str
+    at: usize
+
+    // run reads the whole text and builds the tree into the top of the stack.
+    func run(stack: Array<Node>) -> Option<Error> {
+        var n = self.src.Len()
+        for self.at < n {
+            if self.src[self.at] != lt {
+                self.read_text(stack)
+                continue
+            }
+            match self.step(stack) {
+                Some(e) => return Option.Some(e)
+                None => { }
+            }
+        }
+        return Option.None
+    }
+
+    // step reads what a less-than sign begins.
+    func step(stack: Array<Node>) -> Option<Error> {
+        var n = self.src.Len()
+        if self.has_at("<!--") {
+            return self.read_comment(stack)
+        }
+        if self.at + 1 < n {
+            var next = self.src[self.at + 1]
+            if next == bang || next == question {
+                self.skip_to_gt()
+                return Option.None
+            }
+            if next == slash {
+                self.read_end(stack)
+                return Option.None
+            }
+            if is_name_start(next) {
+                return self.read_start(stack)
+            }
+        }
+        self.push_text(stack, "<")
+        self.at += 1
+        return Option.None
+    }
+
+    // read_text reads a run of text up to the next less-than sign.
+    func read_text(stack: Array<Node>) {
+        var n = self.src.Len()
+        var start = self.at
+        for self.at < n && self.src[self.at] != lt {
+            self.at += 1
+        }
+        self.push_text(stack, sub(self.src, start, self.at))
+    }
+
+    // read_comment reads a comment through its closing sequence.
+    func read_comment(stack: Array<Node>) -> Option<Error> {
+        var n = self.src.Len()
+        var start = self.at + 4
+        var i = start
+        for i + 2 < n {
+            if self.src[i] == dash && self.src[i + 1] == dash && self.src[i + 2] == gt {
+                stack[stack.Len() - 1].Children.Push(new_node(8, "", sub(self.src, start, i)))
+                self.at = i + 3
+                return Option.None
+            }
+            i += 1
+        }
+        return Option.Some(Error.UnterminatedComment)
+    }
+
+    // read_start reads a start tag and the element it opens.
+    func read_start(stack: Array<Node>) -> Option<Error> {
+        var n = self.src.Len()
+        self.at += 1
+        var start = self.at
+        for self.at < n && is_name_char(self.src[self.at]) {
+            self.at += 1
+        }
+        var tag = lower(sub(self.src, start, self.at))
+        var attrs = new Array<(str, str)>(0)
+        var closed = false
+        var empty_tag = false
+        for !closed {
+            self.skip_spaces()
+            if self.at >= n {
+                closed = true
+                continue
+            }
+            var b = self.src[self.at]
+            if b == gt {
+                self.at += 1
+                closed = true
+                continue
+            }
+            if b == slash {
+                self.at += 1
+                self.skip_spaces()
+                if self.at < n && self.src[self.at] == gt {
+                    self.at += 1
+                }
+                empty_tag = true
+                closed = true
+                continue
+            }
+            var name_start = self.at
+            for self.at < n && is_attr_char(self.src[self.at]) {
+                self.at += 1
+            }
+            if self.at == name_start {
+                self.at += 1
+                continue
+            }
+            var name = lower(sub(self.src, name_start, self.at))
+            var value = ""
+            self.skip_spaces()
+            if self.at < n && self.src[self.at] == equals {
+                self.at += 1
+                self.skip_spaces()
+                value = self.read_value()
+            }
+            attrs.Push((name, value))
+        }
+        var node = new_element(tag, attrs)
+        stack[stack.Len() - 1].Children.Push(node)
+        if !empty_tag && !is_void(tag) {
+            stack.Push(node)
+        }
+        return Option.None
+    }
+
+    // read_end reads an end tag and closes the element it names. An element
+    // that is not open is dropped.
+    func read_end(stack: Array<Node>) {
+        var n = self.src.Len()
+        self.at += 2
+        var start = self.at
+        for self.at < n && is_name_char(self.src[self.at]) {
+            self.at += 1
+        }
+        var tag = lower(sub(self.src, start, self.at))
+        self.skip_to_gt()
+        close_tag(stack, tag)
+    }
+
+    // read_value reads an attribute value, quoted in either quotation mark or
+    // standing bare.
+    func read_value() -> str {
+        var n = self.src.Len()
+        if self.at >= n {
+            return ""
+        }
+        var q = self.src[self.at]
+        if q == double_quote || q == single_quote {
+            self.at += 1
+            var start = self.at
+            for self.at < n && self.src[self.at] != q {
+                self.at += 1
+            }
+            var value = sub(self.src, start, self.at)
+            if self.at < n {
+                self.at += 1
+            }
+            return value
+        }
+        var start = self.at
+        for self.at < n {
+            var b = self.src[self.at]
+            if is_space(b) || b == gt {
+                break
+            }
+            self.at += 1
+        }
+        return sub(self.src, start, self.at)
+    }
+
+    // skip_spaces steps over white space.
+    func skip_spaces() {
+        var n = self.src.Len()
+        for self.at < n {
+            if !is_space(self.src[self.at]) {
+                break
+            }
+            self.at += 1
+        }
+    }
+
+    // skip_to_gt steps over everything through the next greater-than sign.
+    func skip_to_gt() {
+        var n = self.src.Len()
+        for self.at < n && self.src[self.at] != gt {
+            self.at += 1
+        }
+        if self.at < n {
+            self.at += 1
+        }
+    }
+
+    // push_text adds a run of text to the open element, unless it is empty.
+    func push_text(stack: Array<Node>, text: str) {
+        if text.Len() == 0 {
+            return
+        }
+        stack[stack.Len() - 1].Children.Push(new_node(3, "", text))
+    }
+
+    // has_at reports whether a prefix stands at the reading point.
+    func has_at(prefix: str) -> bool {
+        var n = self.src.Len()
+        var m = prefix.Len()
+        if self.at + m > n {
+            return false
+        }
+        var i: usize = 0
+        for i < m {
+            if self.src[self.at + i] != prefix[i] {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
+}
+
+// close_tag closes the nearest open element whose name matches, dropping the
+// elements opened after it. A name that is not open drops nothing.
+func close_tag(stack: Array<Node>, tag: str) {
+    var depth: i64 = i64(stack.Len())
+    var found = false
+    for depth > 1 {
+        depth -= 1
+        if stack[usize(depth)].Tag == tag {
+            found = true
+            break
+        }
+    }
+    if !found {
+        return
+    }
+    for i64(stack.Len()) > depth {
+        stack.Pop()
+    }
+}
+
+// new_node builds an element, a text run, or a comment.
+func new_node(kind: i32, tag: str, text: str) -> Node {
+    return Node { Kind: kind, Tag: tag, Text: text, Children: new Array<Node>(0), attrs: new Array<(str, str)>(0) }
+}
+
+// new_element builds an element with its attributes.
+func new_element(tag: str, attrs: Array<(str, str)>) -> Node {
+    return Node { Kind: 1, Tag: tag, Text: "", Children: new Array<Node>(0), attrs: attrs }
+}
+
+// is_void reports whether a name is one of the elements that open nothing.
+func is_void(tag: str) -> bool {
+    if tag == "area" || tag == "base" || tag == "br" || tag == "col" {
+        return true
+    }
+    if tag == "embed" || tag == "hr" || tag == "img" || tag == "input" {
+        return true
+    }
+    if tag == "link" || tag == "meta" || tag == "param" {
+        return true
+    }
+    return tag == "source" || tag == "track" || tag == "wbr"
+}
+
+// lower answers a text with its upper-case ASCII letters folded down.
+func lower(s: str) -> str {
+    var out = new Buf(0)
+    var n = s.Len()
+    var i: usize = 0
+    for i < n {
+        var b = s[i]
+        if b >= byte_of('A') && b <= byte_of('Z') {
+            out.WriteByte(b + 32)
+        } else {
+            out.WriteByte(b)
+        }
+        i += 1
+    }
+    return out.Str()
+}
+
+func is_space(b: u8) -> bool {
+    if b == space || b == tab || b == carriage_return || b == line_feed {
+        return true
+    }
+    return false
+}
+
+func is_name_start(b: u8) -> bool {
+    if b >= byte_of('a') && b <= byte_of('z') {
+        return true
+    }
+    return b >= byte_of('A') && b <= byte_of('Z')
+}
+
+func is_name_char(b: u8) -> bool {
+    if is_name_start(b) || (b >= byte_of('0') && b <= byte_of('9')) {
+        return true
+    }
+    return b == byte_of('-') || b == byte_of('_') || b == byte_of(':')
+}
+
+// is_attr_char reports whether a byte can stand in an attribute name.
+func is_attr_char(b: u8) -> bool {
+    if is_space(b) || b == equals || b == gt || b == slash {
+        return false
+    }
+    return true
+}
+
+func byte_of(ch: char) -> u8 {
+    return u8(u32(ch))
+}
+
+// sub answers the bytes between two positions as a text of its own. The whole
+// text is answered as it is, so a caller that asks for all of it pays nothing.
+func sub(s: str, lo: usize, hi: usize) -> str {
+    if lo == 0 && hi == s.Len() {
+        return s
+    }
+    var out = new Buf(0)
+    var i = lo
+    for i < hi {
+        out.WriteByte(s[i])
+        i += 1
+    }
+    return out.Str()
+}

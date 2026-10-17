@@ -1,0 +1,222 @@
+package main
+
+import "std/fmt"
+import "std/json"
+
+// The reading surface of std/json: every value the format has, the edges around
+// them, and every fault the reader names. A value is printed back through the
+// encoder, so one line shows both what was read and what is written, and a
+// fault is printed in its own form with its place and path.
+
+// ok prints a text that reads, and the value it reads as.
+func ok(src: str) {
+    fmt.Print("ok ")
+    match json.ParseStr(src) {
+        Ok(v) => fmt.Println(json.EncodeStr(v))
+        Err(e) => {
+            fmt.Print("unexpected ")
+            fmt.PrintValue(e)
+            fmt.PrintNl()
+        }
+    }
+}
+
+// bad prints a text that does not read, and the fault it drew.
+func bad(src: str) {
+    fmt.Print("bad ")
+    match json.ParseStr(src) {
+        Ok(v) => {
+            fmt.Print("accepted ")
+            fmt.Println(json.EncodeStr(v))
+        }
+        Err(e) => {
+            fmt.PrintValue(e)
+            fmt.PrintNl()
+        }
+    }
+}
+
+// bytes_of prints a text one byte at a time, so a line of the answer holds no
+// byte that is not printable.
+func bytes_of(s: str) {
+    var n = s.Len()
+    var i: usize = 0
+    for i < n {
+        fmt.PrintU64(u64(s[i]))
+        fmt.Print(" ")
+        i += 1
+    }
+    fmt.PrintNl()
+}
+
+// ok_string prints the bytes of a text a case reads, so a non-ASCII answer
+// stays printable.
+func ok_string(src: str) {
+    fmt.Print("bytes ")
+    match json.ParseStr(src) {
+        Ok(v) => match v {
+            Str(s) => bytes_of(s)
+            _ => {
+                fmt.Print("not a text")
+                fmt.PrintNl()
+            }
+        }
+        Err(e) => {
+            fmt.PrintValue(e)
+            fmt.PrintNl()
+        }
+    }
+}
+
+// ok_len prints how long a value's text is, which is how a huge value is shown
+// without printing all of it.
+func ok_len(src: str) {
+    fmt.Print("len ")
+    match json.ParseStr(src) {
+        Ok(v) => fmt.PrintI64(i64(json.EncodeStr(v).Len()))
+        Err(e) => fmt.PrintValue(e)
+    }
+    fmt.PrintNl()
+}
+
+func byte_of(ch: char) -> u8 {
+    return u8(u32(ch))
+}
+
+// nesting builds an array nested n deep.
+func nesting(n: usize) -> str {
+    var b = new Buf(0)
+    var i: usize = 0
+    for i < n {
+        b.WriteByte(byte_of('['))
+        i += 1
+    }
+    i = 0
+    for i < n {
+        b.WriteByte(byte_of(']'))
+        i += 1
+    }
+    return b.Str()
+}
+
+// control reads a text of bytes that holds a control byte, which a text of the
+// source cannot write.
+func control() {
+    var b = new Buf(0)
+    b.WriteStr("\"a")
+    b.WriteByte(10)
+    b.WriteStr("b\"")
+    fmt.Print("bad ")
+    match json.Parse(b.Bytes()) {
+        Ok(v) => {
+            fmt.Print("accepted ")
+            fmt.Println(json.EncodeStr(v))
+        }
+        Err(e) => {
+            fmt.PrintValue(e)
+            fmt.PrintNl()
+        }
+    }
+}
+
+func main() {
+    // The three values that are not a number or a text.
+    ok("null")
+    ok("true")
+    ok("false")
+    ok("  true  ")
+
+    // Numbers: whole, signed, fractioned, and with an exponent.
+    ok("0")
+    ok("-0")
+    ok("123")
+    ok("-45")
+    ok("1.5")
+    ok("-1.5")
+    ok("0.5")
+    ok("1e3")
+    ok("1E3")
+    ok("1e+3")
+    ok("1e-2")
+    ok("123.456")
+    ok("9007199254740992")
+    ok("-9007199254740992")
+    ok("0.0000001")
+    ok("1e400")
+
+    // Texts: plain, escaped, and named by an escape.
+    ok("\"\"")
+    ok("\"a\"")
+    ok("\"two words\"")
+    ok_string("\"\\u00e9\"")
+    ok_string("\"\\ud83d\\ude00\"")
+    ok_string("\"\\n\\t\\\"\\\\\\/\\b\\f\\r\"")
+    ok_string("\"\\ud800\"")
+    ok_string("\"\\u0041\\u0042\"")
+
+    // Arrays and objects, empty and full, nested, and in any order of members.
+    ok("[]")
+    ok("[1]")
+    ok("[1,2,3]")
+    ok("[[1],[2,3]]")
+    ok("{}")
+    ok("{\"a\":1}")
+    ok("{\"b\":2,\"a\":1}")
+    ok("{\"a\":{\"b\":[true,null]}}")
+    ok("{\"dup\":1,\"dup\":2}")
+    ok("  [ 1 , 2 ]  ")
+
+    // The faults a reading names.
+    bad("")
+    bad("   ")
+    bad("nul")
+    bad("tru")
+    bad("fals")
+    bad("nullx")
+    bad("[1,]")
+    bad("[1,2,3,]")
+    bad("[1 2]")
+    bad("[1]]")
+    bad("{\"a\"}")
+    bad("{\"a\":}")
+    bad("{a:1}")
+    bad("{\"a\":1,}")
+    bad("{\"a\":1}extra")
+    bad("\"unterminated")
+    bad("\"bad \\q\"")
+    bad("\"\\uZZZZ\"")
+    bad("\"\\u12\"")
+    bad("01")
+    bad("1.")
+    bad(".5")
+    bad("-")
+    bad("+1")
+    bad("1e")
+    bad("1e+")
+    bad("9007199254740993")
+    bad("12345678901234567890")
+    bad("-12345678901234567890")
+    bad("{\"a\":[1,2,{\"b\":}]}")
+    bad("[1, 2")
+    bad("{\"a\":1")
+
+    // A control byte in a text is a fault, and the reading reaches it through
+    // the byte form.
+    control()
+
+    // The nesting limit: 256 deep reads, 257 deep does not. The path of the
+    // fault is 256 steps long, so its length is printed rather than the path.
+    ok_len(nesting(256))
+    fmt.Print("bad ")
+    match json.ParseStr(nesting(257)) {
+        Ok(v) => {
+            fmt.Print("accepted ")
+            fmt.Println(json.EncodeStr(v))
+        }
+        Err(e) => {
+            fmt.Println(e.Msg)
+            fmt.PrintI64(i64(e.Path.Len()))
+            fmt.PrintNl()
+        }
+    }
+}

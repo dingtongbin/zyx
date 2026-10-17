@@ -1,1 +1,534 @@
 package url
+
+// URLs, split into the parts RFC 3986 names and percent encoded on the way out.
+// A Url keeps each part as the text wrote it, so writing a parsed value back
+// answers the same parts; the unescape functions are how a caller reads a part
+// as data. A percent escape is checked where it stands, because text that holds
+// a broken one is not text a program can use.
+
+// upper_hex is the alphabet a percent escape writes.
+const upper_hex: str = "0123456789ABCDEF"
+
+// Error tells why a text is not a URL. It is a small set, because parsing is
+// tolerant everywhere the grammar allows more than one reading.
+enum Error {
+    // BadScheme is a text that begins with a colon, where a scheme has to be.
+    BadScheme
+    // BadHost is a bracketed host with no closing bracket.
+    BadHost
+    // BadPort is a port that is not a decimal number, or is too large.
+    BadPort
+    // BadEscape is a percent escape that is not two hexadecimal digits.
+    BadEscape
+
+    impl Show {
+        func Show(w: Buf) {
+            match self {
+                BadScheme => w.WriteStr("url: the text begins with a colon")
+                BadHost => w.WriteStr("url: a bracketed host has no closing bracket")
+                BadPort => w.WriteStr("url: the port is not a number")
+                BadEscape => w.WriteStr("url: a percent escape is not two hexadecimal digits")
+            }
+        }
+    }
+}
+
+// Url is the parts of one URL. Port is zero when the text named none, and a
+// Host that stands in brackets keeps them, so an IPv6 literal round trips.
+struct Url {
+    Scheme: str
+    User: str
+    Password: str
+    Host: str
+    Port: i32
+    Path: str
+    RawQuery: str
+    Fragment: str
+
+    // String writes the parts back as one text. An authority is written when
+    // the text carried a scheme or a host and there is something to stand in
+    // it: a host, user information, or a path that begins with a slash. A
+    // scheme whose remainder is neither of those, such as an address of a mail
+    // service, keeps that remainder as the path it is.
+    func String() -> str {
+        var out = new Buf(0)
+        if self.Scheme.Len() > 0 {
+            out.WriteStr(self.Scheme)
+            out.WriteByte(byte_of(':'))
+        }
+        var info = self.User.Len() > 0 || self.Password.Len() > 0
+        var opened = self.Scheme.Len() > 0 || self.Host.Len() > 0 || info
+        var filled = self.Host.Len() > 0 || info || starts_with(self.Path, "/")
+        if opened && filled {
+            out.WriteStr("//")
+            if info {
+                out.WriteStr(self.User)
+                if self.Password.Len() > 0 {
+                    out.WriteByte(byte_of(':'))
+                    out.WriteStr(self.Password)
+                }
+                out.WriteByte(byte_of('@'))
+            }
+            out.WriteStr(self.Host)
+            if self.Port != 0 {
+                out.WriteByte(byte_of(':'))
+                out.WriteStr(f"{i64(self.Port)}")
+            }
+        }
+        out.WriteStr(self.Path)
+        if self.RawQuery.Len() > 0 {
+            out.WriteByte(byte_of('?'))
+            out.WriteStr(self.RawQuery)
+        }
+        if self.Fragment.Len() > 0 {
+            out.WriteByte(byte_of('#'))
+            out.WriteStr(self.Fragment)
+        }
+        return out.Str()
+    }
+}
+
+// Parse reads a URL into its parts. The text is cut at the first fragment, then
+// at the first query, then at a scheme, and what is left is an authority and a
+// path when the authority is written with two slashes.
+func Parse(s: str) -> Result<Url, Error> {
+    var rest = s
+    var fragment = ""
+    var before_fragment, from_fragment = cut_at(rest, byte_of('#'))
+    if from_fragment.Len() > 0 {
+        fragment = sub(from_fragment, 1, from_fragment.Len())
+        rest = before_fragment
+    }
+    var raw_query = ""
+    var before_query, from_query = cut_at(rest, byte_of('?'))
+    if from_query.Len() > 0 {
+        raw_query = sub(from_query, 1, from_query.Len())
+        rest = before_query
+    }
+    var scheme = ""
+    var colon = scan_scheme(rest)
+    if colon == -2 {
+        return Result.Err(Error.BadScheme)
+    }
+    if colon >= 0 {
+        scheme = sub(rest, 0, usize(colon))
+        rest = sub(rest, usize(colon) + 1, rest.Len())
+    }
+    var user = ""
+    var password = ""
+    var host = ""
+    var port_value: i32 = 0
+    var path = rest
+    if starts_with(rest, "//") {
+        var body = sub(rest, 2, rest.Len())
+        var authority, path_part = cut_at(body, byte_of('/'))
+        path = path_part
+        var host_port = authority
+        var at = last_byte(authority, byte_of('@'))
+        if at >= 0 {
+            var info = sub(authority, 0, usize(at))
+            host_port = sub(authority, usize(at) + 1, authority.Len())
+            var name, code = cut_at(info, byte_of(':'))
+            user = name
+            if code.Len() > 0 {
+                password = sub(code, 1, code.Len())
+            }
+        }
+        if starts_with(host_port, "[") {
+            match index_byte(host_port, byte_of(']')) {
+                Some(end) => {
+                    host = sub(host_port, 0, end + 1)
+                    var tail = sub(host_port, end + 1, host_port.Len())
+                    if tail.Len() > 0 {
+                        if tail[0] != byte_of(':') {
+                            return Result.Err(Error.BadPort)
+                        }
+                        var value = port_of(sub(tail, 1, tail.Len()))
+                        if value < 0 {
+                            return Result.Err(Error.BadPort)
+                        }
+                        port_value = i32(value)
+                    }
+                }
+                None => return Result.Err(Error.BadHost)
+            }
+        } else {
+            var mark = last_byte(host_port, byte_of(':'))
+            if mark >= 0 {
+                host = sub(host_port, 0, usize(mark))
+                var value = port_of(sub(host_port, usize(mark) + 1, host_port.Len()))
+                if value < 0 {
+                    return Result.Err(Error.BadPort)
+                }
+                port_value = i32(value)
+            } else {
+                host = host_port
+            }
+        }
+    }
+    if !escapes_ok(user) || !escapes_ok(password) || !escapes_ok(host) {
+        return Result.Err(Error.BadEscape)
+    }
+    if !escapes_ok(path) || !escapes_ok(raw_query) || !escapes_ok(fragment) {
+        return Result.Err(Error.BadEscape)
+    }
+    return Result.Ok(Url {
+        Scheme: scheme
+        User: user
+        Password: password
+        Host: host
+        Port: port_value
+        Path: path
+        RawQuery: raw_query
+        Fragment: fragment
+    })
+}
+
+// scan_scheme answers where the colon that closes a scheme stands, or -1 when
+// the text has no scheme. A text that begins with the colon answers -2, since
+// a scheme is what belongs there.
+func scan_scheme(s: str) -> i64 {
+    var n = s.Len()
+    var i: usize = 0
+    for i < n {
+        var b = s[i]
+        if is_alpha(b) {
+            i += 1
+            continue
+        }
+        if is_digit(b) || b == byte_of('+') || b == byte_of('-') || b == byte_of('.') {
+            if i == 0 {
+                return 0 - 1
+            }
+            i += 1
+            continue
+        }
+        if b == byte_of(':') {
+            if i == 0 {
+                return 0 - 2
+            }
+            return i64(i)
+        }
+        return 0 - 1
+    }
+    return 0 - 1
+}
+
+// port_of reads the text of a port. An empty text is zero, and a text that is
+// not a decimal number, or is larger than the field holds, is -1.
+func port_of(text: str) -> i64 {
+    if text.Len() == 0 {
+        return 0
+    }
+    var value: i64 = 0
+    var n = text.Len()
+    var i: usize = 0
+    for i < n {
+        var b = text[i]
+        if !is_digit(b) {
+            return 0 - 1
+        }
+        value = value * 10 + i64(b - byte_of('0'))
+        if value > 2147483647 {
+            return 0 - 1
+        }
+        i += 1
+    }
+    return value
+}
+
+// QueryGet answers the value a query gives a key, or nothing.
+func QueryGet(raw_query: str, key: str) -> Option<str> {
+    var pairs = QueryPairs(raw_query)
+    var n = pairs.Len()
+    var i: usize = 0
+    for i < n {
+        var pair = pairs[i]
+        if pair.0 == key {
+            return Option.Some(pair.1)
+        }
+        i += 1
+    }
+    return Option.None
+}
+
+// QueryPairs reads a query into its pairs, in the order they appear. Each side
+// of a pair is unescaped; a side whose escape is broken stays as it was
+// written, because the answer of this function has no room for a failure.
+func QueryPairs(raw_query: str) -> Array<(str, str)> {
+    var out = new Array<(str, str)>(0)
+    var n = raw_query.Len()
+    var start: usize = 0
+    var i: usize = 0
+    for i < n {
+        if raw_query[i] == byte_of('&') {
+            if i > start {
+                out.Push(pair_of(sub(raw_query, start, i)))
+            }
+            start = i + 1
+        }
+        i += 1
+    }
+    if n > start {
+        out.Push(pair_of(sub(raw_query, start, n)))
+    }
+    return out
+}
+
+// QueryEncode writes pairs as a query, in the order they are given, with both
+// sides escaped. A pair with an empty key keeps its equals sign.
+func QueryEncode(pairs: Array<(str, str)>) -> str {
+    var out = new Buf(0)
+    var n = pairs.Len()
+    var i: usize = 0
+    for i < n {
+        if i > 0 {
+            out.WriteByte(byte_of('&'))
+        }
+        var pair = pairs[i]
+        out.WriteStr(QueryEscape(pair.0))
+        out.WriteByte(byte_of('='))
+        out.WriteStr(QueryEscape(pair.1))
+        i += 1
+    }
+    return out.Str()
+}
+
+// QueryEscape writes a text with everything outside the unreserved set
+// escaped, and a space as a plus, which is the form a query takes.
+func QueryEscape(s: str) -> str {
+    return escape(s, true)
+}
+
+// PathEscape writes a text with everything a path segment cannot hold escaped.
+// A space becomes three characters rather than a plus.
+func PathEscape(s: str) -> str {
+    return escape(s, false)
+}
+
+// QueryUnescape reads a text with percent escapes, and a plus as a space.
+func QueryUnescape(s: str) -> Result<str, Error> {
+    return unescape(s, true)
+}
+
+// PathUnescape reads a text with percent escapes. A plus stands for itself.
+func PathUnescape(s: str) -> Result<str, Error> {
+    return unescape(s, false)
+}
+
+// escape writes a text with the bytes a form does not allow replaced by their
+// percent escape. The two forms differ in the reserved bytes they leave alone
+// and in what a space becomes.
+func escape(s: str, query: bool) -> str {
+    var out = new Buf(0)
+    var n = s.Len()
+    var i: usize = 0
+    for i < n {
+        var b = s[i]
+        if is_alpha(b) || is_digit(b) || is_mark(b) {
+            out.WriteByte(b)
+        } else if query && b == byte_of(' ') {
+            out.WriteByte(byte_of('+'))
+        } else if !query && is_path_reserved(b) {
+            out.WriteByte(b)
+        } else {
+            var hi = usize(b >> 4)
+            var lo = usize(b & 15)
+            out.WriteByte(byte_of('%'))
+            out.WriteByte(upper_hex[hi])
+            out.WriteByte(upper_hex[lo])
+        }
+        i += 1
+    }
+    return out.Str()
+}
+
+// unescape reads a text with percent escapes. With plus set a plus becomes a
+// space, which is what a query reads; otherwise a plus stands for itself.
+func unescape(s: str, plus: bool) -> Result<str, Error> {
+    var out = new Buf(0)
+    var n = s.Len()
+    var i: usize = 0
+    for i < n {
+        var b = s[i]
+        if b == byte_of('%') {
+            if i + 2 >= n {
+                return Result.Err(Error.BadEscape)
+            }
+            var hi = hex_value(s[i + 1])
+            var lo = hex_value(s[i + 2])
+            if hi < 0 || lo < 0 {
+                return Result.Err(Error.BadEscape)
+            }
+            out.WriteByte(u8(hi * 16 + lo))
+            i += 3
+            continue
+        }
+        if plus && b == byte_of('+') {
+            out.WriteByte(byte_of(' '))
+            i += 1
+            continue
+        }
+        out.WriteByte(b)
+        i += 1
+    }
+    return Result.Ok(out.Str())
+}
+
+// pair_of reads one query pair. A pair without an equals sign has an empty
+// value, and one with more than one keeps them in the value.
+func pair_of(piece: str) -> (str, str) {
+    var key, code = cut_at(piece, byte_of('='))
+    var value = ""
+    if code.Len() > 0 {
+        value = sub(code, 1, code.Len())
+    }
+    return (decode(key), decode(value))
+}
+
+// decode unescapes one side of a pair, leaving text with a broken escape as it
+// was written.
+func decode(s: str) -> str {
+    match QueryUnescape(s) {
+        Ok(v) => return v
+        Err(_) => { }
+    }
+    return s
+}
+
+// escapes_ok reports whether every percent sign in a text begins a well formed
+// escape.
+func escapes_ok(s: str) -> bool {
+    var n = s.Len()
+    var i: usize = 0
+    for i < n {
+        if s[i] == byte_of('%') {
+            if i + 2 >= n {
+                return false
+            }
+            if hex_value(s[i + 1]) < 0 || hex_value(s[i + 2]) < 0 {
+                return false
+            }
+            i += 3
+            continue
+        }
+        i += 1
+    }
+    return true
+}
+
+// hex_value is the value of a hexadecimal digit, or -1 when the byte is not
+// one.
+func hex_value(b: u8) -> i32 {
+    if b >= byte_of('0') && b <= byte_of('9') {
+        return i32(b - byte_of('0'))
+    }
+    if b >= byte_of('a') && b <= byte_of('f') {
+        return i32(b - byte_of('a')) + 10
+    }
+    if b >= byte_of('A') && b <= byte_of('F') {
+        return i32(b - byte_of('A')) + 10
+    }
+    return 0 - 1
+}
+
+// cut_at splits a text at the first byte equal to b. The first answer is the
+// text before it, and the second begins at the byte, or is empty when the byte
+// is not there.
+func cut_at(s: str, b: u8) -> (str, str) {
+    var n = s.Len()
+    var i: usize = 0
+    for i < n {
+        if s[i] == b {
+            return (sub(s, 0, i), sub(s, i, n))
+        }
+        i += 1
+    }
+    return (s, "")
+}
+
+// index_byte answers where a byte first appears, or nothing.
+func index_byte(s: str, b: u8) -> Option<usize> {
+    var n = s.Len()
+    var i: usize = 0
+    for i < n {
+        if s[i] == b {
+            return Option.Some(i)
+        }
+        i += 1
+    }
+    return Option.None
+}
+
+// last_byte answers where a byte last appears, or -1 when it is not there.
+func last_byte(s: str, b: u8) -> i64 {
+    var i = s.Len()
+    for i > 0 {
+        i -= 1
+        if s[i] == b {
+            return i64(i)
+        }
+    }
+    return 0 - 1
+}
+
+// starts_with reports whether a text begins with a prefix.
+func starts_with(s: str, prefix: str) -> bool {
+    if prefix.Len() > s.Len() {
+        return false
+    }
+    var i: usize = 0
+    var n = prefix.Len()
+    for i < n {
+        if s[i] != prefix[i] {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+// is_mark reports whether a byte is one of the four marks that never need an
+// escape.
+func is_mark(b: u8) -> bool {
+    return b == byte_of('-') || b == byte_of('_') || b == byte_of('.') || b == byte_of('~')
+}
+
+// is_path_reserved reports whether a byte is one of the reserved bytes a path
+// segment leaves as it is.
+func is_path_reserved(b: u8) -> bool {
+    if b == byte_of('$') || b == byte_of('&') || b == byte_of('+') || b == byte_of(':') {
+        return true
+    }
+    return b == byte_of('=') || b == byte_of('@')
+}
+
+func byte_of(ch: char) -> u8 {
+    return u8(u32(ch))
+}
+
+// sub answers the bytes between two positions as a text of its own. The whole
+// text is answered as it is, so a caller that asks for all of it pays nothing.
+func sub(s: str, lo: usize, hi: usize) -> str {
+    if lo == 0 && hi == s.Len() {
+        return s
+    }
+    var out = new Buf(0)
+    var i = lo
+    for i < hi {
+        out.WriteByte(s[i])
+        i += 1
+    }
+    return out.Str()
+}
+
+func is_digit(b: u8) -> bool {
+    return b >= byte_of('0') && b <= byte_of('9')
+}
+
+func is_alpha(b: u8) -> bool {
+    if b >= byte_of('a') && b <= byte_of('z') {
+        return true
+    }
+    return b >= byte_of('A') && b <= byte_of('Z')
+}

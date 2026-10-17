@@ -1,1 +1,232 @@
 package csv
+
+// Comma separated values, the format RFC 4180 describes. A field that holds a
+// separator, a quote, or a line ending is quoted, and a quote inside such a
+// field is written twice. Reading accepts a bare line feed as well as the
+// carriage return and line feed the format writes; a carriage return that no
+// line feed follows is part of the field, since the format gives it no meaning
+// of its own.
+
+// Faults a reader can find.
+enum Error {
+    // BareQuote is a quote in a field that is not quoted.
+    BareQuote
+    // StrayQuote is anything other than a separator or the end of the record
+    // right after a quoted field.
+    StrayQuote
+    // MissingQuote is a quoted field the text ends inside.
+    MissingQuote
+
+    impl Show {
+        func Show(w: Buf) {
+            match self {
+                BareQuote => w.WriteStr("csv: a quote stands in a field that is not quoted")
+                StrayQuote => w.WriteStr("csv: text follows a quoted field")
+                MissingQuote => w.WriteStr("csv: a quoted field is not closed")
+            }
+        }
+    }
+}
+
+// The bytes the format gives a meaning to.
+const comma_default: u8 = 44
+const quote: u8 = 34
+const carriage_return: u8 = 13
+const line_feed: u8 = 10
+
+// A Reader reads records from a text in memory one at a time.
+struct Reader {
+    src: str
+    at: usize
+    comma: u8
+
+    // init builds a reader over a text.
+    func init(src: str) -> Self {
+        return Reader { src: src, at: 0, comma: comma_default }
+    }
+
+    // SetComma changes the separator. The default is a comma.
+    func SetComma(ch: char) {
+        self.comma = byte_of(ch)
+    }
+
+    // Read answers the next record, or nothing at the end of the text. A record
+    // is a field list, empty fields included; the end of the text after a final
+    // line ending is the end, not an empty record.
+    func Read() -> Option<Result<Array<str>, Error>> {
+        var n = self.src.Len()
+        if self.at >= n {
+            return Option.None
+        }
+        var row = new Array<str>(0)
+        var done = false
+        for !done {
+            var field = new Buf(0)
+            var fault = self.read_field(field)
+            if fault != 0 {
+                var failed: Result<Array<str>, Error> = Result.Err(fault_error(fault))
+                return Option.Some(failed)
+            }
+            row.Push(field.Str())
+            if self.at >= n {
+                break
+            }
+            var b = self.src[self.at]
+            if b == self.comma {
+                self.at += 1
+                continue
+            }
+            if b == carriage_return {
+                self.at += 1
+                if self.at < n && self.src[self.at] == line_feed {
+                    self.at += 1
+                }
+            } else if b == line_feed {
+                self.at += 1
+            }
+            done = true
+        }
+        var outcome: Result<Array<str>, Error> = Result.Ok(row)
+        return Option.Some(outcome)
+    }
+
+    // read_field reads one field into a caller's buffer and answers zero, or
+    // the code of the fault it found. The reader is left at the separator or
+    // the end.
+    func read_field(out: Buf) -> i32 {
+        var n = self.src.Len()
+        if self.at < n && self.src[self.at] == quote {
+            self.at += 1
+            for self.at < n {
+                var b = self.src[self.at]
+                if b != quote {
+                    out.WriteByte(b)
+                    self.at += 1
+                    continue
+                }
+                if self.at + 1 < n && self.src[self.at + 1] == quote {
+                    out.WriteByte(quote)
+                    self.at += 2
+                    continue
+                }
+                self.at += 1
+                if self.at < n {
+                    var after = self.src[self.at]
+                    var separator = after == self.comma || after == line_feed
+                    var ending = after == carriage_return && self.at + 1 < n && self.src[self.at + 1] == line_feed
+                    if !separator && !ending {
+                        return 2
+                    }
+                }
+                return 0
+            }
+            return 3
+        }
+        for self.at < n {
+            var b = self.src[self.at]
+            if b == quote {
+                return 1
+            }
+            if b == self.comma || b == line_feed {
+                break
+            }
+            if b == carriage_return && self.at + 1 < n && self.src[self.at + 1] == line_feed {
+                break
+            }
+            out.WriteByte(b)
+            self.at += 1
+        }
+        return 0
+    }
+}
+
+// fault_error names the fault a status code stands for.
+func fault_error(code: i32) -> Error {
+    if code == 1 {
+        return Error.BareQuote
+    }
+    if code == 2 {
+        return Error.StrayQuote
+    }
+    return Error.MissingQuote
+}
+
+// A Writer writes records into a buffer. Nothing here can fail, because the
+// destination is memory; the results are the shape a writer over a file will
+// have.
+struct Writer {
+    dst: Buf
+    comma: u8
+
+    // init builds a writer over a buffer.
+    func init(dst: Buf) -> Self {
+        return Writer { dst: dst, comma: comma_default }
+    }
+
+    // SetComma changes the separator. The default is a comma.
+    func SetComma(ch: char) {
+        self.comma = byte_of(ch)
+    }
+
+    // Write appends one record. Every line ends with a carriage return and a
+    // line feed, the ending the format writes.
+    func Write(row: Array<str>) -> Result<(), Error> {
+        var n = row.Len()
+        var i: usize = 0
+        for i < n {
+            if i > 0 {
+                self.dst.WriteByte(self.comma)
+            }
+            self.write_field(row[i])
+            i += 1
+        }
+        self.dst.WriteByte(carriage_return)
+        self.dst.WriteByte(line_feed)
+        return Result.Ok()
+    }
+
+    // Flush answers with nothing to do, because a buffer is written as it goes.
+    func Flush() -> Result<(), Error> {
+        return Result.Ok()
+    }
+
+    // write_field appends one field, quoting it when it holds a byte the format
+    // gives a meaning to.
+    func write_field(s: str) {
+        if needs_quote(s, self.comma) {
+            self.dst.WriteByte(quote)
+            var n = s.Len()
+            var i: usize = 0
+            for i < n {
+                var b = s[i]
+                if b == quote {
+                    self.dst.WriteByte(quote)
+                }
+                self.dst.WriteByte(b)
+                i += 1
+            }
+            self.dst.WriteByte(quote)
+            return
+        }
+        self.dst.WriteStr(s)
+    }
+}
+
+// needs_quote reports whether a field holds a byte that makes quoting
+// necessary.
+func needs_quote(s: str, comma: u8) -> bool {
+    var n = s.Len()
+    var i: usize = 0
+    for i < n {
+        var b = s[i]
+        if b == comma || b == quote || b == carriage_return || b == line_feed {
+            return true
+        }
+        i += 1
+    }
+    return false
+}
+
+func byte_of(ch: char) -> u8 {
+    return u8(u32(ch))
+}
