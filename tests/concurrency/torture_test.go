@@ -19,10 +19,11 @@ import (
 	"zyx/internal/toolchain"
 )
 
-// threadCounts are the scheduler sizes a program is run at. One is the layout
-// a program has when nothing asks for more; the rest exercise handoffs between
-// scheduler threads, which is where a race hides.
-var threadCounts = []string{"1", "2", "4", "8"}
+// threadCounts are the scheduler sizes a program is run at. The empty one is
+// the size a program has when nothing asks for more, which is what a user gets;
+// one exercises the scheduler as a plain coroutine loop; the rest exercise
+// handoffs between scheduler threads, which is where a race hides.
+var threadCounts = []string{"", "1", "2", "4", "8"}
 
 // env gives the compiler the standard library and the runtime tree of the
 // checkout, so a test needs no installation.
@@ -133,7 +134,10 @@ func builtProgram(t *testing.T, dir string) string {
 func runAt(t *testing.T, path, threads string) (string, error) {
 	t.Helper()
 	cmd := exec.Command(path)
-	cmd.Env = append(os.Environ(), "ZYX_THREADS="+threads, "ZYX_BLOCKPOOL=8")
+	cmd.Env = append(os.Environ(), "ZYX_BLOCKPOOL=8")
+	if threads != "" {
+		cmd.Env = append(cmd.Env, "ZYX_THREADS="+threads)
+	}
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -171,7 +175,11 @@ func TestThreadCountDoesNotChangeOutput(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, threads := range threadCounts {
-				t.Run("threads="+threads, func(t *testing.T) {
+				name := threads
+				if name == "" {
+					name = "default"
+				}
+				t.Run("threads="+name, func(t *testing.T) {
 					got, err := runAt(t, path, threads)
 					if err != nil {
 						t.Fatalf("at %s threads the program did not finish cleanly: %v\n%s", threads, err, got)

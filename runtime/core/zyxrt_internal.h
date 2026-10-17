@@ -240,6 +240,14 @@ void zyxrt_block_stop(void);
 void zyxrt_loop_stop(void);
 void zyxrt_preempt_stop(void);
 
+/* A C call that may block is made on the calling thread, which is what keeps it
+   cheap: the arguments are passed as they are and no coroutine moves. The
+   compiler tells the runtime when a thread is inside such a call, so that a
+   thread with nothing of its own to run takes over the rest of the program
+   while the call is in it. */
+void zyxrt_entersyscall(void);
+void zyxrt_exitsyscall(void);
+
 /* The event loop. A coroutine that waits on a pollable descriptor parks, and
    a poller thread watches the descriptors and hands the ready ones to the
    scheduler: the poller records what became ready, and a scheduler thread

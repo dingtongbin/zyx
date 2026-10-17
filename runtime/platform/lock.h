@@ -26,6 +26,10 @@ static inline void zyxrt_thread_start(void (*run)(void *), void *arg) { (void)ru
    whether the event loop has a poller of its own. */
 static inline int zyxrt_threads(void) { return 0; }
 
+/* zyxrt_cpu_count answers how many processors can run code at once, which is
+   what the scheduler sizes itself to. */
+static inline size_t zyxrt_cpu_count(void) { return 1; }
+
 #elif defined(_WIN32)
 
 #include <windows.h>
@@ -49,9 +53,20 @@ static inline void zyxrt_thread_start(void (*run)(void *), void *arg) {
    whether the event loop has a poller of its own. */
 static inline int zyxrt_threads(void) { return 1; }
 
+/* zyxrt_cpu_count answers how many processors can run code at once, which is
+   what the scheduler sizes itself to. The count is the one the process may
+   use, so a process confined to a subset of the machine does not start
+   threads it cannot run. */
+static inline size_t zyxrt_cpu_count(void) {
+  SYSTEM_INFO info;
+  GetSystemInfo(&info);
+  return info.dwNumberOfProcessors > 0 ? (size_t)info.dwNumberOfProcessors : 1;
+}
+
 #else
 
 #include <pthread.h>
+#include <unistd.h>
 
 typedef pthread_mutex_t zyxrt_lock;
 typedef pthread_cond_t zyxrt_cond;
@@ -71,6 +86,13 @@ static inline void zyxrt_thread_start(void (*run)(void *), void *arg) {
 /* zyxrt_threads answers whether the target runs threads, which decides
    whether the event loop has a poller of its own. */
 static inline int zyxrt_threads(void) { return 1; }
+
+/* zyxrt_cpu_count answers how many processors can run code at once, which is
+   what the scheduler sizes itself to. */
+static inline size_t zyxrt_cpu_count(void) {
+  long count = sysconf(_SC_NPROCESSORS_ONLN);
+  return count > 0 ? (size_t)count : 1;
+}
 
 #endif
 

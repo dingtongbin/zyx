@@ -471,9 +471,20 @@ func (t *Toolchain) IncludeFlags() []string {
 func sanitizeFlags() []string {
 	name := os.Getenv("ZYX_SANITIZE")
 	if name == "" {
+		return debugFlags()
+	}
+	return append([]string{"-fsanitize=" + name, "-fno-omit-frame-pointer", "-g"}, debugFlags()...)
+}
+
+// debugFlags returns the flags a debug build carries: line information and
+// frame pointers, so a backtrace names the frames it walks. ZYX_DEBUG asks for
+// it, and like a sanitizer it must use a cache of its own, because the flags
+// are not part of what a cache key covers.
+func debugFlags() []string {
+	if os.Getenv("ZYX_DEBUG") == "" {
 		return nil
 	}
-	return []string{"-fsanitize=" + name, "-fno-omit-frame-pointer", "-g"}
+	return []string{"-g", "-fno-omit-frame-pointer"}
 }
 
 // CompileIR turns LLVM IR text into an object file.
