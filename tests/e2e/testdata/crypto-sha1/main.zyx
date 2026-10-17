@@ -1,0 +1,32 @@
+package main
+
+// SHA-1 against the answers RFC 3174 states, which is the hash the WebSocket
+// handshake fixes: an empty message, the three bytes of "abc", and a message
+// whose length leaves the padding no room in its last block.
+
+import "std/crypto"
+import "std/enc"
+import "std/fmt"
+
+// bytes_of answers the bytes of a text.
+func bytes_of(text: str) -> [u8] {
+    var out = new Buf(0)
+    out.WriteStr(text)
+    return out.Bytes()
+}
+
+// show prints the label and the digest of the bytes, as hexadecimal.
+func show(label: str, b: [u8]) {
+    var digest = crypto.Sha1Sum(b)
+    var line = new Buf(0)
+    line.WriteStr(label)
+    line.WriteStr(" ")
+    enc.EncodeHex(line, digest[0..digest.Len()])
+    fmt.Println(line.Str())
+}
+
+func main() {
+    show("sha1 empty", bytes_of(""))
+    show("sha1 abc", bytes_of("abc"))
+    show("sha1 448", bytes_of("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"))
+}
