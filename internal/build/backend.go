@@ -71,6 +71,12 @@ func (s *Session) Link(entry string, results []*Result, opts BackendOptions) (st
 	if err != nil {
 		return "", err
 	}
+	// The C libraries a standard package binds ship with the toolchain, so the
+	// packages this program reaches decide what the link takes and the program
+	// itself names none. They come before the flags the caller gave, so a caller
+	// can still add its own.
+	opts.Libs = append(toolchain.StdCLibs(prog.Order), opts.Libs...)
+	opts.LibDirs = append(toolchain.CLibDirs(), opts.LibDirs...)
 	t, err := toolchain.Locate()
 	if err != nil {
 		return "", err
