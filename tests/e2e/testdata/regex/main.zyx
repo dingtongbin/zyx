@@ -1,0 +1,196 @@
+package main
+
+import "std/fmt"
+import "std/regex"
+
+// show answers a range as "start..end" or as "none", so a run of this program
+// prints exactly what the engine answered.
+func show(m: Option<(usize, usize)>) {
+    match m {
+        Some(span) => {
+            fmt.PrintI64(i64(span.0))
+            fmt.Print("..")
+            fmt.PrintI64(i64(span.1))
+        }
+        None => {
+            fmt.Print("none")
+        }
+    }
+}
+
+// showFind prints where a pattern finds its first match in a subject.
+func showFind(pattern: str, subject: str) {
+    fmt.Print("find ")
+    fmt.Print(pattern)
+    fmt.Print(" in ")
+    fmt.Print(subject)
+    fmt.Print(": ")
+    match regex.Compile(pattern) {
+        Ok(re) => {
+            show(re.Find(subject))
+            fmt.Print(" all=")
+            var spans = re.FindAll(subject)
+            var i: usize = 0
+            for span in spans {
+                if i > 0 {
+                    fmt.Print(",")
+                }
+                fmt.PrintI64(i64(span.0))
+                fmt.Print("..")
+                fmt.PrintI64(i64(span.1))
+                i += 1
+            }
+            if i == 0 {
+                fmt.Print("none")
+            }
+        }
+        Err(e) => {
+            fmt.Print("error ")
+            fmt.Print(e.Msg)
+        }
+    }
+    fmt.PrintNl()
+}
+
+// showIsMatch prints whether a pattern matches anywhere in a subject.
+func showIsMatch(pattern: str, subject: str) {
+    fmt.Print("match ")
+    fmt.Print(pattern)
+    fmt.Print(" in ")
+    fmt.Print(subject)
+    fmt.Print(": ")
+    match regex.Compile(pattern) {
+        Ok(re) => {
+            fmt.PrintBool(re.IsMatch(subject))
+        }
+        Err(e) => {
+            fmt.Print("error ")
+            fmt.Print(e.Msg)
+        }
+    }
+    fmt.PrintNl()
+}
+
+// showGroups prints every group of the first match of a pattern.
+func showGroups(pattern: str, subject: str) {
+    fmt.Print("groups ")
+    fmt.Print(pattern)
+    fmt.Print(" in ")
+    fmt.Print(subject)
+    fmt.Print(": ")
+    match regex.Compile(pattern) {
+        Ok(re) => {
+            match re.Groups(subject) {
+                Some(groups) => {
+                    var i: usize = 0
+                    for g in groups {
+                        if i > 0 {
+                            fmt.Print(" ")
+                        }
+                        fmt.PrintU64(u64(i))
+                        fmt.Print("=")
+                        show(g)
+                        i += 1
+                    }
+                }
+                None => {
+                    fmt.Print("none")
+                }
+            }
+        }
+        Err(e) => {
+            fmt.Print("error ")
+            fmt.Print(e.Msg)
+        }
+    }
+    fmt.PrintNl()
+}
+
+// showReplace prints a subject with every match of a pattern written as a
+// replacement.
+func showReplace(pattern: str, subject: str, repl: str) {
+    fmt.Print("replace ")
+    fmt.Print(pattern)
+    fmt.Print(" in ")
+    fmt.Print(subject)
+    fmt.Print(" with ")
+    fmt.Print(repl)
+    fmt.Print(": ")
+    match regex.Compile(pattern) {
+        Ok(re) => {
+            fmt.Print(re.Replace(subject, repl))
+        }
+        Err(e) => {
+            fmt.Print("error ")
+            fmt.Print(e.Msg)
+        }
+    }
+    fmt.PrintNl()
+}
+
+func main() {
+    // The empty pattern matches nothing and stands everywhere.
+    showIsMatch("", "")
+    showFind("", "abc")
+    showReplace("", "abc", "-")
+    showGroups("", "abc")
+
+    // An alternation takes its branches in the order they are written, and the
+    // earliest start wins.
+    showFind("a|ab", "ab")
+    showFind("ab|a", "ab")
+    showFind("b|a", "ab")
+    showFind("cat|dog", "hotdog")
+
+    // A repetition at the boundary of the subject.
+    showFind("a*", "")
+    showFind("a+", "")
+    showFind("a{2,3}", "aaaaa")
+    showFind("a{2}", "a")
+    showFind("a{2}", "aa")
+    showFind("a{0,2}b", "aaab")
+    showFind("b*$", "abbb")
+
+    // A class matches one byte of its set, and a negated one the rest.
+    showFind("[a-c]+", "xxabcxx")
+    showFind("[^0-9]+", "12abc34")
+    showFind("[-a]+", "--a--")
+    showFind("[a-]+", "a-a")
+    showFind("[]]+", "]]")
+    showFind("[\\d]+", "ab123")
+    showFind("[\\w.]+", "a.b c")
+
+    // An anchor holds only where the subject stands.
+    showFind("^ab", "ab")
+    showFind("^ab", "xab")
+    showFind("ab$", "ab")
+    showFind("ab$", "abx")
+    showFind("^$", "")
+    showFind("^$", "x")
+    showFind("\\bcat\\b", "the cat sat")
+    showFind("\\bcat\\b", "concatenate")
+    showFind("\\Aab", "xab")
+    showFind("ab\\z", "ab")
+
+    // An input the pattern does not match.
+    showIsMatch("xyz", "abc")
+    showFind("xyz", "abc")
+    showGroups("xyz", "abc")
+
+    // A group answers which part of the subject it took, group zero being the
+    // whole match.
+    showGroups("(a+)(b?)", "xxaaab")
+    showGroups("(a+)b|(c)", "xxaaab")
+    showGroups("(a+)b|(c)", "xxc")
+    showGroups("((a)(b))", "ab")
+    showGroups("(?:a)(b)", "ab")
+    showGroups("(a)?b", "b")
+
+    // A replacement writes the groups it names and nothing for the ones the
+    // match did not take.
+    showReplace("(\\w+)@(\\w+)", "bob@host", "$2/$1")
+    showReplace("a", "banana", "$0$0")
+    showReplace("(a)|(b)", "ab", "<$1$2>")
+    showReplace("x", "abc", "$")
+    showReplace("a", "aaa", "$$")
+}

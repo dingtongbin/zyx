@@ -1,0 +1,298 @@
+package main
+
+import "std/fmt"
+import "std/toml"
+
+// printText writes a string with the bytes that would break the line named
+// instead, and with a byte that is not ASCII written as its hexadecimal value,
+// so every case of this program stands on one plain line.
+func printText(s: str) {
+    var digits = "0123456789abcdef"
+    var i: usize = 0
+    for i < s.Len() {
+        var b = s[i]
+        if b == u8(u32('\n')) {
+            fmt.Print("\\n")
+        } else if b == u8(u32('\t')) {
+            fmt.Print("\\t")
+        } else if b == u8(u32('\r')) {
+            fmt.Print("\\r")
+        } else if b < 0x20 || b >= 0x7F {
+            fmt.Print("\\x")
+            fmt.PrintChar(char(u32(digits[usize(b >> 4)])))
+            fmt.PrintChar(char(u32(digits[usize(b & 15)])))
+        } else {
+            fmt.PrintChar(char(u32(b)))
+        }
+        i += 1
+    }
+}
+
+// printNumber writes a number. The values that are not numbers are written as
+// the names TOML gives them, so a run of this program does not depend on what
+// the platform's own formatter calls them.
+func printNumber(n: f64) {
+    if n != n {
+        fmt.Print("nan")
+        return
+    }
+    if n > 1.7976931348623157e308 {
+        fmt.Print("inf")
+        return
+    }
+    if n < -1.7976931348623157e308 {
+        fmt.Print("-inf")
+        return
+    }
+    fmt.PrintF64(n)
+}
+
+// printValue writes a value in a form that names every part of it: the keys of
+// a table in byte order, the numbers as the formatter gives them, and the
+// strings as they are.
+func printValue(v: Value) {
+    match v {
+        Null => {
+            fmt.Print("null")
+        }
+        Bool(b) => {
+            fmt.PrintBool(b)
+        }
+        Num(n) => {
+            printNumber(n)
+        }
+        Str(s) => {
+            fmt.Print("\"")
+            printText(s)
+            fmt.Print("\"")
+        }
+        Arr(a) => {
+            fmt.Print("[")
+            var i: usize = 0
+            for item in a {
+                if i > 0 {
+                    fmt.Print(",")
+                }
+                printValue(item)
+                i += 1
+            }
+            fmt.Print("]")
+        }
+        Obj(o) => {
+            fmt.Print("{")
+            var keys = sorted(o)
+            var i: usize = 0
+            for key in keys {
+                if i > 0 {
+                    fmt.Print(",")
+                }
+                fmt.Print(key)
+                fmt.Print("=")
+                match o.Get(key) {
+                    Some(inner) => {
+                        printValue(inner)
+                    }
+                    None => { }
+                }
+                i += 1
+            }
+            fmt.Print("}")
+        }
+    }
+}
+
+// less orders two strings by their bytes, so a document reads the same way
+// twice.
+func less(a: str, b: str) -> bool {
+    var n = a.Len()
+    if b.Len() < n {
+        n = b.Len()
+    }
+    var i: usize = 0
+    for i < n {
+        if a[i] != b[i] {
+            return a[i] < b[i]
+        }
+        i += 1
+    }
+    return a.Len() < b.Len()
+}
+
+// sorted answers the keys of a table in byte order, so a document reads the
+// same way twice.
+func sorted(table: Map<str, Value>) -> Array<str> {
+    var keys = table.KeyList()
+    var i: usize = 1
+    for i < keys.Len() {
+        var key = keys[i]
+        var j = i
+        for j > 0 && less(key, keys[j - 1]) {
+            keys[j] = keys[j - 1]
+            j -= 1
+        }
+        keys[j] = key
+        i += 1
+    }
+    return keys
+}
+
+// showParse reads a document and prints the value it stands for, or the fault
+// that kept it from being one.
+func showParse(label: str, text: str) {
+    fmt.Print(label)
+    fmt.Print(": ")
+    match toml.Parse(text) {
+        Ok(v) => {
+            printValue(v)
+        }
+        Err(e) => {
+            fmt.Print("refused at ")
+            fmt.PrintI64(i64(e.Pos))
+            fmt.Print(": ")
+            fmt.Print(e.Msg)
+        }
+    }
+    fmt.PrintNl()
+}
+
+// showEncode writes a document back out and prints what came of it.
+func showEncode(label: str, text: str) {
+    fmt.Print(label)
+    fmt.Print(": ")
+    match toml.Parse(text) {
+        Ok(v) => {
+            var out = new Buf(0)
+            toml.Encode(out, v)
+            printText(out.Str())
+        }
+        Err(e) => {
+            fmt.Print("refused at ")
+            fmt.PrintI64(i64(e.Pos))
+            fmt.Print(": ")
+            fmt.Print(e.Msg)
+        }
+    }
+    fmt.PrintNl()
+}
+
+// showRoundTrip writes a document back out and reads what it wrote, so a
+// written document is shown to stand for the value it was written from.
+func showRoundTrip(label: str, text: str) {
+    fmt.Print(label)
+    fmt.Print(": ")
+    match toml.Parse(text) {
+        Ok(v) => {
+            var out = new Buf(0)
+            toml.Encode(out, v)
+            match toml.Parse(out.Str()) {
+                Ok(back) => {
+                    printValue(back)
+                }
+                Err(e) => {
+                    fmt.Print("the written document does not read back: ")
+                    fmt.Print(e.Msg)
+                }
+            }
+        }
+        Err(e) => {
+            fmt.Print("refused at ")
+            fmt.PrintI64(i64(e.Pos))
+            fmt.Print(": ")
+            fmt.Print(e.Msg)
+        }
+    }
+    fmt.PrintNl()
+}
+
+func main() {
+    // A table of pairs, and the value each kind of pair turns out to be.
+    showParse("kinds", "a = true\nb = false\nc = 7\nd = -3\ne = 1.5\nf = \"text\"\ng = 'literal'\n")
+
+    // The four forms of integer, and the underscores TOML lets a number carry.
+    showParse("integers", "a = 99\nb = 0x1F\nc = 0o17\nd = 0b1010\ne = 1_000_000\nf = -0\ng = +42\n")
+
+    // Floats, and the two names TOML gives the ones a fraction cannot hold.
+    showParse("floats", "a = 3.1415\nb = -0.01\nc = 5e+22\nd = 1e06\ne = inf\nf = -inf\ng = nan\nh = 6.626e-34\n")
+
+    // A date and a time become their RFC 3339 form.
+    showParse("datetime", "a = 1979-05-27T07:32:00Z\nb = 1979-05-27T00:32:00-07:00\nc = 1979-05-27T07:32:00\nd = 1979-05-27\ne = 07:32:00\nf = 1979-05-27T07:32:00.999999\ng = 1979-05-27 07:32:00Z\n")
+
+    // Strings in all four forms, and the escapes of a basic one.
+    showParse("strings", "a = \"tab\\there\"\nb = \"line\\nbreak\"\nc = \"quote\\\" and backslash\\\\\"\nd = \"\\u0041\\U0001F600\"\ne = 'raw \\n stays'\nf = \"\"\"\nfirst\nsecond\"\"\"\ng = '''\nno \\n escapes'''\nh = \"\"\"a backslash ends this line \\\n    and joins it\"\"\"\n")
+
+    // An array may hold values of more than one kind, may be written over lines,
+    // and may end with a comma.
+    showParse("arrays", "a = [1, 2, 3]\nb = [[1, 2], [3]]\nc = [\n  1,\n  2,\n]\nd = [\"x\", 2, true]\ne = []\n")
+
+    // An inline table stands inside one line.
+    showParse("inline", "a = { x = 1, y = 2 }\nb = { x = { y = 3 }, z = [1] }\n")
+
+    // Tables, dotted keys, and the order TOML lets them stand in.
+    showParse("tables", "[one]\nx = 1\n[one.two]\ny = 2\n[three]\nz = 3\n")
+    showParse("dotted", "a.b.c = 1\na.b.d = 2\na.e = 3\n")
+    showParse("inline-then-table", "[fruit]\napple.color = \"red\"\n[fruit.apple.texture]\nsmooth = true\n")
+
+    // Arrays of tables.
+    showParse("array-of-tables", "[[fruit]]\nname = \"apple\"\n[fruit.physical]\ncolor = \"red\"\n[[fruit]]\nname = \"banana\"\n")
+    showParse("array-of-tables-nested", "[[a.b]]\nx = 1\n[[a.b]]\nx = 2\n")
+
+    // Comments and blank lines may stand anywhere between the entries.
+    showParse("comments", "# first\n\n x = 1 # after\ny = 2\n")
+
+    // A document that is empty is an empty table.
+    showParse("empty", "")
+    showParse("blank", "\n\n# nothing\n")
+
+    // The faults a document is refused for. Each stands at the offset of the
+    // byte that made it a fault.
+    showParse("refuse-key-twice", "a = 1\na = 2\n")
+    showParse("refuse-table-twice", "[a]\nx = 1\n[a]\ny = 2\n")
+    showParse("refuse-table-over-value", "a = 1\n[a]\nx = 2\n")
+    showParse("refuse-dotted-over-table", "a.b = 1\n[a.b]\nx = 2\n")
+    showParse("refuse-header-over-dotted", "[a]\nb.c = 1\n[a.b]\nx = 2\n")
+    showParse("refuse-array-over-table", "[a]\nx = 1\n[[a]]\ny = 2\n")
+    showParse("refuse-bad-integer", "a = 01\n")
+    showParse("refuse-bad-underscore", "a = 1__2\n")
+    showParse("refuse-trailing-underscore", "a = 1_\n")
+    showParse("refuse-big-integer", "a = 9007199254740993\n")
+    showParse("refuse-overflow", "a = 9223372036854775808\n")
+    showParse("refuse-bad-float", "a = 1.\n")
+    showParse("refuse-bad-exponent", "a = 1e\n")
+    showParse("refuse-bad-escape", "a = \"\\q\"\n")
+    showParse("refuse-unterminated", "a = \"abc\n")
+    showParse("refuse-unterminated-literal", "a = 'abc\n")
+    showParse("refuse-control", "a = \"\t\"\n")
+    showParse("refuse-unclosed-array", "a = [1, 2\n")
+    showParse("refuse-array-separator", "a = [1 2]\n")
+    showParse("refuse-unclosed-inline", "a = { x = 1\n")
+    showParse("refuse-inline-trailing-comma", "a = { x = 1, }\n")
+    showParse("refuse-key-no-value", "a\n")
+    showParse("refuse-value-missing", "a =\n")
+    showParse("refuse-junk-after-entry", "x = 1 y = 2\n")
+    showParse("refuse-bad-header", "[a\n")
+    showParse("refuse-bad-date", "a = 1979-13-27\n")
+    showParse("refuse-bad-time", "a = 25:00:00\n")
+    showParse("refuse-bad-zone", "a = 1979-05-27T07:32:00+7:00\n")
+
+    // Writing a document out, and reading back what was written.
+    showEncode("write", "b = 2\na = 1\ns = \"text\"\n[table]\nx = 1\nsub.y = 2\n")
+    showRoundTrip("round", "b = 2\na = 1\ns = \"text\"\n[table]\nx = 1\nsub.y = 2\n")
+    showRoundTrip("round-array", "[[a]]\nx = 1\n[[a]]\nx = 2\n")
+    showRoundTrip("round-empty-table", "[a]\n")
+    showRoundTrip("round-deep", "a = { x = [1, { y = 2 }], z = \"s\" }\n")
+    showRoundTrip("round-keys", "\"a b\" = 1\n\"\" = 2\n'c.d' = 3\n")
+    showRoundTrip("round-strings", "a = \"line\\nbreak\"\nb = \"quote\\\"\"\nc = \"\\u0001\"\n")
+    showRoundTrip("round-dates", "a = 1979-05-27T07:32:00Z\nb = 1979-05-27\n")
+    showRoundTrip("round-numbers", "a = 1\nb = -2.5\nc = 1e+30\nd = 0.5\n")
+
+    // The text of a fault names the fault and where it stands.
+    match toml.Parse("a = [1\n") {
+        Ok(v) => {
+            fmt.Print("taken")
+        }
+        Err(e) => {
+            fmt.PrintValue(e)
+        }
+    }
+    fmt.PrintNl()
+}

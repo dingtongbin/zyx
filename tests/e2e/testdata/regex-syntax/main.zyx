@@ -1,0 +1,181 @@
+package main
+
+import "std/fmt"
+import "std/regex"
+
+// showFind prints where a pattern finds its first match and every match after
+// it. The subject is printed with its line feeds written as \n, so a run of
+// this program stays on one line per case.
+func showFind(pattern: str, subject: str) {
+    fmt.Print(pattern)
+    fmt.Print(" | ")
+    printSubject(subject)
+    fmt.Print(": ")
+    match regex.Compile(pattern) {
+        Ok(re) => {
+            match re.Find(subject) {
+                Some(span) => {
+                    printSpan(span)
+                }
+                None => {
+                    fmt.Print("none")
+                }
+            }
+            fmt.Print(" all=")
+            var spans = re.FindAll(subject)
+            if spans.Len() == 0 {
+                fmt.Print("none")
+            }
+            var i: usize = 0
+            for span in spans {
+                if i > 0 {
+                    fmt.Print(",")
+                }
+                printSpan(span)
+                i += 1
+            }
+        }
+        Err(e) => {
+            fmt.Print("refused ")
+            fmt.Print(e.Msg)
+        }
+    }
+    fmt.PrintNl()
+}
+
+// printSpan writes a range as "start..end".
+func printSpan(span: (usize, usize)) {
+    fmt.PrintI64(i64(span.0))
+    fmt.Print("..")
+    fmt.PrintI64(i64(span.1))
+}
+
+// printSubject writes a subject, naming the bytes that would otherwise break
+// the line.
+func printSubject(s: str) {
+    var i: usize = 0
+    for i < s.Len() {
+        var b = s[i]
+        if b == u8(u32('\n')) {
+            fmt.Print("\\n")
+        } else if b == u8(u32('\t')) {
+            fmt.Print("\\t")
+        } else {
+            fmt.PrintChar(char(u32(b)))
+        }
+        i += 1
+    }
+}
+
+// showGroups prints the groups of the first match of a pattern.
+func showGroups(pattern: str, subject: str) {
+    fmt.Print(pattern)
+    fmt.Print(" | ")
+    printSubject(subject)
+    fmt.Print(": ")
+    match regex.Compile(pattern) {
+        Ok(re) => {
+            match re.Groups(subject) {
+                Some(groups) => {
+                    var i: usize = 0
+                    for g in groups {
+                        if i > 0 {
+                            fmt.Print(" ")
+                        }
+                        fmt.PrintU64(u64(i))
+                        fmt.Print("=")
+                        match g {
+                            Some(span) => {
+                                printSpan(span)
+                            }
+                            None => {
+                                fmt.Print("none")
+                            }
+                        }
+                        i += 1
+                    }
+                }
+                None => {
+                    fmt.Print("none")
+                }
+            }
+        }
+        Err(e) => {
+            fmt.Print("refused ")
+            fmt.Print(e.Msg)
+        }
+    }
+    fmt.PrintNl()
+}
+
+func main() {
+    // A lazy quantifier takes as little as it can and gives back only what the
+    // pattern after it needs.
+    showFind("a+?", "aaa")
+    showFind("a*?", "aaa")
+    showFind("<.*>", "<a><b>")
+    showFind("<.*?>", "<a><b>")
+    showFind("a{2,3}?", "aaaa")
+    showFind("a??b", "ab")
+
+    // A star over a body that matched nothing ends rather than repeating.
+    showFind("(a?)*", "")
+    showFind("(a?)*", "aa")
+    showFind("()*", "abc")
+    showFind("(a*)*", "aaa")
+
+    // An alternation may have an empty branch, which matches where it stands.
+    showFind("a|", "b")
+    showFind("(|a)", "a")
+    showFind("b|", "ab")
+
+    // A dot matches one byte that is not a line feed.
+    showFind(".", "abc")
+    showFind(".", "\n")
+    showFind("a.b", "a\nb")
+    showFind("a[\\s]b", "a\nb")
+    showFind("a[\\S]b", "a b")
+
+    // The classes of bytes, and the negations of them.
+    showFind("\\d+", "ab123")
+    showFind("\\D+", "12ab34")
+    showFind("\\w+", "a_1 b")
+    showFind("\\W+", "a..b")
+    showFind("\\s+", "a \t b")
+    showFind("\\S+", "  ab  ")
+
+    // The escapes that stand for one byte, and a byte written twice.
+    showFind("\\x41+", "xAAA")
+    showFind("[\\x41-\\x43]+", "xABCx")
+    showFind("[\\t\\]]", "a\tb]c")
+    showFind("[\\\\]", "a\\b")
+    showFind("[^-a]", "-abc")
+
+    // The end of the subject, the end before a last line feed, and the ends
+    // that know nothing of line feeds.
+    showFind("b$", "ab\n")
+    showFind("a$", "ab\n")
+    showFind("b\\z", "ab\n")
+    showFind("b\\Z", "ab\n")
+    showFind("\\n\\z", "ab\n")
+
+    // A boundary between a word byte and one that is not.
+    showFind("\\Bcat", "concatenate")
+    showFind("\\bcat", "concatenate")
+    showFind("cat\\B", "cats")
+    showFind("\\b\\w+\\b", "  word  ")
+
+    // The counts at their ends: none, one, and more than the subject holds.
+    showFind("a{0}", "aaa")
+    showFind("a{1,}", "aaa")
+    showFind("a{3,}", "aa")
+    showFind("a{2,4}", "aaaaa")
+
+    // A group inside a repetition holds what the last pass through it took.
+    showGroups("(a)+", "aaa")
+    showGroups("(a){2,3}", "aaaa")
+    showGroups("(a)(b)?", "a")
+    showGroups("(a|b)+", "abab")
+    showGroups("((a)|(b))+", "ab")
+    showGroups("x(a)?", "x")
+}

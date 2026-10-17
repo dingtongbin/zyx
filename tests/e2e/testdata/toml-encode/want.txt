@@ -1,0 +1,3 @@
+written: "a key" = "spaced"\nflag = true\nhalf = 0.5\nnum = 2\nnums = [1, 2]\nquoted = "say \"hello\""\ntext = "a\nb\tc"\n\n[none]\n\n[outer]\n[outer.deep]\ny = false\n\n[[rows]]\nn = 1\n\n[[rows]]\nn = 2\n\n[table]\nx = 1\n
+read back: {a key="spaced",flag=true,half=0.5,none={},num=2,nums=[1,2],outer={deep={y=false}},quoted="say "hello"",rows=[{n=1},{n=2}],table={x=1},text="a\nb\tc"}
+big = 1e+30\nempty = ""\nfraction = -2.5\nno = false\nplain = "text"\nwhole = 7\nyes = true\n

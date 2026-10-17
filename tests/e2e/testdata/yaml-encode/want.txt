@@ -1,0 +1,3 @@
+written: bool-like: "true"\ncolon: "a: b"\ndash: "- not an item"\nempty: ""\nemptylist: []\nemptymap: {}\nfraction: -2.5\nhash: "a # b"\nlist:\n  - 1\n  - two\n  -\n    x: 1\n    y: 2\nmap:\n  x: 1\n  y: 2\nnewline: "a\nb"\nnothing: null\nnumber-like: "12"\nquote: say "hello"\nspaced: " starts with a space"\ntab: "a\tb"\ntext: plain text\nwhole: 7\nyes: true\n
+read back: {bool-like="true",colon="a: b",dash="- not an item",empty="",emptylist=[],emptymap={},fraction=-2.5,hash="a # b",list=[1,"two",{x=1,y=2}],map={x=1,y=2},newline="a\nb",nothing=null,number-like="12",quote="say "hello"",spaced=" starts with a space",tab="a\tb",text="plain text",whole=7,yes=true}
+- one\n- two\nalone\nnull\n

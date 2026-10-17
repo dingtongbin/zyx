@@ -1,0 +1,53 @@
+kinds: {a=true,b=false,c=7,d=-3,e=1.5,f="text",g="literal"}
+integers: {a=99,b=31,c=15,d=10,e=1e+06,f=0,g=42}
+floats: {a=3.1415,b=-0.01,c=5e+22,d=1e+06,e=inf,f=-inf,g=nan,h=6.626e-34}
+datetime: {a="1979-05-27T07:32:00Z",b="1979-05-27T00:32:00-07:00",c="1979-05-27T07:32:00",d="1979-05-27",e="07:32:00",f="1979-05-27T07:32:00.999999",g="1979-05-27T07:32:00Z"}
+strings: {a="tab\there",b="line\nbreak",c="quote" and backslash\",d="A\xf0\x9f\x98\x80",e="raw \n stays",f="first\nsecond",g="no \n escapes",h="a backslash ends this line and joins it"}
+arrays: {a=[1,2,3],b=[[1,2],[3]],c=[1,2],d=["x",2,true],e=[]}
+inline: {a={x=1,y=2},b={x={y=3},z=[1]}}
+tables: {one={two={y=2},x=1},three={z=3}}
+dotted: {a={b={c=1,d=2},e=3}}
+inline-then-table: {fruit={apple={color="red",texture={smooth=true}}}}
+array-of-tables: {fruit=[{name="apple",physical={color="red"}},{name="banana"}]}
+array-of-tables-nested: {a={b=[{x=1},{x=2}]}}
+comments: {x=1,y=2}
+empty: {}
+blank: {}
+refuse-key-twice: refused at 11: the key is defined twice
+refuse-table-twice: refused at 10: the table is defined twice
+refuse-table-over-value: refused at 6: the name holds a value
+refuse-dotted-over-table: refused at 8: the name holds a value
+refuse-header-over-dotted: refused at 12: the table was made by a dotted key
+refuse-array-over-table: refused at 10: the name is a table, not an array of tables
+refuse-bad-integer: refused at 4: a leading zero stands before a number
+refuse-bad-underscore: refused at 4: an underscore stands at the end of a number
+refuse-trailing-underscore: refused at 4: an underscore stands at the end of a number
+refuse-big-integer: refused at 4: the integer cannot be held exactly
+refuse-overflow: refused at 4: the integer is out of range
+refuse-bad-float: refused at 4: the fraction of a number has no digits
+refuse-bad-exponent: refused at 4: the exponent has no digits
+refuse-bad-escape: refused at 5: the escape is not one a string holds
+refuse-unterminated: refused at 4: the string is never closed
+refuse-unterminated-literal: refused at 4: the string is never closed
+refuse-control: refused at 5: a control byte stands in the string
+refuse-unclosed-array: refused at 4: the array is never closed
+refuse-array-separator: refused at 7: the entries of the array are not separated by commas
+refuse-unclosed-inline: refused at 4: the inline table is never closed
+refuse-inline-trailing-comma: refused at 13: a key is missing
+refuse-key-no-value: refused at 1: a key stands here with no value
+refuse-value-missing: refused at 3: a value is missing
+refuse-junk-after-entry: refused at 6: unexpected text after the entry
+refuse-bad-header: refused at 0: a table header is missing its ]
+refuse-bad-date: refused at 4: the date is not one a year holds
+refuse-bad-time: refused at 4: the time is not one a day holds
+refuse-bad-zone: refused at 4: the zone of a time is written as +HH:MM
+write: a = 1\nb = 2\ns = "text"\n\n[table]\nx = 1\n\n[table.sub]\ny = 2\n
+round: {a=1,b=2,s="text",table={sub={y=2},x=1}}
+round-array: {a=[{x=1},{x=2}]}
+round-empty-table: {a={}}
+round-deep: {a={x=[1,{y=2}],z="s"}}
+round-keys: {=2,a b=1,c.d=3}
+round-strings: {a="line\nbreak",b="quote"",c="\x01"}
+round-dates: {a="1979-05-27T07:32:00Z",b="1979-05-27"}
+round-numbers: {a=1,b=-2.5,c=1e+30,d=0.5}
+toml: the array is never closed at 4

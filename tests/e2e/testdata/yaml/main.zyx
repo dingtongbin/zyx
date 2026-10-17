@@ -1,0 +1,269 @@
+package main
+
+import "std/fmt"
+import "std/yaml"
+
+// printText writes a string with the bytes that would break the line named
+// instead, and with a byte that is not ASCII written as its hexadecimal value.
+func printText(s: str) {
+    var digits = "0123456789abcdef"
+    var i: usize = 0
+    for i < s.Len() {
+        var b = s[i]
+        if b == u8(u32('\n')) {
+            fmt.Print("\\n")
+        } else if b == u8(u32('\t')) {
+            fmt.Print("\\t")
+        } else if b == u8(u32('\r')) {
+            fmt.Print("\\r")
+        } else if b < 0x20 || b >= 0x7F {
+            fmt.Print("\\x")
+            fmt.PrintChar(char(u32(digits[usize(b >> 4)])))
+            fmt.PrintChar(char(u32(digits[usize(b & 15)])))
+        } else {
+            fmt.PrintChar(char(u32(b)))
+        }
+        i += 1
+    }
+}
+
+// printNumber writes a number, and the names the format gives the values that
+// are not numbers.
+func printNumber(n: f64) {
+    if n != n {
+        fmt.Print("nan")
+        return
+    }
+    if n > 1.7976931348623157e308 {
+        fmt.Print("inf")
+        return
+    }
+    if n < -1.7976931348623157e308 {
+        fmt.Print("-inf")
+        return
+    }
+    fmt.PrintF64(n)
+}
+
+// printValue writes a value in a form that names every part of it: the keys of
+// a mapping in byte order, and the strings as they are.
+func printValue(v: Value) {
+    match v {
+        Null => {
+            fmt.Print("null")
+        }
+        Bool(b) => {
+            fmt.PrintBool(b)
+        }
+        Num(n) => {
+            printNumber(n)
+        }
+        Str(s) => {
+            fmt.Print("\"")
+            printText(s)
+            fmt.Print("\"")
+        }
+        Arr(a) => {
+            fmt.Print("[")
+            var i: usize = 0
+            for item in a {
+                if i > 0 {
+                    fmt.Print(",")
+                }
+                printValue(item)
+                i += 1
+            }
+            fmt.Print("]")
+        }
+        Obj(o) => {
+            fmt.Print("{")
+            var keys = sorted(o)
+            var i: usize = 0
+            for key in keys {
+                if i > 0 {
+                    fmt.Print(",")
+                }
+                fmt.Print(key)
+                fmt.Print("=")
+                match o.Get(key) {
+                    Some(inner) => {
+                        printValue(inner)
+                    }
+                    None => { }
+                }
+                i += 1
+            }
+            fmt.Print("}")
+        }
+    }
+}
+
+// less orders two strings by their bytes.
+func less(a: str, b: str) -> bool {
+    var n = a.Len()
+    if b.Len() < n {
+        n = b.Len()
+    }
+    var i: usize = 0
+    for i < n {
+        if a[i] != b[i] {
+            return a[i] < b[i]
+        }
+        i += 1
+    }
+    return a.Len() < b.Len()
+}
+
+// sorted answers the keys of a mapping in byte order.
+func sorted(table: Map<str, Value>) -> Array<str> {
+    var keys = table.KeyList()
+    var i: usize = 1
+    for i < keys.Len() {
+        var key = keys[i]
+        var j = i
+        for j > 0 && less(key, keys[j - 1]) {
+            keys[j] = keys[j - 1]
+            j -= 1
+        }
+        keys[j] = key
+        i += 1
+    }
+    return keys
+}
+
+// showParse reads a document and prints the value it stands for, or the fault
+// that kept it from being one.
+func showParse(label: str, text: str) {
+    fmt.Print(label)
+    fmt.Print(": ")
+    match yaml.Parse(text) {
+        Ok(v) => {
+            printValue(v)
+        }
+        Err(e) => {
+            fmt.Print("refused at ")
+            fmt.PrintI64(i64(e.Pos))
+            fmt.Print(": ")
+            fmt.Print(e.Msg)
+        }
+    }
+    fmt.PrintNl()
+}
+
+// showEncode writes a document back out and prints what came of it.
+func showEncode(label: str, text: str) {
+    fmt.Print(label)
+    fmt.Print(": ")
+    match yaml.Parse(text) {
+        Ok(v) => {
+            var out = new Buf(0)
+            yaml.Encode(out, v)
+            printText(out.Str())
+        }
+        Err(e) => {
+            fmt.Print("refused at ")
+            fmt.PrintI64(i64(e.Pos))
+            fmt.Print(": ")
+            fmt.Print(e.Msg)
+        }
+    }
+    fmt.PrintNl()
+}
+
+// showRoundTrip writes a document back out and reads what it wrote.
+func showRoundTrip(label: str, text: str) {
+    fmt.Print(label)
+    fmt.Print(": ")
+    match yaml.Parse(text) {
+        Ok(v) => {
+            var out = new Buf(0)
+            yaml.Encode(out, v)
+            match yaml.Parse(out.Str()) {
+                Ok(back) => {
+                    printValue(back)
+                }
+                Err(e) => {
+                    fmt.Print("the written document does not read back: ")
+                    fmt.Print(e.Msg)
+                }
+            }
+        }
+        Err(e) => {
+            fmt.Print("refused at ")
+            fmt.PrintI64(i64(e.Pos))
+            fmt.Print(": ")
+            fmt.Print(e.Msg)
+        }
+    }
+    fmt.PrintNl()
+}
+
+func main() {
+    // A mapping, a nested mapping, and a nested sequence.
+    showParse("block", "name: example\ncount: 3\nserver:\n  host: localhost\n  port: 8080\nports:\n  - 80\n  - 443\n")
+    showParse("sequence", "- one\n- two\n- three\n")
+    showParse("sequence-of-mappings", "- name: a\n  count: 1\n- name: b\n  count: 2\n")
+    showParse("mapping-of-sequences", "a:\n  - 1\n  - 2\nb:\n  - 3\n")
+
+    // The scalars a plain text stands for.
+    showParse("scalars", "a: null\nb: ~\nc: true\nd: False\ne: 12\nf: -7\ng: 0x1F\nh: 0o17\ni: 0b1010\nj: 1_000\nk: 2.5\nl: -0.25\nm: 1e3\nn: .inf\no: -.inf\np: .nan\nq: text\nr: 'quoted'\ns: \"double\"\n")
+
+    // A value may be written on the line of the key, or under it.
+    showParse("empty-value", "a:\nb: 1\n")
+    showParse("empty-sequence-item", "-\n- one\n")
+    showParse("quoted-key", "\"a b\": 1\n'c:d': 2\n")
+    showParse("colon-in-value", "a: b:c\nurl: http://x/y\n")
+
+    // Flow collections.
+    showParse("flow", "a: [1, 2, 3]\nb: {x: 1, y: two}\nc: [{k: v}, [1, [2]]]\nd: []\ne: {}\n")
+
+    // Block scalars, with the three ways their end is written.
+    showParse("literal", "a: |\n  first\n  second\nb: |-\n  kept\nc: |+\n  kept\n\n")
+    showParse("folded", "a: >\n  one\n  two\nb: >-\n  one\n  two\nc: >\n  one\n\n  two\n")
+    showParse("literal-blank", "a: |\n  one\n\n  three\n")
+
+    // Comments, blank lines, and the document markers.
+    showParse("comments", "# first\n\na: 1 # after\n# middle\nb: 2\n")
+    showParse("markers", "---\na: 1\n...\n")
+    showParse("empty", "")
+    showParse("only-comment", "# nothing\n")
+
+    // The faults a document is refused for, each at the offset of the byte
+    // that made it a fault.
+    showParse("refuse-tab-indent", "a: 1\n\tb: 2\n")
+    showParse("refuse-key-twice", "a: 1\na: 2\n")
+    showParse("refuse-bad-indent", "a: 1\n  b: 2\n")
+    showParse("refuse-anchor", "a: &x 1\n")
+    showParse("refuse-alias", "a: *x\n")
+    showParse("refuse-tag", "a: !!str 1\n")
+    showParse("refuse-directive", "%YAML 1.2\na: 1\n")
+    showParse("refuse-two-documents", "a: 1\n---\nb: 2\n")
+    showParse("refuse-unclosed-flow", "a: [1, 2\n")
+    showParse("flow-plain-holds-space", "a: [1 2]\n")
+    showParse("refuse-flow-no-value", "a: {x}\n")
+    showParse("refuse-bad-escape", "a: \"\\q\"\n")
+    showParse("refuse-unterminated", "a: \"abc\n")
+    showParse("refuse-block-header", "a: |2\n  x\n")
+    showParse("refuse-key-no-value", "a: 1\nb\n")
+
+    // The text of a fault names the fault and where it stands.
+    match yaml.Parse("a: [1\n") {
+        Ok(v) => {
+            fmt.Print("taken")
+        }
+        Err(e) => {
+            fmt.PrintValue(e)
+        }
+    }
+    fmt.PrintNl()
+
+    // Writing a document out, and reading back what was written.
+    showEncode("write", "b: 2\na: 1\ns: text\nlist:\n  - 1\n  - 2\nmap:\n  x: 1\n")
+    showRoundTrip("round", "b: 2\na: 1\ns: text\nlist:\n  - 1\n  - 2\nmap:\n  x: 1\n")
+    showRoundTrip("round-strings", "a: \"line\\nbreak\"\nb: 'quote''s'\nc: \"\\x41\"\n")
+    showRoundTrip("round-empty", "a: []\nb: {}\nc:\n")
+    showRoundTrip("round-numbers", "a: 1\nb: -2.5\nc: 1e+30\nd: 0.5\n")
+    showRoundTrip("round-nested", "a:\n  - x: 1\n    y: 2\n  - [1, 2]\n")
+    showRoundTrip("round-keys", "\"a b\": 1\n\"1\": 2\n\"true\": 3\n")
+    showRoundTrip("round-block", "a: |\n  one\n  two\n")
+}

@@ -1,0 +1,306 @@
+package toml
+
+import "std/fmt"
+
+// A value of the language written as a TOML document. A table is written as its
+// pairs and then as the tables under it, a key stands bare where it may and
+// between quotes where it may not, and the keys of a table are written in byte
+// order, so a value written twice is the same bytes. A value the format has no
+// way to write, which is Null, is a fault rather than something written in its
+// place.
+
+// Encode writes a value as a document. The value must be an Obj, because a
+// document is a table and nothing else can stand where one is written.
+func Encode(dst: Buf, v: Value) {
+    match v {
+        Obj(o) => {
+            write_table(dst, o, new Array<str>(0))
+        }
+        _ => {
+            panic("toml: only a table can be written as a document")
+        }
+    }
+}
+
+// is_table_value reports whether a value is written as a table of its own
+// rather than as a key and a value: a table, or an array whose entries are all
+// tables.
+func is_table_value(v: Value) -> bool {
+    match v {
+        Obj(o) => {
+            return true
+        }
+        Arr(a) => {
+            if a.Len() == 0 {
+                return false
+            }
+            for item in a {
+                match item {
+                    Obj(o) => { }
+                    _ => {
+                        return false
+                    }
+                }
+            }
+            return true
+        }
+        _ => {
+            return false
+        }
+    }
+}
+
+// write_table writes the pairs of a table and then the tables under it.
+func write_table(dst: Buf, table: Map<str, Value>, path: Array<str>) {
+    var keys = sorted_keys(table)
+    var wrote_any = false
+    for key in keys {
+        var value = table.Get(key)
+        match value {
+            Some(v) => {
+                if !is_table_value(v) {
+                    write_key(dst, key)
+                    dst.WriteStr(" = ")
+                    write_value(dst, v)
+                    dst.WriteByte(LF)
+                    wrote_any = true
+                }
+            }
+            None => { }
+        }
+    }
+    var first_table = true
+    for key in keys {
+        var value = table.Get(key)
+        match value {
+            Some(v) => {
+                if !is_table_value(v) {
+                    continue
+                }
+                var child = new Array<str>(0)
+                for part in path {
+                    child.Push(part)
+                }
+                child.Push(key)
+                match v {
+                    Obj(o) => {
+                        if !first_table || wrote_any {
+                            dst.WriteByte(LF)
+                        }
+                        dst.WriteByte(code('['))
+                        write_path(dst, child)
+                        dst.WriteByte(code(']'))
+                        dst.WriteByte(LF)
+                        write_table(dst, o, child)
+                        first_table = false
+                    }
+                    Arr(a) => {
+                        var i: usize = 0
+                        for item in a {
+                            if !first_table || wrote_any || i > 0 {
+                                dst.WriteByte(LF)
+                            }
+                            dst.WriteStr("[[")
+                            write_path(dst, child)
+                            dst.WriteStr("]]")
+                            dst.WriteByte(LF)
+                            match item {
+                                Obj(o) => {
+                                    write_table(dst, o, child)
+                                }
+                                _ => { }
+                            }
+                            first_table = false
+                            i += 1
+                        }
+                    }
+                    _ => { }
+                }
+            }
+            None => { }
+        }
+    }
+}
+
+// write_path writes the dotted name of a table.
+func write_path(dst: Buf, path: Array<str>) {
+    var i: usize = 0
+    for part in path {
+        if i > 0 {
+            dst.WriteByte(code('.'))
+        }
+        write_key(dst, part)
+        i += 1
+    }
+}
+
+// write_key writes one key, quoted when it holds a byte a bare key cannot.
+func write_key(dst: Buf, key: str) {
+    var bare = key.Len() > 0
+    var i: usize = 0
+    for i < key.Len() {
+        if !is_bare_char(key[i]) {
+            bare = false
+        }
+        i += 1
+    }
+    if bare {
+        dst.WriteStr(key)
+        return
+    }
+    dst.WriteByte(code('"'))
+    write_basic_body(dst, key)
+    dst.WriteByte(code('"'))
+}
+
+// write_value writes one value.
+func write_value(dst: Buf, v: Value) {
+    match v {
+        Null => {
+            panic("toml: a document holds no null")
+        }
+        Bool(b) => {
+            if b {
+                dst.WriteStr("true")
+            } else {
+                dst.WriteStr("false")
+            }
+        }
+        Num(n) => {
+            write_number(dst, n)
+        }
+        Str(text) => {
+            dst.WriteByte(code('"'))
+            write_basic_body(dst, text)
+            dst.WriteByte(code('"'))
+        }
+        Arr(a) => {
+            dst.WriteByte(code('['))
+            var i: usize = 0
+            for item in a {
+                if i > 0 {
+                    dst.WriteStr(", ")
+                }
+                write_value(dst, item)
+                i += 1
+            }
+            dst.WriteByte(code(']'))
+        }
+        Obj(o) => {
+            dst.WriteStr("{ ")
+            var keys = sorted_keys(o)
+            var i: usize = 0
+            for key in keys {
+                if i > 0 {
+                    dst.WriteStr(", ")
+                }
+                write_key(dst, key)
+                dst.WriteStr(" = ")
+                match o.Get(key) {
+                    Some(inner) => {
+                        write_value(dst, inner)
+                    }
+                    None => { }
+                }
+                i += 1
+            }
+            dst.WriteStr(" }")
+        }
+    }
+}
+
+// write_number writes a number. A value that is not one becomes the name TOML
+// gives it, and every other value is written in the form this package's
+// formatter gives it.
+func write_number(dst: Buf, v: f64) {
+    if v != v {
+        dst.WriteStr("nan")
+        return
+    }
+    if v > 1.7976931348623157e308 {
+        dst.WriteStr("inf")
+        return
+    }
+    if v < -1.7976931348623157e308 {
+        dst.WriteStr("-inf")
+        return
+    }
+    var text = new Buf(0)
+    fmt.FprintValue(text, v)
+    dst.WriteStr(text.Str())
+}
+
+// write_basic_body writes the body of a basic string: the bytes as they are
+// where they may stand, and an escape where they may not.
+func write_basic_body(dst: Buf, text: str) {
+    var i: usize = 0
+    for i < text.Len() {
+        var b = text[i]
+        if b == code('"') {
+            dst.WriteStr("\\\"")
+        } else if b == code('\\') {
+            dst.WriteStr("\\\\")
+        } else if b == 8 {
+            dst.WriteStr("\\b")
+        } else if b == 9 {
+            dst.WriteStr("\\t")
+        } else if b == LF {
+            dst.WriteStr("\\n")
+        } else if b == 12 {
+            dst.WriteStr("\\f")
+        } else if b == CR {
+            dst.WriteStr("\\r")
+        } else if b < 0x20 || b == 0x7F {
+            dst.WriteStr("\\u")
+            write_hex4(dst, u32(b))
+        } else {
+            dst.WriteByte(b)
+        }
+        i += 1
+    }
+}
+
+// write_hex4 writes a code point as the four hexadecimal digits of a \u escape.
+func write_hex4(dst: Buf, cp: u32) {
+    var digits = "0123456789ABCDEF"
+    var shift: i32 = 12
+    for shift >= 0 {
+        dst.WriteByte(digits[usize((cp >> u32(shift)) & 15)])
+        shift -= 4
+    }
+}
+
+// less orders two strings by their bytes, which is the order a table's keys are
+// written in.
+func less(a: str, b: str) -> bool {
+    var n = a.Len()
+    if b.Len() < n {
+        n = b.Len()
+    }
+    var i: usize = 0
+    for i < n {
+        if a[i] != b[i] {
+            return a[i] < b[i]
+        }
+        i += 1
+    }
+    return a.Len() < b.Len()
+}
+
+// sorted_keys answers the keys of a table in byte order, which is what makes a
+// document written twice the same bytes.
+func sorted_keys(table: Map<str, Value>) -> Array<str> {
+    var keys = table.KeyList()
+    var i: usize = 1
+    for i < keys.Len() {
+        var key = keys[i]
+        var j = i
+        for j > 0 && less(key, keys[j - 1]) {
+            keys[j] = keys[j - 1]
+            j -= 1
+        }
+        keys[j] = key
+        i += 1
+    }
+    return keys
+}

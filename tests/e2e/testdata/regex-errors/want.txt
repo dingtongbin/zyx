@@ -1,0 +1,30 @@
+[[abc] refused at 0: character class is missing its ]
+[[a] refused at 0: character class is missing its ]
+[[z-a]] refused at 2: range out of order in character class
+[[\d-z]] refused at 1: invalid range in character class
+[[\w-a]] refused at 1: invalid range in character class
+[(abc] refused at 0: group is missing its )
+[abc)] refused at 3: unmatched ) in pattern
+[(?=x)] refused at 0: unsupported group
+[(?i)a] refused at 0: unsupported group
+[(?<name>a)] refused at 0: unsupported group
+[*abc] refused at 0: quantifier does not follow a repeatable item
+[a|*] refused at 2: quantifier does not follow a repeatable item
+[{2}] refused at 0: quantifier does not follow a repeatable item
+[a{3,1}] refused at 1: numbers out of order in repetition
+[a{99999}] refused at 1: repetition count is too large
+[a\] refused at 1: pattern ends with a backslash
+[\q] refused at 0: unsupported escape
+[\p{L}] refused at 0: unsupported escape
+[(a)\1] refused at 3: backreferences are not supported
+[\x] refused at 0: missing hexadecimal digits
+[\x4] taken
+[a{] taken
+[a{x}] taken
+[a{,3}] taken
+[a}] taken
+[]] taken
+[{] taken
+[a\{2}] taken
+[] taken
+regex: group is missing its ) at 0

@@ -1,1 +1,1439 @@
 package toml
+
+// TOML documents read into the Value of the language and written back from it.
+// A table becomes Obj, an array becomes Arr, a date and time becomes the Str of
+// its RFC 3339 form, and a number becomes Num. A structure this format has and
+// Value does not is refused rather than written as something else.
+//
+// The syntax is that of TOML 1.0: tables, arrays of tables, dotted keys, basic
+// and literal and multi-line strings, the integer forms, floats, booleans,
+// dates and times, arrays, and inline tables. What is refused is refused with
+// an Error that names the offset in the text at which the fault stands.
+//
+// An integer is taken only while it can be held exactly in the Num of the
+// language, which is a double: an integer beyond 2^53 is refused rather than
+// rounded in silence.
+
+// Error says why a document was refused. Pos is the byte offset in the text at
+// which the fault stands and Msg names the fault.
+struct Error {
+    Pos: usize
+    Msg: str
+
+    impl Show {
+        func Show(w: Buf) {
+            w.WriteStr(f"toml: {self.Msg} at {self.Pos}")
+        }
+    }
+}
+
+// EXACT_LIMIT is the largest integer a double holds exactly. A whole number
+// beyond it cannot come back as the integer it was written as.
+const EXACT_LIMIT_INT: i64 = 9007199254740992
+
+// The shapes a bare value can turn out to have.
+const VALUE_INVALID: i32 = 0
+const VALUE_BOOL: i32 = 1
+const VALUE_INTEGER: i32 = 2
+const VALUE_FLOAT: i32 = 3
+const VALUE_DATETIME: i32 = 4
+
+const LF: u8 = 10
+const CR: u8 = 13
+
+// code is the byte an ASCII character stands for.
+func code(ch: char) -> u8 {
+    return u8(u32(ch))
+}
+
+func is_digit(b: u8) -> bool {
+    return b >= code('0') && b <= code('9')
+}
+
+func is_hex_digit(b: u8) -> bool {
+    return is_digit(b) || (b >= code('a') && b <= code('f')) || (b >= code('A') && b <= code('F'))
+}
+
+func hex_value(b: u8) -> u32 {
+    if is_digit(b) {
+        return u32(b - code('0'))
+    }
+    if b >= code('A') && b <= code('F') {
+        return u32(b - code('A')) + 10
+    }
+    return u32(b - code('a')) + 10
+}
+
+func is_letter(b: u8) -> bool {
+    return (b >= code('a') && b <= code('z')) || (b >= code('A') && b <= code('Z'))
+}
+
+// is_bare_char reports whether a byte may stand in a key that needs no quotes.
+func is_bare_char(b: u8) -> bool {
+    return is_letter(b) || is_digit(b) || b == code('_') || b == code('-')
+}
+
+// write_usize writes a length in decimal, which is how a path of keys carries
+// the length of each of its parts.
+func write_usize(out: Buf, v: usize) {
+    if v == 0 {
+        out.WriteByte(code('0'))
+        return
+    }
+    var digits = new Array<u8>(0)
+    var n = v
+    for n > 0 {
+        digits.Push(u8(48 + (n % 10)))
+        n = n / 10
+    }
+    var i = digits.Len()
+    for i > 0 {
+        i -= 1
+        out.WriteByte(digits[i])
+    }
+}
+
+// write_char writes a code point as UTF-8. The caller has checked that the code
+// point is one a string may hold.
+func write_char(out: Buf, cp: u32) {
+    if cp < 0x80 {
+        out.WriteByte(u8(cp))
+        return
+    }
+    if cp < 0x800 {
+        out.WriteByte(u8(0xC0 | (cp >> 6)))
+        out.WriteByte(u8(0x80 | (cp & 0x3F)))
+        return
+    }
+    if cp < 0x10000 {
+        out.WriteByte(u8(0xE0 | (cp >> 12)))
+        out.WriteByte(u8(0x80 | ((cp >> 6) & 0x3F)))
+        out.WriteByte(u8(0x80 | (cp & 0x3F)))
+        return
+    }
+    out.WriteByte(u8(0xF0 | (cp >> 18)))
+    out.WriteByte(u8(0x80 | ((cp >> 12) & 0x3F)))
+    out.WriteByte(u8(0x80 | ((cp >> 6) & 0x3F)))
+    out.WriteByte(u8(0x80 | (cp & 0x3F)))
+}
+
+// path_key answers one string that stands for a path of keys. Each part carries
+// its length, so a part that itself holds the separator cannot be read as two
+// parts.
+func path_key(parts: Array<str>) -> str {
+    var out = new Buf(0)
+    for part in parts {
+        write_usize(out, part.Len())
+        out.WriteByte(code(':'))
+        out.WriteStr(part)
+        out.WriteByte(code(';'))
+    }
+    return out.Str()
+}
+
+// extended answers the path of a key inside the table a document is in.
+func extended(prefix: Array<str>, parts: Array<str>, upto: usize) -> Array<str> {
+    var out = new Array<str>(0)
+    for part in prefix {
+        out.Push(part)
+    }
+    var i: usize = 0
+    for i < upto {
+        out.Push(parts[i])
+        i += 1
+    }
+    return out
+}
+
+// Parser reads a document. current is the table the next pair belongs to, and
+// cur_path is where that table stands in the document. The sets remember what
+// each path already is, which is what a table that would be defined twice is
+// found by.
+struct Parser {
+    src: str
+    pos: usize
+    root: Map<str, Value>
+    current: Map<str, Value>
+    cur_path: Array<str>
+    values: Set<str>
+    headers: Set<str>
+    arrays: Set<str>
+    dotted: Set<str>
+
+    func error(at: usize, msg: str) -> Error {
+        return Error { Pos: at, Msg: msg }
+    }
+
+    func at_end() -> bool {
+        return self.pos >= self.src.Len()
+    }
+
+    func peek() -> u8 {
+        return self.src[self.pos]
+    }
+
+    func is_at(b: u8) -> bool {
+        return !self.at_end() && self.src[self.pos] == b
+    }
+
+    // at_text reports whether a text stands at the current position.
+    func at_text(text: str) -> bool {
+        if self.pos + text.Len() > self.src.Len() {
+            return false
+        }
+        var i: usize = 0
+        for i < text.Len() {
+            if self.src[self.pos + i] != text[i] {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
+
+    // skip_ws skips the bytes that separate one token from the next inside a
+    // line. A line feed ends a line and is not one of them.
+    func skip_ws() {
+        for !self.at_end() {
+            var b = self.peek()
+            if b == code(' ') || b == code('\t') || b == CR {
+                self.pos += 1
+            } else {
+                return
+            }
+        }
+    }
+
+    // skip_comment skips a comment, which runs to the end of its line.
+    func skip_comment() {
+        if !self.is_at(code('#')) {
+            return
+        }
+        for !self.at_end() && self.peek() != LF {
+            self.pos += 1
+        }
+    }
+
+    // finish_line checks that nothing but a comment follows an entry and then
+    // consumes the line feed.
+    func finish_line() -> Result<(), Error> {
+        self.skip_ws()
+        if !self.at_end() && self.peek() != LF && self.peek() != code('#') {
+            return Result.Err(self.error(self.pos, "unexpected text after the entry"))
+        }
+        self.skip_comment()
+        if self.is_at(LF) {
+            self.pos += 1
+        }
+        return Result.Ok()
+    }
+
+    // parse_document reads the entries of a document one after another.
+    func parse_document() -> Result<(), Error> {
+        for !self.at_end() {
+            self.skip_ws()
+            if self.at_end() {
+                break
+            }
+            var b = self.peek()
+            if b == LF {
+                self.pos += 1
+                continue
+            }
+            if b == code('#') {
+                self.skip_comment()
+                continue
+            }
+            if b == code('[') {
+                try self.parse_header()
+            } else {
+                try self.parse_pair()
+            }
+            try self.finish_line()
+        }
+        return Result.Ok()
+    }
+
+    // parse_key reads the dotted name of a key and answers its parts.
+    func parse_key() -> Result<Array<str>, Error> {
+        var parts = new Array<str>(0)
+        var done = false
+        for !done {
+            self.skip_ws()
+            var part = try self.parse_key_part()
+            parts.Push(part)
+            self.skip_ws()
+            if self.is_at(code('.')) {
+                self.pos += 1
+            } else {
+                done = true
+            }
+        }
+        return Result.Ok(parts)
+    }
+
+    // parse_key_part reads one part of a key: a bare name, or a quoted string.
+    func parse_key_part() -> Result<str, Error> {
+        if self.at_end() {
+            return Result.Err(self.error(self.pos, "a key is missing"))
+        }
+        var b = self.peek()
+        if b == code('"') {
+            return self.parse_basic_string()
+        }
+        if b == code('\'') {
+            return self.parse_literal_string()
+        }
+        var at = self.pos
+        var out = new Buf(0)
+        for !self.at_end() && is_bare_char(self.peek()) {
+            out.WriteByte(self.peek())
+            self.pos += 1
+        }
+        if out.Len() == 0 {
+            return Result.Err(self.error(at, "a key is missing"))
+        }
+        return Result.Ok(out.Str())
+    }
+
+    // parse_header reads a table header and makes the table it names the one
+    // the pairs that follow belong to.
+    func parse_header() -> Result<(), Error> {
+        var at = self.pos
+        self.pos += 1
+        var of_array = false
+        if self.is_at(code('[')) {
+            of_array = true
+            self.pos += 1
+        }
+        var parts = try self.parse_key()
+        self.skip_ws()
+        if !self.is_at(code(']')) {
+            return Result.Err(self.error(at, "a table header is missing its ]"))
+        }
+        self.pos += 1
+        if of_array {
+            if !self.is_at(code(']')) {
+                return Result.Err(self.error(at, "an array header is missing its ]]"))
+            }
+            self.pos += 1
+        }
+        return self.enter(parts, of_array, at)
+    }
+
+    // enter walks the path of a header, making the tables it names, and leaves
+    // the parser in the table the pairs that follow belong to.
+    func enter(parts: Array<str>, of_array: bool, at: usize) -> Result<(), Error> {
+        var container = self.root
+        var trail = new Array<str>(0)
+        var i: usize = 0
+        for i + 1 < parts.Len() {
+            trail.Push(parts[i])
+            container = try self.walk(container, parts[i], path_key(trail))
+            i += 1
+        }
+        var name = parts[parts.Len() - 1]
+        trail.Push(name)
+        var path = path_key(trail)
+        if of_array {
+            return self.enter_array(container, name, path, trail, at)
+        }
+        if self.headers.Contains(path) {
+            return Result.Err(self.error(at, "the table is defined twice"))
+        }
+        if self.arrays.Contains(path) {
+            return Result.Err(self.error(at, "the name is an array of tables"))
+        }
+        if self.values.Contains(path) {
+            return Result.Err(self.error(at, "the name holds a value"))
+        }
+        if self.dotted.Contains(path) {
+            return Result.Err(self.error(at, "the table was made by a dotted key"))
+        }
+        var table = new Map<str, Value>()
+        match container.Get(name) {
+            Some(existing) => {
+                match existing {
+                    Obj(o) => {
+                        table = o
+                    }
+                    _ => {
+                        return Result.Err(self.error(at, "the name is not a table"))
+                    }
+                }
+            }
+            None => { }
+        }
+        container.Insert(name, Value.Obj(table))
+        self.headers.Add(path)
+        self.current = table
+        self.cur_path = trail
+        return Result.Ok()
+    }
+
+    // enter_array appends a table to the array of tables a header names.
+    func enter_array(container: Map<str, Value>, name: str, path: str, trail: Array<str>, at: usize) -> Result<(), Error> {
+        if self.headers.Contains(path) {
+            return Result.Err(self.error(at, "the name is a table, not an array of tables"))
+        }
+        if self.values.Contains(path) {
+            return Result.Err(self.error(at, "the name holds a value"))
+        }
+        if self.dotted.Contains(path) {
+            return Result.Err(self.error(at, "the array was made by a dotted key"))
+        }
+        var table = new Map<str, Value>()
+        match container.Get(name) {
+            Some(existing) => {
+                match existing {
+                    Arr(a) => {
+                        a.Push(Value.Obj(table))
+                    }
+                    _ => {
+                        return Result.Err(self.error(at, "the name is not an array of tables"))
+                    }
+                }
+            }
+            None => {
+                var a = new Array<Value>(0)
+                a.Push(Value.Obj(table))
+                container.Insert(name, Value.Arr(a))
+            }
+        }
+        self.arrays.Add(path)
+        self.current = table
+        self.cur_path = trail
+        return Result.Ok()
+    }
+
+    // parse_pair reads a key and the value it stands for and puts the value in
+    // the table the key names.
+    func parse_pair() -> Result<(), Error> {
+        var parts = try self.parse_key()
+        self.skip_ws()
+        if !self.is_at(code('=')) {
+            return Result.Err(self.error(self.pos, "a key stands here with no value"))
+        }
+        self.pos += 1
+        self.skip_ws()
+        var value = try self.parse_value()
+        var container = self.current
+        var i: usize = 0
+        for i + 1 < parts.Len() {
+            container = try self.walk_dotted(container, parts[i], path_key(extended(self.cur_path, parts, i + 1)))
+            i += 1
+        }
+        var name = parts[parts.Len() - 1]
+        var path = path_key(extended(self.cur_path, parts, parts.Len()))
+        if container.Contains(name) {
+            return Result.Err(self.error(self.pos, "the key is defined twice"))
+        }
+        if self.headers.Contains(path) || self.arrays.Contains(path) {
+            return Result.Err(self.error(self.pos, "the name is a table"))
+        }
+        container.Insert(name, value)
+        self.values.Add(path)
+        return Result.Ok()
+    }
+
+    // walk answers the table a part of a header names, making it when it is not
+    // there. A part that names an array of tables stands for the last table of
+    // that array.
+    func walk(container: Map<str, Value>, name: str, path: str) -> Result<Map<str, Value>, Error> {
+        match container.Get(name) {
+            Some(existing) => {
+                match existing {
+                    Obj(o) => {
+                        return Result.Ok(o)
+                    }
+                    Arr(a) => {
+                        if a.Len() == 0 {
+                            return Result.Err(self.error(self.pos, "the array of tables is empty"))
+                        }
+                        match a[a.Len() - 1] {
+                            Obj(o) => {
+                                return Result.Ok(o)
+                            }
+                            _ => { }
+                        }
+                        return Result.Err(self.error(self.pos, "the name is not a table"))
+                    }
+                    _ => {
+                        return Result.Err(self.error(self.pos, "the name is not a table"))
+                    }
+                }
+            }
+            None => { }
+        }
+        var table = new Map<str, Value>()
+        container.Insert(name, Value.Obj(table))
+        return Result.Ok(table)
+    }
+
+    // walk_dotted is walk for a part of a dotted key. The tables it makes are
+    // remembered, because a table made this way cannot later be defined by a
+    // header of its own.
+    func walk_dotted(container: Map<str, Value>, name: str, path: str) -> Result<Map<str, Value>, Error> {
+        if self.values.Contains(path) {
+            return Result.Err(self.error(self.pos, "a key of the name holds a value"))
+        }
+        if self.arrays.Contains(path) {
+            match container.Get(name) {
+                Some(existing) => {
+                    match existing {
+                        Arr(a) => {
+                            if a.Len() == 0 {
+                                return Result.Err(self.error(self.pos, "the array of tables is empty"))
+                            }
+                            match a[a.Len() - 1] {
+                                Obj(o) => {
+                                    return Result.Ok(o)
+                                }
+                                _ => { }
+                            }
+                        }
+                        _ => { }
+                    }
+                }
+                None => { }
+            }
+            return Result.Err(self.error(self.pos, "the name is not a table"))
+        }
+        var table = try self.walk(container, name, path)
+        self.dotted.Add(path)
+        return Result.Ok(table)
+    }
+
+    // parse_value reads one value.
+    func parse_value() -> Result<Value, Error> {
+        if self.at_end() {
+            return Result.Err(self.error(self.pos, "a value is missing"))
+        }
+        var b = self.peek()
+        if b == code('"') {
+            if self.at_text("\"\"\"") {
+                var text = try self.parse_multiline_basic()
+                return Result.Ok(Value.Str(text))
+            }
+            var text = try self.parse_basic_string()
+            return Result.Ok(Value.Str(text))
+        }
+        if b == code('\'') {
+            if self.at_text("'''") {
+                var text = try self.parse_multiline_literal()
+                return Result.Ok(Value.Str(text))
+            }
+            var text = try self.parse_literal_string()
+            return Result.Ok(Value.Str(text))
+        }
+        if b == code('[') {
+            return self.parse_array()
+        }
+        if b == code('{') {
+            return self.parse_inline_table()
+        }
+        return self.parse_bare_value()
+    }
+
+    // parse_bare_value reads a value that is written without quotes: a boolean,
+    // a number, or a date and time.
+    func parse_bare_value() -> Result<Value, Error> {
+        var at = self.pos
+        var out = new Buf(0)
+        for !self.at_end() && !is_value_end(self.peek()) {
+            out.WriteByte(self.peek())
+            self.pos += 1
+        }
+        var text = out.Str()
+        if text.Len() == 0 {
+            return Result.Err(self.error(at, "a value is missing"))
+        }
+        // A date and time may hold a space between its two halves, which the
+        // scan above stops at.
+        if looks_like_date(text) && self.is_at(code(' ')) && looks_like_time_at(self.src, self.pos + 1) {
+            out.WriteStr(" ")
+            self.pos += 1
+            for !self.at_end() && !is_value_end(self.peek()) {
+                out.WriteByte(self.peek())
+                self.pos += 1
+            }
+            text = out.Str()
+        }
+        return self.classify(at, text)
+    }
+
+    // classify answers the value a bare text stands for.
+    func classify(at: usize, text: str) -> Result<Value, Error> {
+        if text == "true" {
+            return Result.Ok(Value.Bool(true))
+        }
+        if text == "false" {
+            return Result.Ok(Value.Bool(false))
+        }
+        if text == "inf" || text == "+inf" {
+            var big = 1.0 / 0.0
+            return Result.Ok(Value.Num(big))
+        }
+        if text == "-inf" {
+            var small = -1.0 / 0.0
+            return Result.Ok(Value.Num(small))
+        }
+        if text == "nan" || text == "+nan" || text == "-nan" {
+            var none = 0.0 / 0.0
+            return Result.Ok(Value.Num(none))
+        }
+        if looks_like_datetime(text) {
+            return self.parse_datetime(at, text)
+        }
+        var kind = number_kind(text)
+        if kind == VALUE_INTEGER {
+            var v = try self.parse_integer(at, text)
+            if v > EXACT_LIMIT_INT || v < -EXACT_LIMIT_INT {
+                return Result.Err(self.error(at, "the integer cannot be held exactly"))
+            }
+            return Result.Ok(Value.Num(f64(v)))
+        }
+        if kind == VALUE_FLOAT {
+            var v = try self.parse_float(at, text)
+            return Result.Ok(Value.Num(v))
+        }
+        return Result.Err(self.error(at, "the value is not one a document holds"))
+    }
+
+    // parse_integer reads a whole number, in any of the four forms TOML writes
+    // one in.
+    func parse_integer(at: usize, text: str) -> Result<i64, Error> {
+        var i: usize = 0
+        var negative = false
+        if text[i] == code('-') {
+            negative = true
+            i += 1
+        } else if text[i] == code('+') {
+            i += 1
+        }
+        var base: i64 = 10
+        if i + 1 < text.Len() && text[i] == code('0') {
+            var prefix = text[i + 1]
+            if prefix == code('x') {
+                base = 16
+                i += 2
+            } else if prefix == code('o') {
+                base = 8
+                i += 2
+            } else if prefix == code('b') {
+                base = 2
+                i += 2
+            }
+        }
+        var value: i64 = 0
+        var digits: usize = 0
+        var last_underscore = false
+        for i < text.Len() {
+            var b = text[i]
+            if b == code('_') {
+                if digits == 0 || last_underscore || i + 1 == text.Len() {
+                    return Result.Err(self.error(at, "an underscore stands at the end of a number"))
+                }
+                last_underscore = true
+                i += 1
+                continue
+            }
+            var d: i64 = -1
+            if is_digit(b) {
+                d = i64(b - code('0'))
+            } else if is_hex_digit(b) {
+                d = i64(hex_value(b))
+            }
+            if d < 0 || d >= base {
+                return Result.Err(self.error(at, "the number holds a byte that is not a digit"))
+            }
+            if value > (9223372036854775807 - d) / base {
+                return Result.Err(self.error(at, "the integer is out of range"))
+            }
+            value = value * base + d
+            digits += 1
+            last_underscore = false
+            i += 1
+        }
+        if digits == 0 {
+            return Result.Err(self.error(at, "the number has no digits"))
+        }
+        if base == 10 {
+            // A leading zero is allowed only for zero itself.
+            var start: usize = 0
+            if negative || text[0] == code('+') {
+                start = 1
+            }
+            if text.Len() > start + 1 && text[start] == code('0') {
+                return Result.Err(self.error(at, "a leading zero stands before a number"))
+            }
+        }
+        if negative {
+            return Result.Ok(-value)
+        }
+        return Result.Ok(value)
+    }
+
+    // parse_float reads a number with a fraction or an exponent.
+    func parse_float(at: usize, text: str) -> Result<f64, Error> {
+        var i: usize = 0
+        var negative = false
+        if text[i] == code('-') {
+            negative = true
+            i += 1
+        } else if text[i] == code('+') {
+            i += 1
+        }
+        var mantissa: u64 = 0
+        var digits: usize = 0
+        var fraction: usize = 0
+        var exponent: i32 = 0
+        var last_underscore = false
+        var leading_zero = false
+        var seen_dot = false
+        for i < text.Len() {
+            var b = text[i]
+            if b == code('_') {
+                if digits == 0 || last_underscore {
+                    return Result.Err(self.error(at, "an underscore stands at the end of a number"))
+                }
+                last_underscore = true
+                i += 1
+                continue
+            }
+            if b == code('.') {
+                if seen_dot || digits == 0 {
+                    return Result.Err(self.error(at, "the number holds two points"))
+                }
+                seen_dot = true
+                fraction = 0
+                last_underscore = false
+                i += 1
+                continue
+            }
+            if b == code('e') || b == code('E') {
+                var e = try self.parse_exponent(at, text, i + 1)
+                exponent += e
+                i = text.Len()
+                last_underscore = false
+                continue
+            }
+            if !is_digit(b) {
+                return Result.Err(self.error(at, "the number holds a byte that is not a digit"))
+            }
+            if digits == 0 && b == code('0') && i + 1 < text.Len() && is_digit(text[i + 1]) {
+                leading_zero = true
+            }
+            var d = u32(b - code('0'))
+            if mantissa < 1844674407370955161 {
+                mantissa = mantissa * 10 + u64(d)
+                if seen_dot {
+                    exponent -= 1
+                }
+            } else if !seen_dot {
+                exponent += 1
+            }
+            if seen_dot {
+                fraction += 1
+            }
+            digits += 1
+            last_underscore = false
+            i += 1
+        }
+        if leading_zero {
+            return Result.Err(self.error(at, "a leading zero stands before a number"))
+        }
+        if seen_dot && fraction == 0 {
+            return Result.Err(self.error(at, "the fraction of a number has no digits"))
+        }
+        if last_underscore {
+            return Result.Err(self.error(at, "an underscore stands at the end of a number"))
+        }
+        var value = scale(u64(mantissa), exponent)
+        if negative {
+            return Result.Ok(-value)
+        }
+        return Result.Ok(value)
+    }
+
+    // parse_exponent reads the exponent of a float that starts at an index.
+    func parse_exponent(at: usize, text: str, from: usize) -> Result<i32, Error> {
+        var i = from
+        var negative = false
+        if i < text.Len() && (text[i] == code('-') || text[i] == code('+')) {
+            negative = text[i] == code('-')
+            i += 1
+        }
+        var value: i32 = 0
+        var digits: usize = 0
+        var last_underscore = false
+        for i < text.Len() {
+            var b = text[i]
+            if b == code('_') {
+                if digits == 0 || last_underscore {
+                    return Result.Err(self.error(at, "an underscore stands at the end of a number"))
+                }
+                last_underscore = true
+                i += 1
+                continue
+            }
+            if !is_digit(b) {
+                return Result.Err(self.error(at, "the exponent holds a byte that is not a digit"))
+            }
+            if value < 100000 {
+                value = value * 10 + i32(b - code('0'))
+            }
+            digits += 1
+            last_underscore = false
+            i += 1
+        }
+        if digits == 0 {
+            return Result.Err(self.error(at, "the exponent has no digits"))
+        }
+        if negative {
+            return Result.Ok(-value)
+        }
+        return Result.Ok(value)
+    }
+
+    // parse_datetime reads a date, a time, or both, and answers its RFC 3339
+    // form. The zone of a time that was written without one is left without
+    // one, because a local time is what the document asked for.
+    func parse_datetime(at: usize, text: str) -> Result<Value, Error> {
+        var date = new Buf(0)
+        var time = new Buf(0)
+        var i: usize = 0
+        if text.Len() >= 10 && text[4] == code('-') {
+            try self.check_digits(at, text, 0, 4)
+            if text[7] != code('-') {
+                return Result.Err(self.error(at, "a date is written as YYYY-MM-DD"))
+            }
+            try self.check_digits(at, text, 5, 2)
+            try self.check_digits(at, text, 8, 2)
+            var month = decimal(text, 5, 2)
+            var day = decimal(text, 8, 2)
+            if month < 1 || month > 12 || day < 1 || day > 31 {
+                return Result.Err(self.error(at, "the date is not one a year holds"))
+            }
+            date.WriteStr(text[0 .. 10])
+            i = 10
+            if i < text.Len() {
+                var sep = text[i]
+                if sep == code('T') || sep == code('t') || sep == code(' ') {
+                    i += 1
+                } else {
+                    return Result.Err(self.error(at, "the date stands next to a byte it cannot hold"))
+                }
+            }
+        }
+        if i < text.Len() {
+            if i + 8 > text.Len() || text[i + 2] != code(':') || text[i + 5] != code(':') {
+                return Result.Err(self.error(at, "a time is written as HH:MM:SS"))
+            }
+            try self.check_digits(at, text, i, 2)
+            try self.check_digits(at, text, i + 3, 2)
+            try self.check_digits(at, text, i + 6, 2)
+            var hour = decimal(text, i, 2)
+            var minute = decimal(text, i + 3, 2)
+            var second = decimal(text, i + 6, 2)
+            if hour > 23 || minute > 59 || second > 60 {
+                return Result.Err(self.error(at, "the time is not one a day holds"))
+            }
+            time.WriteStr(text[i .. i + 8])
+            i += 8
+            if i < text.Len() && text[i] == code('.') {
+                var from = i
+                i += 1
+                var digits: usize = 0
+                for i < text.Len() && is_digit(text[i]) {
+                    i += 1
+                    digits += 1
+                }
+                if digits == 0 {
+                    return Result.Err(self.error(at, "the fraction of a second has no digits"))
+                }
+                time.WriteStr(text[from .. i])
+            }
+            if i < text.Len() {
+                var zone = text[i]
+                if zone == code('Z') || zone == code('z') {
+                    time.WriteByte(code('Z'))
+                    i += 1
+                } else if zone == code('+') || zone == code('-') {
+                    if i + 6 > text.Len() || text[i + 3] != code(':') {
+                        return Result.Err(self.error(at, "the zone of a time is written as +HH:MM"))
+                    }
+                    try self.check_digits(at, text, i + 1, 2)
+                    try self.check_digits(at, text, i + 4, 2)
+                    var zhour = decimal(text, i + 1, 2)
+                    var zminute = decimal(text, i + 4, 2)
+                    if zhour > 23 || zminute > 59 {
+                        return Result.Err(self.error(at, "the zone is not one a day holds"))
+                    }
+                    time.WriteStr(text[i .. i + 6])
+                    i += 6
+                } else {
+                    return Result.Err(self.error(at, "the time stands next to a byte it cannot hold"))
+                }
+            }
+        }
+        if i != text.Len() {
+            return Result.Err(self.error(at, "the date or time holds more than it can"))
+        }
+        var out = new Buf(0)
+        if date.Len() > 0 {
+            out.WriteStr(date.Str())
+            if time.Len() > 0 {
+                out.WriteByte(code('T'))
+            }
+        }
+        out.WriteStr(time.Str())
+        return Result.Ok(Value.Str(out.Str()))
+    }
+
+    // check_digits checks that a run of the text is digits.
+    func check_digits(at: usize, text: str, from: usize, count: usize) -> Result<(), Error> {
+        var i = from
+        for i < from + count {
+            if i >= text.Len() || !is_digit(text[i]) {
+                return Result.Err(self.error(at, "a date or time holds a byte that is not a digit"))
+            }
+            i += 1
+        }
+        return Result.Ok()
+    }
+
+    // parse_basic_string reads a string between quotes, in which a backslash
+    // names the byte or the code point that follows it.
+    func parse_basic_string() -> Result<str, Error> {
+        var at = self.pos
+        self.pos += 1
+        var out = new Buf(0)
+        for !self.at_end() {
+            var b = self.peek()
+            if b == code('"') {
+                self.pos += 1
+                return Result.Ok(out.Str())
+            }
+            if b == LF {
+                return Result.Err(self.error(at, "the string is never closed"))
+            }
+            if b == code('\\') {
+                try self.parse_escape(out)
+                continue
+            }
+            if b < 0x20 || b == 0x7F {
+                return Result.Err(self.error(self.pos, "a control byte stands in the string"))
+            }
+            out.WriteByte(b)
+            self.pos += 1
+        }
+        return Result.Err(self.error(at, "the string is never closed"))
+    }
+
+    // parse_literal_string reads a string between single quotes, in which no
+    // byte is an escape.
+    func parse_literal_string() -> Result<str, Error> {
+        var at = self.pos
+        self.pos += 1
+        var out = new Buf(0)
+        for !self.at_end() {
+            var b = self.peek()
+            if b == code('\'') {
+                self.pos += 1
+                return Result.Ok(out.Str())
+            }
+            if b == LF {
+                return Result.Err(self.error(at, "the string is never closed"))
+            }
+            if b < 0x20 || b == 0x7F {
+                return Result.Err(self.error(self.pos, "a control byte stands in the string"))
+            }
+            out.WriteByte(b)
+            self.pos += 1
+        }
+        return Result.Err(self.error(at, "the string is never closed"))
+    }
+
+    // parse_multiline_basic reads a string between three double quotes.
+    func parse_multiline_basic() -> Result<str, Error> {
+        var at = self.pos
+        self.pos += 3
+        if self.is_at(LF) {
+            self.pos += 1
+        } else if self.is_at(CR) && self.pos + 1 < self.src.Len() && self.src[self.pos + 1] == LF {
+            self.pos += 2
+        }
+        var out = new Buf(0)
+        for !self.at_end() {
+            if self.src[self.pos] == CR && self.pos + 1 < self.src.Len() && self.src[self.pos + 1] == LF {
+                out.WriteByte(LF)
+                self.pos += 2
+                continue
+            }
+            if self.at_text("\"\"\"") {
+                // One or two quotes may stand at the end of the string, and a
+                // fourth and fifth belong to it as well.
+                var extra: usize = 0
+                for extra < 2 && self.pos + 3 + extra < self.src.Len() && self.src[self.pos + 3 + extra] == code('"') {
+                    extra += 1
+                }
+                var k: usize = 0
+                for k < extra {
+                    out.WriteByte(code('"'))
+                    k += 1
+                }
+                self.pos += 3 + extra
+                return Result.Ok(out.Str())
+            }
+            var b = self.peek()
+            if b == code('\\') {
+                if self.pos + 1 < self.src.Len() && after_line_end(self.src, self.pos + 1) {
+                    try self.skip_line_end_backslash()
+                    continue
+                }
+                try self.parse_escape(out)
+                continue
+            }
+            if (b < 0x20 && b != LF && b != code('\t')) || b == 0x7F {
+                return Result.Err(self.error(self.pos, "a control byte stands in the string"))
+            }
+            out.WriteByte(b)
+            self.pos += 1
+        }
+        return Result.Err(self.error(at, "the string is never closed"))
+    }
+
+    // skip_line_end_backslash reads a backslash that ends a line of a
+    // multi-line string. The whitespace that follows it stands between the
+    // lines of the string and is not part of it.
+    func skip_line_end_backslash() -> Result<(), Error> {
+        var at = self.pos
+        self.pos += 1
+        var saw_end = false
+        for !self.at_end() {
+            var b = self.peek()
+            if b == code(' ') || b == code('\t') || b == CR {
+                self.pos += 1
+                continue
+            }
+            if b == LF {
+                saw_end = true
+                self.pos += 1
+                continue
+            }
+            if saw_end {
+                return Result.Ok()
+            }
+            return Result.Err(self.error(at, "a line-ending backslash is followed by more than space"))
+        }
+        if saw_end {
+            return Result.Ok()
+        }
+        return Result.Err(self.error(at, "the string is never closed"))
+    }
+
+    // parse_multiline_literal reads a string between three single quotes.
+    func parse_multiline_literal() -> Result<str, Error> {
+        var at = self.pos
+        self.pos += 3
+        if self.is_at(LF) {
+            self.pos += 1
+        } else if self.is_at(CR) && self.pos + 1 < self.src.Len() && self.src[self.pos + 1] == LF {
+            self.pos += 2
+        }
+        var out = new Buf(0)
+        for !self.at_end() {
+            if self.src[self.pos] == CR && self.pos + 1 < self.src.Len() && self.src[self.pos + 1] == LF {
+                out.WriteByte(LF)
+                self.pos += 2
+                continue
+            }
+            if self.at_text("'''") {
+                var extra: usize = 0
+                for extra < 2 && self.pos + 3 + extra < self.src.Len() && self.src[self.pos + 3 + extra] == code('\'') {
+                    extra += 1
+                }
+                var k: usize = 0
+                for k < extra {
+                    out.WriteByte(code('\''))
+                    k += 1
+                }
+                self.pos += 3 + extra
+                return Result.Ok(out.Str())
+            }
+            var b = self.peek()
+            if (b < 0x20 && b != LF && b != code('\t')) || b == 0x7F {
+                return Result.Err(self.error(self.pos, "a control byte stands in the string"))
+            }
+            out.WriteByte(b)
+            self.pos += 1
+        }
+        return Result.Err(self.error(at, "the string is never closed"))
+    }
+
+    // parse_escape reads the escape a backslash starts.
+    func parse_escape(out: Buf) -> Result<(), Error> {
+        var at = self.pos
+        self.pos += 1
+        if self.at_end() {
+            return Result.Err(self.error(at, "the string is never closed"))
+        }
+        var b = self.peek()
+        self.pos += 1
+        if b == code('b') {
+            out.WriteByte(8)
+            return Result.Ok()
+        }
+        if b == code('t') {
+            out.WriteByte(9)
+            return Result.Ok()
+        }
+        if b == code('n') {
+            out.WriteByte(LF)
+            return Result.Ok()
+        }
+        if b == code('f') {
+            out.WriteByte(12)
+            return Result.Ok()
+        }
+        if b == code('r') {
+            out.WriteByte(CR)
+            return Result.Ok()
+        }
+        if b == code('"') {
+            out.WriteByte(code('"'))
+            return Result.Ok()
+        }
+        if b == code('\\') {
+            out.WriteByte(code('\\'))
+            return Result.Ok()
+        }
+        if b == code('u') {
+            var cp = try self.read_code_point(at, 4)
+            write_char(out, cp)
+            return Result.Ok()
+        }
+        if b == code('U') {
+            var cp = try self.read_code_point(at, 8)
+            write_char(out, cp)
+            return Result.Ok()
+        }
+        return Result.Err(self.error(at, "the escape is not one a string holds"))
+    }
+
+    // read_code_point reads a hexadecimal code point of a fixed width and
+    // checks that it is one a string may hold.
+    func read_code_point(at: usize, width: usize) -> Result<u32, Error> {
+        var value: u32 = 0
+        var i: usize = 0
+        for i < width {
+            if self.at_end() || !is_hex_digit(self.peek()) {
+                return Result.Err(self.error(at, "the escape is missing a hexadecimal digit"))
+            }
+            value = value * 16 + hex_value(self.peek())
+            self.pos += 1
+            i += 1
+        }
+        if value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF) {
+            return Result.Err(self.error(at, "the code point is not one a string holds"))
+        }
+        return Result.Ok(value)
+    }
+
+    // parse_array reads an array. TOML lets an array hold values of more than
+    // one kind, and lets its entries stand on lines of their own.
+    func parse_array() -> Result<Value, Error> {
+        var at = self.pos
+        self.pos += 1
+        var items = new Array<Value>(0)
+        self.skip_array_space()
+        if self.is_at(code(']')) {
+            self.pos += 1
+            return Result.Ok(Value.Arr(items))
+        }
+        for !self.at_end() {
+            var item = try self.parse_value()
+            items.Push(item)
+            self.skip_array_space()
+            if self.is_at(code(',')) {
+                self.pos += 1
+                self.skip_array_space()
+                if self.is_at(code(']')) {
+                    self.pos += 1
+                    return Result.Ok(Value.Arr(items))
+                }
+                continue
+            }
+            if self.is_at(code(']')) {
+                self.pos += 1
+                return Result.Ok(Value.Arr(items))
+            }
+            if self.at_end() {
+                return Result.Err(self.error(at, "the array is never closed"))
+            }
+            return Result.Err(self.error(self.pos, "the entries of the array are not separated by commas"))
+        }
+        return Result.Err(self.error(at, "the array is never closed"))
+    }
+
+    // skip_array_space skips the whitespace, the line feeds and the comments
+    // that may stand between the entries of an array.
+    func skip_array_space() {
+        for !self.at_end() {
+            var b = self.peek()
+            if b == code(' ') || b == code('\t') || b == CR || b == LF {
+                self.pos += 1
+                continue
+            }
+            if b == code('#') {
+                self.skip_comment()
+                continue
+            }
+            return
+        }
+    }
+
+    // parse_inline_table reads the form of table that stands inside one line.
+    func parse_inline_table() -> Result<Value, Error> {
+        var at = self.pos
+        self.pos += 1
+        var table = new Map<str, Value>()
+        self.skip_ws()
+        if self.is_at(code('}')) {
+            self.pos += 1
+            return Result.Ok(Value.Obj(table))
+        }
+        for !self.at_end() {
+            self.skip_ws()
+            var parts = try self.parse_key()
+            self.skip_ws()
+            if !self.is_at(code('=')) {
+                return Result.Err(self.error(self.pos, "a key stands here with no value"))
+            }
+            self.pos += 1
+            self.skip_ws()
+            var value = try self.parse_value()
+            var container = table
+            var i: usize = 0
+            for i + 1 < parts.Len() {
+                container = try inline_walk(container, parts[i], self.pos)
+                i += 1
+            }
+            var name = parts[parts.Len() - 1]
+            if container.Contains(name) {
+                return Result.Err(self.error(self.pos, "the key is defined twice"))
+            }
+            container.Insert(name, value)
+            self.skip_ws()
+            if self.is_at(code(',')) {
+                self.pos += 1
+                continue
+            }
+            if self.is_at(code('}')) {
+                self.pos += 1
+                return Result.Ok(Value.Obj(table))
+            }
+            return Result.Err(self.error(at, "the inline table is never closed"))
+        }
+        return Result.Err(self.error(at, "the inline table is never closed"))
+    }
+}
+
+// is_value_end reports whether a byte ends a bare value.
+func is_value_end(b: u8) -> bool {
+    if b == code(' ') || b == code('\t') || b == LF || b == CR {
+        return true
+    }
+    return b == code(',') || b == code(']') || b == code('}') || b == code('#')
+}
+
+// after_line_end reports whether the byte at an index is the first byte of a
+// line ending, which is what makes a backslash a line-ending one.
+func after_line_end(src: str, at: usize) -> bool {
+    if at >= src.Len() {
+        return false
+    }
+    var b = src[at]
+    if b == LF || b == CR || b == code(' ') || b == code('\t') {
+        return true
+    }
+    return false
+}
+
+// looks_like_date reports whether a text opens with the shape of a date.
+func looks_like_date(text: str) -> bool {
+    return text.Len() >= 10 && text[4] == code('-')
+}
+
+// looks_like_time_at reports whether a time stands at an index.
+func looks_like_time_at(src: str, at: usize) -> bool {
+    return at + 8 <= src.Len() && is_digit(src[at]) && is_digit(src[at + 1]) && src[at + 2] == code(':')
+}
+
+// looks_like_datetime reports whether a text opens with a date or a time.
+func looks_like_datetime(text: str) -> bool {
+    if looks_like_date(text) {
+        return true
+    }
+    return text.Len() >= 8 && is_digit(text[0]) && is_digit(text[1]) && text[2] == code(':')
+}
+
+// decimal reads the number a run of digits stands for.
+func decimal(text: str, from: usize, count: usize) -> i32 {
+    var value: i32 = 0
+    var i: usize = 0
+    for i < count {
+        value = value * 10 + i32(text[from + i] - code('0'))
+        i += 1
+    }
+    return value
+}
+
+// number_kind answers what the shape of a bare number says it is.
+func number_kind(text: str) -> i32 {
+    if text.Len() == 0 {
+        return VALUE_INVALID
+    }
+    if text == "inf" || text == "+inf" || text == "-inf" {
+        return VALUE_FLOAT
+    }
+    if text == "nan" || text == "+nan" || text == "-nan" {
+        return VALUE_FLOAT
+    }
+    var i: usize = 0
+    if text[0] == code('-') || text[0] == code('+') {
+        i = 1
+    }
+    if i >= text.Len() {
+        return VALUE_INVALID
+    }
+    if i + 1 < text.Len() && text[i] == code('0') {
+        var prefix = text[i + 1]
+        if prefix == code('x') || prefix == code('o') || prefix == code('b') {
+            return VALUE_INTEGER
+        }
+    }
+    var is_float = false
+    var digits: usize = 0
+    for i < text.Len() {
+        var b = text[i]
+        if is_digit(b) {
+            digits += 1
+            i += 1
+            continue
+        }
+        if b == code('_') {
+            i += 1
+            continue
+        }
+        if b == code('.') || b == code('e') || b == code('E') {
+            is_float = true
+            i += 1
+            continue
+        }
+        // A sign belongs to a number only after its exponent.
+        if (b == code('-') || b == code('+')) && i > 0 && (text[i - 1] == code('e') || text[i - 1] == code('E')) {
+            i += 1
+            continue
+        }
+        return VALUE_INVALID
+    }
+    if digits == 0 {
+        return VALUE_INVALID
+    }
+    if is_float {
+        return VALUE_FLOAT
+    }
+    return VALUE_INTEGER
+}
+
+// scale answers the double a whole mantissa and a power of ten stand for. A
+// power a double holds exactly is applied in one step, which is the way a
+// decimal holds its value where it can.
+func scale(mantissa: u64, exponent: i32) -> f64 {
+    var value = f64(mantissa)
+    if exponent == 0 {
+        return value
+    }
+    if exponent > 0 {
+        if exponent <= 22 && mantissa < 9007199254740992 {
+            return value * power_of_ten(exponent)
+        }
+        var left = exponent
+        for left > 0 {
+            var step = left
+            if step > 22 {
+                step = 22
+            }
+            value = value * power_of_ten(step)
+            left -= step
+        }
+        return value
+    }
+    var down = -exponent
+    if down <= 22 && mantissa < 9007199254740992 {
+        return value / power_of_ten(down)
+    }
+    var left = down
+    for left > 0 {
+        var step = left
+        if step > 22 {
+            step = 22
+        }
+        value = value / power_of_ten(step)
+        left -= step
+    }
+    return value
+}
+
+// power_of_ten answers ten raised to a power up to twenty-two, where every such
+// power is a double exactly.
+func power_of_ten(exponent: i32) -> f64 {
+    var value = 1.0
+    var i: i32 = 0
+    for i < exponent {
+        value = value * 10.0
+        i += 1
+    }
+    return value
+}
+
+// inline_walk answers the table a part of an inline table's key names.
+func inline_walk(container: Map<str, Value>, name: str, at: usize) -> Result<Map<str, Value>, Error> {
+    match container.Get(name) {
+        Some(existing) => {
+            match existing {
+                Obj(o) => {
+                    return Result.Ok(o)
+                }
+                _ => {
+                    return Result.Err(Error { Pos: at, Msg: "the name is not a table" })
+                }
+            }
+        }
+        None => { }
+    }
+    var table = new Map<str, Value>()
+    container.Insert(name, Value.Obj(table))
+    return Result.Ok(table)
+}
+
+// Parse reads a document into a Value. A document is a table, so the value that
+// comes back is an Obj.
+func Parse(s: str) -> Result<Value, Error> {
+    var root = new Map<str, Value>()
+    var p = Parser {
+        src: s
+        pos: 0
+        root: root
+        current: root
+        cur_path: new Array<str>(0)
+        values: new Set<str>()
+        headers: new Set<str>()
+        arrays: new Set<str>()
+        dotted: new Set<str>()
+    }
+    try p.parse_document()
+    return Result.Ok(Value.Obj(root))
+}

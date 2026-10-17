@@ -1,0 +1,188 @@
+package main
+
+import "std/fmt"
+import "std/yaml"
+
+// printText writes a string with the bytes that would break the line named
+// instead.
+func printText(s: str) {
+    var i: usize = 0
+    for i < s.Len() {
+        var b = s[i]
+        if b == u8(u32('\n')) {
+            fmt.Print("\\n")
+        } else if b == u8(u32('\t')) {
+            fmt.Print("\\t")
+        } else {
+            fmt.PrintChar(char(u32(b)))
+        }
+        i += 1
+    }
+}
+
+// printNumber writes a number, and the names the format gives the values that
+// are not numbers.
+func printNumber(n: f64) {
+    if n != n {
+        fmt.Print("nan")
+        return
+    }
+    if n > 1.7976931348623157e308 {
+        fmt.Print("inf")
+        return
+    }
+    if n < -1.7976931348623157e308 {
+        fmt.Print("-inf")
+        return
+    }
+    fmt.PrintF64(n)
+}
+
+// less orders two strings by their bytes, so a reading of a mapping is the same
+// twice.
+func less(a: str, b: str) -> bool {
+    var n = a.Len()
+    if b.Len() < n {
+        n = b.Len()
+    }
+    var i: usize = 0
+    for i < n {
+        if a[i] != b[i] {
+            return a[i] < b[i]
+        }
+        i += 1
+    }
+    return a.Len() < b.Len()
+}
+
+// sorted answers the keys of a mapping in byte order.
+func sorted(table: Map<str, Value>) -> Array<str> {
+    var keys = table.KeyList()
+    var i: usize = 1
+    for i < keys.Len() {
+        var key = keys[i]
+        var j = i
+        for j > 0 && less(key, keys[j - 1]) {
+            keys[j] = keys[j - 1]
+            j -= 1
+        }
+        keys[j] = key
+        i += 1
+    }
+    return keys
+}
+
+// printValue writes a value in a form that names every part of it.
+func printValue(v: Value) {
+    match v {
+        Null => {
+            fmt.Print("null")
+        }
+        Bool(b) => {
+            fmt.PrintBool(b)
+        }
+        Num(n) => {
+            printNumber(n)
+        }
+        Str(s) => {
+            fmt.Print("\"")
+            printText(s)
+            fmt.Print("\"")
+        }
+        Arr(a) => {
+            fmt.Print("[")
+            var i: usize = 0
+            for item in a {
+                if i > 0 {
+                    fmt.Print(",")
+                }
+                printValue(item)
+                i += 1
+            }
+            fmt.Print("]")
+        }
+        Obj(o) => {
+            fmt.Print("{")
+            var i: usize = 0
+            for key in sorted(o) {
+                if i > 0 {
+                    fmt.Print(",")
+                }
+                fmt.Print(key)
+                fmt.Print("=")
+                match o.Get(key) {
+                    Some(inner) => {
+                        printValue(inner)
+                    }
+                    None => { }
+                }
+                i += 1
+            }
+            fmt.Print("}")
+        }
+    }
+}
+
+func main() {
+    // A value built by hand is written out, and read back. A text that would
+    // read back as something else is written between quotes.
+    var root = new Map<str, Value>()
+    root.Insert("text", Value.Str("plain text"))
+    root.Insert("number-like", Value.Str("12"))
+    root.Insert("bool-like", Value.Str("true"))
+    root.Insert("empty", Value.Str(""))
+    root.Insert("spaced", Value.Str(" starts with a space"))
+    root.Insert("colon", Value.Str("a: b"))
+    root.Insert("hash", Value.Str("a # b"))
+    root.Insert("dash", Value.Str("- not an item"))
+    root.Insert("quote", Value.Str("say \"hello\""))
+    root.Insert("newline", Value.Str("a\nb"))
+    root.Insert("tab", Value.Str("a\tb"))
+    root.Insert("whole", Value.Num(7.0))
+    root.Insert("fraction", Value.Num(-2.5))
+    root.Insert("yes", Value.Bool(true))
+    root.Insert("nothing", Value.Null)
+    root.Insert("emptylist", Value.Arr(new Array<Value>(0)))
+    var empty = new Map<str, Value>()
+    root.Insert("emptymap", Value.Obj(empty))
+    var inner = new Map<str, Value>()
+    inner.Insert("x", Value.Num(1.0))
+    inner.Insert("y", Value.Num(2.0))
+    root.Insert("map", Value.Obj(inner))
+    var items = new Array<Value>(0)
+    items.Push(Value.Num(1.0))
+    items.Push(Value.Str("two"))
+    items.Push(Value.Obj(inner))
+    root.Insert("list", Value.Arr(items))
+
+    var out = new Buf(0)
+    yaml.Encode(out, Value.Obj(root))
+    fmt.Print("written: ")
+    printText(out.Str())
+    fmt.PrintNl()
+    fmt.Print("read back: ")
+    match yaml.Parse(out.Str()) {
+        Ok(v) => {
+            printValue(v)
+        }
+        Err(e) => {
+            fmt.Print("refused ")
+            fmt.Print(e.Msg)
+        }
+    }
+    fmt.PrintNl()
+
+    // A sequence at the top of a document, and a scalar at the top of one.
+    var top = new Array<Value>(0)
+    top.Push(Value.Str("one"))
+    top.Push(Value.Str("two"))
+    var seq = new Buf(0)
+    yaml.Encode(seq, Value.Arr(top))
+    printText(seq.Str())
+    var one = new Buf(0)
+    yaml.Encode(one, Value.Str("alone"))
+    printText(one.Str())
+    var none = new Buf(0)
+    yaml.Encode(none, Value.Null)
+    printText(none.Str())
+}

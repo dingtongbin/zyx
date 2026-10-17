@@ -1,0 +1,84 @@
+package main
+
+import "std/fmt"
+import "std/regex"
+
+// showRefusal prints what the engine answered about a pattern: the offset in
+// the pattern at which the fault stands and the name of the fault. A pattern
+// that is not refused is one this engine takes, and the program says so.
+func showRefusal(pattern: str) {
+    fmt.Print("[")
+    fmt.Print(pattern)
+    fmt.Print("] ")
+    match regex.Compile(pattern) {
+        Ok(re) => {
+            fmt.Print("taken")
+        }
+        Err(e) => {
+            fmt.Print("refused at ")
+            fmt.PrintI64(i64(e.Pos))
+            fmt.Print(": ")
+            fmt.Print(e.Msg)
+        }
+    }
+    fmt.PrintNl()
+}
+
+func main() {
+    // A class that is never closed, and one whose range runs backwards.
+    showRefusal("[abc")
+    showRefusal("[a")
+    showRefusal("[z-a]")
+    showRefusal("[\\d-z]")
+    showRefusal("[\\w-a]")
+
+    // A group that is never closed, a close with no group, and the forms of
+    // group this engine does not have.
+    showRefusal("(abc")
+    showRefusal("abc)")
+    showRefusal("(?=x)")
+    showRefusal("(?i)a")
+    showRefusal("(?<name>a)")
+
+    // A quantifier with nothing to repeat, and counts that are out of order or
+    // out of any use.
+    showRefusal("*abc")
+    showRefusal("a|*")
+    showRefusal("{2}")
+    showRefusal("a{3,1}")
+    showRefusal("a{99999}")
+
+    // A backslash that ends the pattern, an escape with no meaning, and one
+    // that names a group.
+    showRefusal("a\\")
+    showRefusal("\\q")
+    showRefusal("\\p{L}")
+    showRefusal("(a)\\1")
+    showRefusal("\\x")
+    showRefusal("\\x4")
+
+    // The patterns a reader might expect to be refused but are not: a brace
+    // that is not a count and the bytes that stand for themselves.
+    showRefusal("a{")
+    showRefusal("a{x}")
+    showRefusal("a{,3}")
+    showRefusal("a}")
+    showRefusal("]")
+    showRefusal("{")
+    showRefusal("a\\{2}")
+
+    // The refusal of the empty pattern is nothing: it is a pattern, and it
+    // matches at every position.
+    showRefusal("")
+
+    // The text of a fault names the fault and where it stands.
+    match regex.Compile("(a") {
+        Ok(re) => {
+            fmt.Print("taken")
+        }
+        Err(e) => {
+            fmt.PrintValue(e)
+        }
+    }
+    fmt.PrintNl()
+}
