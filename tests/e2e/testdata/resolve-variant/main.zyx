@@ -1,0 +1,41 @@
+package main
+
+import "std/fmt"
+
+// A payload-free variant shares its name with a package-level function. A
+// bare name in a match arm is read as the variant the subject's type
+// declares, not as a binding, and not as the function: the name alone cannot
+// tell the three apart, so the matched type decides. The function stays
+// callable under the same spelling.
+
+enum Signal {
+    Go
+    Stop
+}
+
+// Go reports one signal. Its name is also a variant of Signal.
+func Go() -> str {
+    return "go"
+}
+
+// Stop reports one signal. Its name is also a variant of Signal.
+func Stop() -> str {
+    return "stop"
+}
+
+// describe names each signal through a match, whose arms write the variant
+// names bare.
+func describe(signal: Signal) -> str {
+    match signal {
+        Go => return "Go"
+        Stop => return "Stop"
+    }
+    return "?"
+}
+
+func main() {
+    fmt.Println(describe(Signal.Go))
+    fmt.Println(describe(Signal.Stop))
+    fmt.Println(Go())
+    fmt.Println(Stop())
+}

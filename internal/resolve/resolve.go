@@ -148,6 +148,12 @@ type resolver struct {
 	lambdaBase *scope
 
 	cSyms map[string]*Symbol
+
+	// enumVariants holds the variant names of every enum a match in this
+	// package can name: the enums the package declares, the enums its
+	// imports declare, and the predeclared enums. A bare pattern name that
+	// is one of them is read as a variant rather than a binding.
+	enumVariants map[string]bool
 }
 
 // newResolver returns a resolver with the predeclared universe and the
@@ -185,6 +191,7 @@ func (r *resolver) run() {
 	r.collectDecls()
 	r.collectMembers()
 	r.buildFileScopes()
+	r.collectEnumVariants()
 	r.resolveDecls()
 	r.checkUnusedImports()
 	r.buildInterface()
@@ -449,6 +456,45 @@ func (r *resolver) buildFileScopes() {
 			fs.imports = append(fs.imports, &importUse{decl: imp, sym: sym, itf: itf})
 		}
 		r.fileScopes = append(r.fileScopes, fs)
+	}
+}
+
+// collectEnumVariants gathers the variant names a bare pattern name may
+// name. Resolution does not compute types, so it cannot tell which enum a
+// match subject has; a name that any enum the package can match against
+// declares as a variant is read as a variant, and the type checker settles
+// the reading against the subject's actual type.
+func (r *resolver) collectEnumVariants() {
+	r.enumVariants = map[string]bool{}
+	for _, name := range types.Names() {
+		t := types.Predeclared(name)
+		if t == nil || t.Kind != types.KindEnum {
+			continue
+		}
+		variants, _ := types.PredeclaredVariants(name)
+		for _, v := range variants {
+			r.enumVariants[v.Name] = true
+		}
+	}
+	for _, sym := range r.types {
+		r.addVariantNames(sym)
+	}
+	for _, fs := range r.fileScopes {
+		for _, use := range fs.imports {
+			for _, sym := range use.itf.Decls {
+				r.addVariantNames(sym)
+			}
+		}
+	}
+}
+
+// addVariantNames records the variant names of one type symbol, if it is an
+// enum.
+func (r *resolver) addVariantNames(sym *Symbol) {
+	for _, m := range sym.Members {
+		if m.Kind == KindVariant {
+			r.enumVariants[m.Name] = true
+		}
 	}
 }
 
@@ -747,8 +793,8 @@ func (r *resolver) bindLocal(id *ast.Ident, kind SymbolKind) *Symbol {
 }
 
 // bindLocalIn creates a local symbol. checkName applies the capitalization
-// rule for locals, which a pattern binding skips because its name may be a
-// variant of the matched enum, and a variant is uppercase by convention.
+// rule for locals, which a pattern binding skips because the checker reports
+// it once it knows the name is a binding rather than a variant.
 func (r *resolver) bindLocalIn(id *ast.Ident, kind SymbolKind, checkName bool) *Symbol {
 	if id == nil || id.Name == "_" {
 		return nil
