@@ -80,13 +80,10 @@ __chkstk:
    system's own top frame is described the same way, and a walk over a coroutine's
    frames then ends where the stack says it does. */
 	.globl	zyxrt_ctx_enter
-	.seh_proc zyxrt_ctx_enter
 zyxrt_ctx_enter:
-	.seh_endprologue
 	andq	$-16, %rsp
 	call	zyxrt_sched_enter
 	ud2
-	.seh_endproc
 
 /* The number of registers the switch saves, which the runtime uses to
    prepare the first stack of a coroutine. */

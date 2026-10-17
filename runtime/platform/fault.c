@@ -53,10 +53,10 @@ static const char *fault_what(DWORD code) {
    can carry on from. The trap claims these because it is the only handler that
    runs where they happen. A fault on a coroutine's stack is one the dispatch does
    not walk to a place it accepts as unhandled, so the filter below is reached
-   there only when the stack is the thread's own; that was measured with the bounds
-   of the coroutine's stack, a terminating frame at its top, and unwind information
-   for it all in place. A fault of the program is reported from the trap, on any
-   stack.
+   there only when the stack is the thread's own. The bounds of a coroutine's stack
+   are in the thread environment block already, and the walk of the system still
+   does not accept it, so what such a stack needs is not a frame of a particular
+   shape. A fault of the program is reported from the trap, on any stack.
 
    An exception the language does not name - a C++ library's own, the
    thread-naming exception a debugger's convention uses, a platform's - is left to
