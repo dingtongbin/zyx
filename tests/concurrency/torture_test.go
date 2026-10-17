@@ -83,7 +83,7 @@ func programs(t *testing.T) []string {
 }
 
 // copyTree copies a directory of sources into a directory of its own.
-func copyTree(t *testing.T, src, dst string) {
+func copyTree(t testing.TB, src, dst string) {
 	t.Helper()
 	err := filepath.WalkDir(src, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -109,7 +109,7 @@ func copyTree(t *testing.T, src, dst string) {
 }
 
 // builtProgram builds a corpus program and returns the executable it wrote.
-func builtProgram(t *testing.T, dir string) string {
+func builtProgram(t testing.TB, dir string) string {
 	t.Helper()
 	var out, errBuf bytes.Buffer
 	s := &cli.Session{Stdout: &out, Stderr: &errBuf, Dir: dir, Env: env}
@@ -131,7 +131,7 @@ func builtProgram(t *testing.T, dir string) string {
 
 // runAt runs a program with a scheduler of the given size and returns what it
 // printed. A program that does not finish is a failure of its own.
-func runAt(t *testing.T, path, threads string) (string, error) {
+func runAt(t testing.TB, path, threads string) (string, error) {
 	t.Helper()
 	cmd := exec.Command(path)
 	cmd.Env = append(os.Environ(), "ZYX_BLOCKPOOL=8")
