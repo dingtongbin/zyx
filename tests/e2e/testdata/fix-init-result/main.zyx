@@ -1,0 +1,37 @@
+package main
+
+// A construction that can fail answers a Result, which is what the design writes
+// for the types whose construction has something to check. new answers whatever
+// the init answers, so the call site reads the failure beside the value.
+
+import "std/fmt"
+
+struct Thing {
+    n: i64
+
+    func init(text: str) -> Result<Thing, str> {
+        if text.Len() == 0 {
+            return Result.Err("a name is needed")
+        }
+        return Result.Ok(Thing { n: i64(text.Len()) })
+    }
+}
+
+func build(text: str) {
+    match new Thing(text) {
+        Ok(t) => {
+            fmt.Print("built ")
+            fmt.PrintI64(t.n)
+            fmt.PrintNl()
+        }
+        Err(e) => {
+            fmt.Print("refused ")
+            fmt.Println(e)
+        }
+    }
+}
+
+func main() {
+    build("abcd")
+    build("")
+}

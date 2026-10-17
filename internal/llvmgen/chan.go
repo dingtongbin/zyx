@@ -24,11 +24,26 @@ func (g *generator) newExpr(module string, n *zyxc.Node) *value {
 		return g.newChan(module, n, typ)
 	case types.KindContainer:
 		return g.newContainer(module, n, typ)
+	case types.KindEnum:
+		// A construction that can fail answers a Result, so what is built is the
+		// value the Result carries and the init call answers the Result itself.
+		if inner, ok := constructionOf(typ); ok {
+			return g.newStruct(module, n, inner)
+		}
 	case types.KindStruct, types.KindExternStruct:
 		return g.newStruct(module, n, typ)
 	}
 	g.fail(fmt.Errorf("llvmgen: new %s is not lowered", typ))
 	return nil
+}
+
+// constructionOf answers the type a construction that can fail builds, which is
+// the success type of the Result its init declares.
+func constructionOf(t *types.Type) (*types.Type, bool) {
+	if t == nil || t.Kind != types.KindEnum || t.Name != "Result" || len(t.Args) != 2 {
+		return nil, false
+	}
+	return t.Args[0], true
 }
 
 // newChan creates a channel whose elements are the given size. A missing

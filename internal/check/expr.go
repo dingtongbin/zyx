@@ -1047,6 +1047,11 @@ func (c *checker) newStruct(v *ast.NewExpr, typ *types.Type) *types.Type {
 	}
 	sig := c.substituteFor(typ, d, init)
 	c.checkArgs(sig, v.Args, callArgs{sp: v.Sp, want: typ})
+	if success, ok := initSuccess(sig.Result); ok && types.Identical(success, typ) {
+		// The construction can fail, so new answers the Result the init declares
+		// rather than the value, and the call site reads the failure beside it.
+		return sig.Result
+	}
 	return typ
 }
 
