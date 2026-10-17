@@ -1,0 +1,123 @@
+package main
+
+import "std/crypto"
+import "std/fmt"
+
+// The digests of some standard vectors, the HMACs of RFC 4231, and the
+// constant-time comparison. Every digest is printed in lowercase hexadecimal,
+// so the file records what the implementation really answers.
+
+const m448: str = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+const m896: str = "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
+const hex_digits: str = "0123456789abcdef"
+
+func printHex(b: Array<u8>) {
+    var out = new Buf(0)
+    for i in 0 .. b.Len() {
+        var v = b[i]
+        out.WriteByte(hex_digits[usize(v >> u8(4))])
+        out.WriteByte(hex_digits[usize(v & u8(15))])
+    }
+    fmt.Print(out.Str())
+}
+
+func printLine(label: str, b: Array<u8>) {
+    fmt.Print(label)
+    fmt.Print(" ")
+    printHex(b)
+    fmt.PrintNl()
+}
+
+// bytesOf builds the bytes of an ASCII text.
+func bytesOf(src: str) -> [u8] {
+    var out = new Array<u8>(0)
+    for i in 0 .. src.Len() {
+        out.Push(src[i])
+    }
+    return out[0..out.Len()]
+}
+
+// repeat builds n copies of one byte.
+func repeat(b: u8, n: usize) -> [u8] {
+    var out = new Array<u8>(0)
+    for _ in 0 .. n {
+        out.Push(b)
+    }
+    return out[0..out.Len()]
+}
+
+// sequence builds the bytes 1, 2, ... n.
+func sequence(n: usize) -> [u8] {
+    var out = new Array<u8>(0)
+    for i in 0 .. n {
+        out.Push(u8(i + 1))
+    }
+    return out[0..out.Len()]
+}
+
+func main() {
+    printLine("sha256 empty", crypto.Sha256Sum(bytesOf("")))
+    printLine("sha256 abc", crypto.Sha256Sum(bytesOf("abc")))
+    printLine("sha256 448", crypto.Sha256Sum(bytesOf(m448)))
+    printLine("sha256 896", crypto.Sha256Sum(bytesOf(m896)))
+    printLine("sha256 1000a", crypto.Sha256Sum(repeat(u8(97), 1000)))
+
+    // Bytes written in pieces give the digest of the whole.
+    var stream = new crypto.Sha256()
+    stream.Write(bytesOf("a"))
+    stream.Write(bytesOf("b"))
+    stream.Write(bytesOf("c"))
+    printLine("sha256 stream abc", stream.Sum())
+
+    // Sum leaves the state alone, so writing continues from where it was.
+    var more = new crypto.Sha256()
+    more.Write(bytesOf("ab"))
+    printLine("sha256 ab", more.Sum())
+    more.Write(bytesOf("c"))
+    printLine("sha256 ab+c", more.Sum())
+
+    // Reset drops what was written.
+    more.Reset()
+    more.Write(bytesOf("abc"))
+    printLine("sha256 reset abc", more.Sum())
+    more.Reset()
+    printLine("sha256 reset empty", more.Sum())
+
+    printLine("sha512 empty", crypto.Sha512Sum(bytesOf("")))
+    printLine("sha512 abc", crypto.Sha512Sum(bytesOf("abc")))
+    printLine("sha512 896", crypto.Sha512Sum(bytesOf(m896)))
+    printLine("sha512 1000a", crypto.Sha512Sum(repeat(u8(97), 1000)))
+
+    var wide = new crypto.Sha512()
+    wide.Write(bytesOf("a"))
+    wide.Write(bytesOf("b"))
+    wide.Write(bytesOf("c"))
+    printLine("sha512 stream abc", wide.Sum())
+
+    // RFC 4231, using SHA-256.
+    printLine("hmac1", crypto.HmacSha256(repeat(u8(0x0b), 20), bytesOf("Hi There")))
+    printLine("hmac2", crypto.HmacSha256(bytesOf("Jefe"), bytesOf("what do ya want for nothing?")))
+    printLine("hmac3", crypto.HmacSha256(repeat(u8(0xaa), 20), repeat(u8(0xdd), 50)))
+    printLine("hmac4", crypto.HmacSha256(sequence(25), repeat(u8(0xcd), 50)))
+    printLine("hmac5", crypto.HmacSha256(repeat(u8(0x0c), 20), bytesOf("Test With Truncation")))
+    printLine("hmac6", crypto.HmacSha256(repeat(u8(0xaa), 131), bytesOf("Test Using Larger Than Block-Size Key - Hash Key First")))
+    printLine("hmac7", crypto.HmacSha256(repeat(u8(0xaa), 131), bytesOf("This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm.")))
+
+    // Equal on the same bytes, on bytes that differ in the last place, and on
+    // two lengths.
+    var one = crypto.Sha256Sum(bytesOf("abc"))
+    var two = crypto.Sha256Sum(bytesOf("abc"))
+    var three = crypto.Sha256Sum(bytesOf("abd"))
+    fmt.Print("equal same ")
+    fmt.PrintBool(crypto.Equal(one[0..one.Len()], two[0..two.Len()]))
+    fmt.PrintNl()
+    fmt.Print("equal differ ")
+    fmt.PrintBool(crypto.Equal(one[0..one.Len()], three[0..three.Len()]))
+    fmt.PrintNl()
+    fmt.Print("equal lengths ")
+    fmt.PrintBool(crypto.Equal(one[0..one.Len()], bytesOf("abc")))
+    fmt.PrintNl()
+    fmt.Print("equal empty ")
+    fmt.PrintBool(crypto.Equal(bytesOf(""), bytesOf("")))
+    fmt.PrintNl()
+}
