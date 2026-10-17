@@ -477,19 +477,29 @@ func (b *builder) expr(e ast.Expr) {
 		for _, entry := range v.Entries {
 			b.expr(entry.Key)
 			b.expr(entry.Value)
+			b.stored(entry.Value)
 		}
 		b.alloc(v, v)
 	case *ast.ArrayLitExpr:
 		for _, x := range v.Elems {
 			b.expr(x)
+			b.stored(x)
 		}
 		b.alloc(v, v)
 	case *ast.ArrayRepeatExpr:
 		b.expr(v.Elem)
 		b.expr(v.Count)
+		b.stored(v.Elem)
 		b.alloc(v, v)
 	case *ast.CallExpr:
 		b.call(v)
+		if b.cpkg != nil && b.cpkg.VariantCalls[v] {
+			// A variant construction stores what it is given in the value it
+			// answers with, so each argument lives as long as that value.
+			for _, a := range v.Args {
+				b.stored(a)
+			}
+		}
 	case *ast.SelectorExpr:
 		b.expr(v.X)
 		// A method taken as a value carries its receiver, so the receiver is
@@ -520,6 +530,7 @@ func (b *builder) expr(e ast.Expr) {
 	case *ast.TupleExpr:
 		for _, x := range v.Elems {
 			b.expr(x)
+			b.stored(x)
 		}
 	}
 }

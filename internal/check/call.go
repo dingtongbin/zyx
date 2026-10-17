@@ -399,6 +399,7 @@ func (c *checker) checkVariantCall(sel *ast.SelectorExpr, v *ast.CallExpr, sym *
 		return nil
 	}
 	c.out.Nodes[sel.Name] = enum
+	c.out.VariantCalls[v] = true
 
 	argTypes := make([]*types.Type, len(v.Args))
 	for i, a := range v.Args {

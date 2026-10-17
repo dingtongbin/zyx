@@ -195,6 +195,10 @@ type Package struct {
 	// The syntax cannot tell such a selector from a field read, so the check
 	// settles it for the passes that need to know.
 	MethodValues map[ast.Node]bool
+	// VariantCalls marks the calls that construct an enum variant. What such a
+	// call is given is stored in the value it answers with, so the closure of
+	// that value decides how long the argument lives.
+	VariantCalls map[ast.Node]bool
 	// Consts maps each evaluated constant to its value.
 	Consts map[string]*Value
 	// FuncDefaults maps each public function's name to the default value of
@@ -374,6 +378,7 @@ func newChecker(pkg *resolve.Package, info *resolve.Info, imports Imports, targe
 		Nodes:           map[ast.Node]*types.Type{},
 		PatternVariants: map[ast.Node]bool{},
 		MethodValues:    map[ast.Node]bool{},
+		VariantCalls:    map[ast.Node]bool{},
 		Consts:          map[string]*Value{},
 		FastC:           map[string]bool{},
 		imports:         imports,

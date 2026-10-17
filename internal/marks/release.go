@@ -44,6 +44,14 @@ func (b *builder) hold(e ast.Expr) {
 	}
 }
 
+// stored records an object whose value is put inside another object: a field of
+// a literal, an element of one, a tuple's member, or what a variant
+// construction carries. The holder is what reaches the object afterwards, so the
+// statement that built it does not release it; the region does, with the holder.
+func (b *builder) stored(e ast.Expr) {
+	b.hold(e)
+}
+
 // release marks an object that no sharing reaches: the last use is the
 // release point, and the object's memory returns to the pool there rather
 // than at region exit.

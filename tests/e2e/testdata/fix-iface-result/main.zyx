@@ -1,0 +1,33 @@
+package main
+
+// A concrete value put where an interface is expected, carried in a Result.
+// The dispatch must reach the value, not a zero.
+
+import "std/fmt"
+
+interface Speaker {
+    func Speak() -> i64
+}
+
+struct Dog {
+    voice: i64
+
+    impl Speaker {
+        func Speak() -> i64 {
+            return self.voice
+        }
+    }
+}
+
+func main() {
+    var direct: Speaker = Dog { voice: 5 }
+    fmt.PrintI64(direct.Speak())
+    fmt.PrintNl()
+
+    var held: Result<Speaker, str> = Result.Ok(Dog { voice: 9 })
+    match held {
+        Ok(s) => { fmt.PrintI64(s.Speak()) }
+        Err(_) => { fmt.Print("err") }
+    }
+    fmt.PrintNl()
+}
