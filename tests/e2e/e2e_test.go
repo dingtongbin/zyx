@@ -198,6 +198,46 @@ func TestInsertedChecksPanic(t *testing.T) {
 	}
 }
 
+// TestForeignFaultIsReported checks what happens when a fault happens in code
+// that was not compiled with the runtime. The report names what happened, names
+// the functions of the program that the stack passed through, and ends the
+// process the way a panic ends it. The fault is made in a C function the package
+// carries the source of, which is the case the report exists for: no runtime can
+// unwind such a frame, and what a person needs is to read where it happened.
+func TestForeignFaultIsReported(t *testing.T) {
+	if _, err := toolchain.Locate(); err != nil {
+		t.Skipf("the toolchain is not available: %v", err)
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	writeProgram(t, dir, "package main\n\nimport \"std/fmt\"\n\nimport c \"fault.h\"\n\n"+
+		"func main() {\n\tfmt.Println(\"before\")\n\tc.touch_null()\n\tfmt.Println(\"after\")\n}\n")
+	extra := map[string]string{
+		"fault.h": "void touch_null(void);\n",
+		"fault.c": "void touch_null(void) {\n  volatile int *p = 0;\n  *p = 1;\n}\n",
+	}
+	for name, body := range extra {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdout, stderr, code := run(dir, "run", "./...")
+	if code != 101 {
+		t.Errorf("the process ended with %d, want 101\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "before") {
+		t.Errorf("standard output =\n%s\nwant it to hold %q", stdout, "before")
+	}
+	if strings.Contains(stdout, "after") {
+		t.Errorf("standard output =\n%s\nwant it to stop where the fault is", stdout)
+	}
+	for _, want := range []string{"fatal:", "frames:", "example.com/program.main"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("standard error =\n%s\nwant it to hold %q", stderr, want)
+		}
+	}
+}
+
 // writeProgram writes a one-file program into a directory.
 func writeProgram(t *testing.T, dir, main string) {
 	t.Helper()

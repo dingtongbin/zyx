@@ -271,6 +271,25 @@ void zyxrt_preempt_stop(void);
    coroutine panicked, and nothing otherwise. */
 int zyxrt_panic_code(void);
 
+/* A frame of the table a module registers: the address of a function it defined
+   and the name that function has in the source. The compiler emits one table per
+   module and registers it before the program runs, which is what lets a fault
+   that cannot be unwound be reported with the names of the functions it passed
+   through, with no tool to find and no debug information to parse. */
+typedef struct zyxrt_frame {
+  void *address;
+  const char *name;
+} zyxrt_frame;
+
+void zyxrt_frames_register(const zyxrt_frame *frames, size_t count);
+/* zyxrt_frame_name answers the name of the function an address falls in, or NULL
+   when no table holds it. */
+const char *zyxrt_frame_name(void *address);
+/* zyxrt_fatal_report reports a fault the program cannot continue from: what
+   happened, where, which coroutine it happened in, and the functions the stack
+   passed through. It does not return. */
+void zyxrt_fatal_report(const char *what, void *address, void *sp);
+
 /* The event loop. A coroutine that waits on a pollable descriptor parks, and
    a poller thread watches the descriptors and readies the coroutines that wait
    on the ones that became ready. */

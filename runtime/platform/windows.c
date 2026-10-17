@@ -81,6 +81,55 @@ void zyxrt_ctx_bounds_coro(zyxrt_coro *c) { (void)c; }
 
 #endif
 
+/* A fault that reaches the handler is one nothing else could handle, and the
+   program cannot continue from it, so it is reported where it is and the process
+   ends. The report names what happened; a fault the runtime itself uses raises no
+   exception of its own, so nothing here stands in the way of a panic. */
+static const char *fault_what(DWORD code) {
+  switch (code) {
+  case EXCEPTION_ACCESS_VIOLATION:
+  case EXCEPTION_IN_PAGE_ERROR:
+    return "a memory fault";
+  case EXCEPTION_ILLEGAL_INSTRUCTION:
+    return "an illegal instruction";
+  case EXCEPTION_INT_DIVIDE_BY_ZERO:
+  case EXCEPTION_FLT_DIVIDE_BY_ZERO:
+    return "a division by zero";
+  case EXCEPTION_STACK_OVERFLOW:
+    return "a stack that ran out";
+  case EXCEPTION_PRIV_INSTRUCTION:
+    return "a privileged instruction";
+  case EXCEPTION_INT_OVERFLOW:
+    return "an integer that overflowed";
+  case EXCEPTION_FLT_INVALID_OPERATION:
+  case EXCEPTION_FLT_OVERFLOW:
+    return "an invalid floating point operation";
+  case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:
+    return "an access outside an array";
+  default:
+    return "an unhandled exception";
+  }
+}
+
+static LONG CALLBACK fatal_handler(PEXCEPTION_POINTERS info) {
+  DWORD code = info->ExceptionRecord->ExceptionCode;
+  void *address = NULL;
+  if (code == EXCEPTION_BREAKPOINT || code == EXCEPTION_SINGLE_STEP) {
+    /* A debugger's business, not a fault of the program. */
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+  if (code == 0x40000015u) {
+    /* The C runtime's own abort, which brings its message with it. */
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+  if ((code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR) &&
+      info->ExceptionRecord->NumberParameters >= 2) {
+    address = (void *)info->ExceptionRecord->ExceptionInformation[1];
+  }
+  zyxrt_fatal_report(fault_what(code), address, (void *)info->ContextRecord->Rsp);
+  return EXCEPTION_EXECUTE_HANDLER;
+}
+
 /* The runtime writes UTF-8 bytes, so a line feed must stay one byte rather
    than becoming the two bytes of a text-mode line ending. The socket library is
    brought up here rather than with the event loop, because it is a property of
@@ -90,6 +139,7 @@ void zyxrt_platform_init(void) {
   WSADATA data;
   _setmode(_fileno(stdout), _O_BINARY);
   _setmode(_fileno(stderr), _O_BINARY);
+  AddVectoredExceptionHandler(1, fatal_handler);
   if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
     zyxrt_panic("cannot start the socket library", 30);
   }
