@@ -385,11 +385,10 @@ void zyxrt_sched_sleep(uint64_t ns) {
   zyxrt_sched_park(zyxrt_now() + ns);
 }
 
-/* zyxrt_sched_advance takes in what the event loop found and fires every
-   deadline that has come due, so the run that follows sees everything that is
-   ready now. */
+/* zyxrt_sched_advance fires every deadline that has come due, so the run that
+   follows sees everything that is ready now. Readiness on a descriptor needs no
+   such step: the poller readies the coroutine where it finds it. */
 void zyxrt_sched_advance(void) {
-  zyxrt_loop_drain();
   zyxrt_wheel_advance(zyxrt_now());
 }
 

@@ -249,11 +249,9 @@ void zyxrt_entersyscall(void);
 void zyxrt_exitsyscall(void);
 
 /* The event loop. A coroutine that waits on a pollable descriptor parks, and
-   a poller thread watches the descriptors and hands the ready ones to the
-   scheduler: the poller records what became ready, and a scheduler thread
-   turns that into ready coroutines. */
+   a poller thread watches the descriptors and readies the coroutines that wait
+   on the ones that became ready. */
 void zyxrt_loop_start(void);
-void zyxrt_loop_drain(void);
 /* The most descriptors one backend wait reports at a time. */
 #define ZYXRT_LOOP_BATCH 256
 /* zyxrt_loop_snapshot fills fds and events with the registered set, which the

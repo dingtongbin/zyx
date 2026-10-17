@@ -26,18 +26,8 @@ static size_t table_cap;
 static size_t table_used;
 static int loop_started;
 
-/* A readiness the poller found waits here for the scheduler to drain it. */
-typedef struct zyxrt_ready {
-  int fd;
-  int events;
-  struct zyxrt_ready *next;
-} zyxrt_ready;
-
-/* The readiness another thread found. The head is atomic so the scheduler can
-   tell that the list is empty without taking the lock, which is what makes
-   draining on every turn affordable. */
-static _Atomic(zyxrt_ready *) ready_head;
-static zyxrt_ready *ready_free;
+/* A readiness the poller found is turned into ready coroutines where it is
+   found, and the wake reaches the thread that owns them. */
 
 /* polled marks a loop a poller thread drives; a target without threads drives
    the loop from the scheduler instead. */
@@ -80,28 +70,16 @@ static void wake_nodes(zyxrt_waiter *w) {
   }
 }
 
-/* record adds one readiness to the list the scheduler drains. The poller
-   calls it. */
-static void record(int fd, int events) {
-  zyxrt_lock_hold(&loop_lock);
-  zyxrt_ready *node = ready_free;
-  if (node != NULL) {
-    ready_free = node->next;
-  } else {
-    node = (zyxrt_ready *)malloc(sizeof(zyxrt_ready));
-  }
-  zyxrt_lock_drop(&loop_lock);
-  if (!node) return;
-  node->fd = fd;
-  node->events = events;
-  zyxrt_lock_hold(&loop_lock);
-  node->next = atomic_load_explicit(&ready_head, memory_order_relaxed);
-  atomic_store_explicit(&ready_head, node, memory_order_release);
-  zyxrt_lock_drop(&loop_lock);
-}
+/* record turns one readiness the poller found into ready coroutines. The
+   poller does it itself: a wake is safe from any thread, so there is no reason
+   to hand the readiness to a scheduler thread and make it look again. */
+static void ready_fd(int fd, int events);
+
+static void record(int fd, int events) { ready_fd(fd, events); }
 
 /* poller waits on the kernel facility for as long as the process runs, and
-   every readiness it finds wakes the scheduler. */
+   every readiness it finds readies the coroutines that wait on it, which wakes
+   the thread that owns them. */
 static void poller(void *arg) {
   (void)arg;
   int fds[ZYXRT_LOOP_BATCH];
@@ -113,9 +91,8 @@ static void poller(void *arg) {
     if (n <= 0) continue;
     for (int i = 0; i < n; i++) {
       if (fds[i] < 0) continue; /* the backend's own wakeup */
-      record(fds[i], events[i]);
+      ready_fd(fds[i], events[i]);
     }
-    zyxrt_wakeup_signal();
   }
   atomic_fetch_sub_explicit(&live, 1, memory_order_acq_rel);
 }
@@ -327,23 +304,3 @@ static void ready_fd(int fd, int events) {
   wake_nodes(writers);
 }
 
-void zyxrt_loop_drain(void) {
-  if (!loop_started) return;
-  if (atomic_load_explicit(&ready_head, memory_order_acquire) == NULL) return;
-  for (;;) {
-    zyxrt_lock_hold(&loop_lock);
-    zyxrt_ready *r = atomic_load_explicit(&ready_head, memory_order_relaxed);
-    atomic_store_explicit(&ready_head, NULL, memory_order_relaxed);
-    zyxrt_lock_drop(&loop_lock);
-    if (r == NULL) return;
-    while (r != NULL) {
-      zyxrt_ready *next = r->next;
-      ready_fd(r->fd, r->events);
-      zyxrt_lock_hold(&loop_lock);
-      r->next = ready_free;
-      ready_free = r;
-      zyxrt_lock_drop(&loop_lock);
-      r = next;
-    }
-  }
-}
