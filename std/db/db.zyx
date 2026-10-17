@@ -1,1 +1,172 @@
 package db
+
+// The database interface layer: the shapes a program speaks a database
+// through, and a pool that hands connections out and takes them back.
+//
+// A driver is a value, not a name in a table. There is no registry a package
+// installs itself into, so a program passes the driver it means as an
+// argument: db.Open(pg.Driver(), dsn), or new Pool(mysql.Driver(), dsn, 8).
+// That keeps a program's drivers visible where it names them and leaves no
+// implicit state behind an import.
+
+import "std/sync"
+
+// ErrorKind is what went wrong. Every system package reports failures in this
+// shape, so one program reads them the same way wherever they come from.
+
+enum ErrorKind {
+    NotFound
+    Permission
+    Exists
+    NotDir
+    IsDir
+    Invalid
+    Closed
+    Timeout
+    Interrupted
+    WouldBlock
+    Eof
+    AddrInUse
+    AddrNotAvailable
+    Refused
+    Reset
+    Unreachable
+    Other
+}
+
+// Error is one failure of a call. Errno is the code the database library
+// reported, or zero when the failure is not one the library names, and Msg is
+// the text that came with it.
+
+struct Error {
+    Kind: ErrorKind
+    Errno: i32
+    Msg: str
+
+    impl Show {
+        func Show(w: Buf) {
+            w.WriteStr(f"db: {self.Msg}")
+        }
+    }
+}
+
+// A Conn is one connection to a database: it runs statements that change rows
+// and statements that read them. It is a reference, and a program closes what
+// it opened.
+interface Conn {
+    func Query(sql: str, params: Array<Value>) -> Result<Rows, Error>
+    func Exec(sql: str, params: Array<Value>) -> Result<i64, Error>
+    func Close()
+}
+
+// Rows reads the rows one statement answers. It is a reference, a copy names
+// the same rows, and the statement is released when Close is called.
+interface Rows {
+    func Next() -> bool
+    func Columns() -> Array<str>
+    func Int(i: usize) -> i64
+    func Float(i: usize) -> f64
+    func Text(i: usize) -> str
+    func Null(i: usize) -> bool
+    func Close()
+}
+
+// A Driver opens connections from a data source name. A package that speaks
+// one database answers the driver of its own, and a program hands it to Open
+// or to a pool.
+interface Driver {
+    func Open(dsn: str) -> Result<Conn, Error>
+}
+
+// Open asks a driver for a connection to the database a data source name
+// names. It is the short form of a driver's own Open, so a program that holds
+// a driver value names the same call wherever the driver came from.
+func Open(drv: Driver, dsn: str) -> Result<Conn, Error> {
+    return drv.Open(dsn)
+}
+
+// A Pool hands out a bounded number of connections and takes them back. A
+// call to Conn answers an idle connection when one is there and opens one
+// otherwise, and it parks the calling coroutine while the pool is full. The
+// connections all come from the driver the pool was built with, so a pool
+// never changes what it is connected to.
+struct Pool {
+    drv: Driver
+    dsn: str
+    idle: sync.Mutex<Array<Conn>>
+    slots: sync.Semaphore
+    closed: sync.Atomic<i64>
+
+    // init builds a pool that holds at most max connections of a driver.
+    func init(drv: Driver, dsn: str, max: usize) -> Self {
+        return Pool {
+            drv: drv,
+            dsn: dsn,
+            idle: new sync.Mutex<Array<Conn>>(new Array<Conn>(0)),
+            slots: new sync.Semaphore(i64(max)),
+            closed: new sync.Atomic<i64>(0),
+        }
+    }
+
+    // Conn answers a connection: an idle one when the pool holds one, and a
+    // connection the driver opens otherwise. The call parks the calling
+    // coroutine while every connection of the pool is out.
+    func Conn() -> Result<Conn, Error> {
+        self.slots.Acquire()
+        if self.closed.Load() != 0 {
+            self.slots.Release()
+            return Result.Err(pool_closed())
+        }
+        self.idle.Lock()
+        var held = self.idle.Data
+        if held.Len() > 0 {
+            var conn = held.Pop().Unwrap()
+            self.idle.Unlock()
+            return Result.Ok(conn)
+        }
+        self.idle.Unlock()
+        match self.drv.Open(self.dsn) {
+            Ok(conn) => { return Result.Ok(conn) }
+            Err(e) => {
+                self.slots.Release()
+                return Result.Err(e)
+            }
+        }
+    }
+
+    // Put returns a connection to the pool. A pool that was closed closes the
+    // connection instead of keeping it.
+    func Put(conn: Conn) {
+        self.idle.Lock()
+        if self.closed.Load() != 0 {
+            self.idle.Unlock()
+            conn.Close()
+            self.slots.Release()
+            return
+        }
+        self.idle.Data.Push(conn)
+        self.idle.Unlock()
+        self.slots.Release()
+    }
+
+    // Close closes every idle connection and refuses later calls to Conn. A
+    // connection that is out when the pool is closed is closed when it is
+    // returned. It is idempotent.
+    func Close() {
+        if self.closed.Swap(1) != 0 {
+            return
+        }
+        self.idle.Lock()
+        var held = self.idle.Data
+        for held.Len() > 0 {
+            var conn = held.Pop().Unwrap()
+            conn.Close()
+        }
+        self.idle.Unlock()
+    }
+}
+
+// pool_closed is the failure of a call on a pool that was closed.
+func pool_closed() -> Error {
+    return Error { Kind: ErrorKind.Closed, Errno: 0, Msg: "the pool is closed" }
+}

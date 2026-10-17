@@ -1,0 +1,8 @@
+empty: Invalid the data source name is empty
+no database: Invalid the data source name has no database part
+bad protocol: Invalid the protocol is not tcp or unix
+bad port: Invalid the port is not a number
+big port: Invalid the port is out of range
+unclosed: Invalid the data source name has an unclosed address
+driver: Invalid the data source name has no database part
+refused: Refused

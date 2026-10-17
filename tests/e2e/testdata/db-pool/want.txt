@@ -1,0 +1,8 @@
+open ok
+row one
+row two
+exec 3
+direct opens 1
+pool opens 2
+pool reuses 2
+pool closed Closed

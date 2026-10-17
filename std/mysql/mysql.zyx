@@ -1,1 +1,364 @@
 package mysql
+
+// MySQL over the client library. A program connects with a data source name,
+// runs statements through the connection, and reads the rows they answer.
+//
+// The data source name has the shape user:password@net(address)/database. A
+// net of tcp reads the address as host:port, and a net of unix reads it as the
+// path of a unix socket. Everything after a question mark is left out, because
+// the options of the client library are not carried through this surface.
+//
+// A statement that takes no parameters runs over the text protocol, so every
+// statement works, including the ones the prepared protocol does not carry,
+// such as creating a database. A statement that takes parameters is prepared,
+// so a value never crosses as SQL text and needs no quoting of its own.
+
+import "std/db"
+
+import c "zyxmysql.h" {
+    fast zyxmysql_error_kind, zyxmysql_error_number, zyxmysql_error_message
+    fast zyxmysql_rows_next, zyxmysql_rows_columns, zyxmysql_rows_column_name
+    fast zyxmysql_rows_null, zyxmysql_rows_int, zyxmysql_rows_float, zyxmysql_rows_text
+}
+
+// Driver answers the MySQL driver, which db.Open and a db.Pool ask to open a
+// connection.
+func Driver() -> db.Driver {
+    return driver { }
+}
+
+// driver is the value the db.Driver interface names.
+struct driver {
+    impl db.Driver {
+        func Open(dsn: str) -> Result<db.Conn, db.Error> {
+            return Open(dsn)
+        }
+    }
+}
+
+// Open connects to the server a data source name names.
+func Open(dsn: str) -> Result<db.Conn, db.Error> {
+    var parts = parse_dsn(dsn)
+    if parts.IsErr() {
+        return Result.Err(parts.Err().Unwrap())
+    }
+    var d = parts.Ok().Unwrap()
+    var handle = c.zyxmysql_connect(d.net, d.host, d.port, d.user, d.password, d.dbname)
+    if c.zyxmysql_error_kind() != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok(conn_of(handle))
+}
+
+// conn_of builds the connection a connection call just made.
+func conn_of(handle: raw) -> db.Conn {
+    return conn { Handle: handle, Closed: false }
+}
+
+// rows_of builds the rows a statement call just made.
+func rows_of(handle: raw) -> db.Rows {
+    return rows { Handle: handle, Closed: false, Current: false, Done: false }
+}
+
+// error_of builds the failure the last call reported.
+func error_of() -> db.Error {
+    return db.Error {
+        Kind: error_kind(c.zyxmysql_error_kind())
+        Errno: c.zyxmysql_error_number()
+        Msg: message_of()
+    }
+}
+
+// message_of answers the text of the failure the last call reported.
+func message_of() -> str {
+    var text = new Buf(0)
+    c.zyxmysql_error_message(text)
+    return text.Str()
+}
+
+// error_kind maps the number a C call reports onto the kind of failure it is.
+// The numbers are the ones the package's own header defines.
+func error_kind(code: i32) -> db.ErrorKind {
+    match code {
+        1 => { return db.ErrorKind.NotFound }
+        2 => { return db.ErrorKind.Permission }
+        3 => { return db.ErrorKind.Exists }
+        4 => { return db.ErrorKind.NotDir }
+        5 => { return db.ErrorKind.IsDir }
+        6 => { return db.ErrorKind.Invalid }
+        7 => { return db.ErrorKind.Closed }
+        8 => { return db.ErrorKind.Timeout }
+        9 => { return db.ErrorKind.Interrupted }
+        10 => { return db.ErrorKind.WouldBlock }
+        11 => { return db.ErrorKind.Eof }
+        12 => { return db.ErrorKind.AddrInUse }
+        13 => { return db.ErrorKind.AddrNotAvailable }
+        14 => { return db.ErrorKind.Refused }
+        15 => { return db.ErrorKind.Reset }
+        16 => { return db.ErrorKind.Unreachable }
+        _ => { return db.ErrorKind.Other }
+    }
+}
+
+// closed_error is the failure of a call on a connection that was closed.
+func closed_error() -> db.Error {
+    return db.Error { Kind: db.ErrorKind.Closed, Errno: 0, Msg: "the connection is closed" }
+}
+
+// parameter_count is the failure of a call whose number of parameters is not
+// the number the statement takes.
+func parameter_count(takes: usize, given: usize) -> db.Error {
+    return db.Error {
+        Kind: db.ErrorKind.Invalid
+        Errno: 0
+        Msg: f"the statement takes {i64(takes)} parameters, {i64(given)} given"
+    }
+}
+
+// unbindable is the failure of a parameter that has no value a column can hold.
+func unbindable(at: i32) -> db.Error {
+    return db.Error {
+        Kind: db.ErrorKind.Invalid
+        Errno: 0
+        Msg: f"parameter {i64(at) + 1} is an array or a map, which a column cannot hold"
+    }
+}
+
+// A conn is a connection to a MySQL server. It is a reference, and a program
+// closes what it opened.
+struct conn {
+    Handle: raw
+    Closed: bool
+
+    impl db.Conn {
+        // Query runs one statement and answers the rows it reads. A statement
+        // with parameters is prepared, and the values cross as parameters
+        // rather than as the text of the statement.
+        func Query(sql: str, params: Array<Value>) -> Result<db.Rows, db.Error> {
+            if self.Closed {
+                return Result.Err(closed_error())
+            }
+            if params.Len() == 0 {
+                var handle = c.zyxmysql_query(self.Handle, sql)
+                if c.zyxmysql_error_kind() != 0 {
+                    return Result.Err(error_of())
+                }
+                return Result.Ok(rows_of(handle))
+            }
+            var prepared = c.zyxmysql_prepare(self.Handle, sql)
+            if c.zyxmysql_error_kind() != 0 {
+                return Result.Err(error_of())
+            }
+            var takes = usize(c.zyxmysql_param_count(prepared))
+            if takes != params.Len() {
+                c.zyxmysql_stmt_close(prepared)
+                return Result.Err(parameter_count(takes, params.Len()))
+            }
+            var bound = bind_params(prepared, params)
+            if bound.IsErr() {
+                c.zyxmysql_stmt_close(prepared)
+                return Result.Err(bound.Err().Unwrap())
+            }
+            c.zyxmysql_execute(prepared)
+            if c.zyxmysql_error_kind() != 0 {
+                c.zyxmysql_stmt_close(prepared)
+                return Result.Err(error_of())
+            }
+            var handle = c.zyxmysql_result(prepared)
+            if c.zyxmysql_error_kind() != 0 {
+                return Result.Err(error_of())
+            }
+            return Result.Ok(rows_of(handle))
+        }
+
+        // Exec runs one statement and answers how many rows it changed.
+        func Exec(sql: str, params: Array<Value>) -> Result<i64, db.Error> {
+            if self.Closed {
+                return Result.Err(closed_error())
+            }
+            if params.Len() == 0 {
+                var changed = c.zyxmysql_exec(self.Handle, sql)
+                if c.zyxmysql_error_kind() != 0 {
+                    return Result.Err(error_of())
+                }
+                return Result.Ok(changed)
+            }
+            var prepared = c.zyxmysql_prepare(self.Handle, sql)
+            if c.zyxmysql_error_kind() != 0 {
+                return Result.Err(error_of())
+            }
+            var takes = usize(c.zyxmysql_param_count(prepared))
+            if takes != params.Len() {
+                c.zyxmysql_stmt_close(prepared)
+                return Result.Err(parameter_count(takes, params.Len()))
+            }
+            var bound = bind_params(prepared, params)
+            if bound.IsErr() {
+                c.zyxmysql_stmt_close(prepared)
+                return Result.Err(bound.Err().Unwrap())
+            }
+            var changed = c.zyxmysql_execute(prepared)
+            if c.zyxmysql_error_kind() != 0 {
+                c.zyxmysql_stmt_close(prepared)
+                return Result.Err(error_of())
+            }
+            c.zyxmysql_stmt_close(prepared)
+            return Result.Ok(changed)
+        }
+
+        // Close gives the connection up. It is idempotent, and a call on a
+        // connection that was closed is refused.
+        func Close() {
+            if self.Closed {
+                return
+            }
+            c.zyxmysql_close(self.Handle)
+            self.Closed = true
+        }
+    }
+}
+
+// A rows reads the rows one statement answers. It is a reference, a copy names
+// the same rows, and the statement is released when Close is called.
+struct rows {
+    Handle: raw
+    Closed: bool
+    Current: bool
+    Done: bool
+
+    impl db.Rows {
+        // Next runs the statement to its next row and answers whether there is
+        // one. A failure while reading has no answer to travel through, so it
+        // panics with the text the library gave.
+        func Next() -> bool {
+            if self.Closed || self.Done {
+                return false
+            }
+            var step = c.zyxmysql_rows_next(self.Handle)
+            if step < 0 {
+                self.Done = true
+                self.Current = false
+                panic(f"mysql: {message_of()}")
+            }
+            if step == 0 {
+                self.Done = true
+                self.Current = false
+                return false
+            }
+            self.Current = true
+            return true
+        }
+
+        // Columns answers the names of the result columns, in the order the
+        // statement writes them.
+        func Columns() -> Array<str> {
+            var out = new Array<str>(0)
+            if self.Closed {
+                return out
+            }
+            var count = c.zyxmysql_rows_columns(self.Handle)
+            var at: i32 = 0
+            for at < count {
+                var text = new Buf(0)
+                c.zyxmysql_rows_column_name(self.Handle, at, text)
+                out.Push(text.Str())
+                at += 1
+            }
+            return out
+        }
+
+        // Int answers a result column as a signed integer. A column that holds
+        // no value answers zero, which Null tells apart from a value of zero.
+        func Int(i: usize) -> i64 {
+            readable(self.Closed, self.Current, self.Handle, i)
+            return c.zyxmysql_rows_int(self.Handle, i32(i))
+        }
+
+        // Float answers a result column as a floating-point number. A column
+        // that holds no value answers zero.
+        func Float(i: usize) -> f64 {
+            readable(self.Closed, self.Current, self.Handle, i)
+            return c.zyxmysql_rows_float(self.Handle, i32(i))
+        }
+
+        // Text answers a result column as text. A column that holds no value
+        // answers the empty text.
+        func Text(i: usize) -> str {
+            readable(self.Closed, self.Current, self.Handle, i)
+            var text = new Buf(0)
+            c.zyxmysql_rows_text(self.Handle, i32(i), text)
+            return text.Str()
+        }
+
+        // Null reports whether a result column holds no value.
+        func Null(i: usize) -> bool {
+            readable(self.Closed, self.Current, self.Handle, i)
+            return c.zyxmysql_rows_null(self.Handle, i32(i)) != 0
+        }
+
+        // Close releases the statement. It is idempotent.
+        func Close() {
+            if self.Closed {
+                return
+            }
+            c.zyxmysql_rows_close(self.Handle)
+            self.Closed = true
+            self.Current = false
+            self.Done = true
+        }
+    }
+}
+
+// readable refuses a read of a column that is not there, and of rows that have
+// no current row, because neither has a value to answer with.
+func readable(closed: bool, current: bool, handle: raw, i: usize) {
+    if closed {
+        panic("mysql: the rows are closed")
+    }
+    if !current {
+        panic("mysql: no row is current")
+    }
+    if i >= usize(c.zyxmysql_rows_columns(handle)) {
+        panic("mysql: the column is not there")
+    }
+}
+
+// bind_params gives a statement the values of a call. A parameter is counted
+// from zero, in the order the statement writes its placeholders.
+func bind_params(prepared: raw, params: Array<Value>) -> Result<(), db.Error> {
+    var at: i32 = 0
+    for v in params {
+        var bound = bind_one(prepared, at, v)
+        if bound.IsErr() {
+            return Result.Err(bound.Err().Unwrap())
+        }
+        at += 1
+    }
+    return Result.Ok()
+}
+
+// bind_one gives one parameter a value. A value of a kind that is a collection
+// has no column to stand for it, so it is refused rather than encoded.
+func bind_one(prepared: raw, at: i32, v: Value) -> Result<(), db.Error> {
+    match v {
+        Null => { return bind_result(c.zyxmysql_bind_null(prepared, at)) }
+        Bool(b) => {
+            if b {
+                return bind_result(c.zyxmysql_bind_int(prepared, at, 1))
+            }
+            return bind_result(c.zyxmysql_bind_int(prepared, at, 0))
+        }
+        Num(x) => { return bind_result(c.zyxmysql_bind_float(prepared, at, x)) }
+        Str(s) => { return bind_result(c.zyxmysql_bind_text(prepared, at, s)) }
+        Arr(_) => { return Result.Err(unbindable(at)) }
+        Obj(_) => { return Result.Err(unbindable(at)) }
+    }
+}
+
+// bind_result reads the answer of one binding call.
+func bind_result(code: i32) -> Result<(), db.Error> {
+    if code != 0 {
+        return Result.Err(error_of())
+    }
+    return Result.Ok()
+}
