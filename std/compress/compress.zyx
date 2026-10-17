@@ -11,6 +11,10 @@ package compress
 // written by another implementation reads here even where this encoder would
 // have written it differently.
 
+import c "zyxcompress.h" {
+    fast zyxcompress_compress, zyxcompress_decompress
+}
+
 // Error is what a codec refuses. Truncated and Corrupt name a stream that ended
 // early or does not follow its format, Checksum names a trailer that does not
 // match the bytes read, and Level carries the level an encoder was asked for
@@ -20,6 +24,36 @@ enum Error {
     Corrupt
     Checksum
     Level(i32)
+}
+
+// Compress appends the zstd frame of src to dst. The level is between 1 and 22:
+// a higher level spends more work and usually writes less. zstd is a C library,
+// so this codec is reached through the binding rather than written in the
+// language, unlike the three above it.
+func Compress(dst: Buf, src: [u8], level: i32) -> Result<(), Error> {
+    var code = c.zyxcompress_compress(dst, src, level)
+    if code == 0 {
+        return Result.Ok()
+    }
+    if code == 1 {
+        return Result.Err(Error.Level(level))
+    }
+    return Result.Err(Error.Corrupt)
+}
+
+// Decompress appends the bytes a zstd frame stands for to dst. The bytes are
+// refused when they are not a frame, and a frame that does not declare its
+// content size is refused too, because the buffer it needs is settled from what
+// the frame declares.
+func Decompress(dst: Buf, src: [u8]) -> Result<(), Error> {
+    var code = c.zyxcompress_decompress(dst, src)
+    if code == 0 {
+        return Result.Ok()
+    }
+    if code == 1 {
+        return Result.Err(Error.Corrupt)
+    }
+    return Result.Err(Error.Truncated)
 }
 
 // length counts the bytes of a view. A slice carries its length, but the

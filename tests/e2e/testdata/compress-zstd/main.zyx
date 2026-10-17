@@ -1,0 +1,76 @@
+package main
+
+// The zstd binding. A frame is written and read back, and the failures the
+// package names are what a broken frame and a level outside the range give.
+//
+// Nothing printed depends on how the library compresses: the length of a frame
+// is its own business, so only what came back out is read.
+
+import "std/compress"
+import "std/fmt"
+
+// bytes_of answers the bytes of a text.
+func bytes_of(text: str) -> [u8] {
+    var out = new Buf(0)
+    out.WriteStr(text)
+    return out.Bytes()
+}
+
+// say answers whether a label checks out, and stops the program on the line that
+// failed otherwise.
+func say(label: str, answer: bool) {
+    if !answer {
+        panic(f"zstd test: {label}")
+    }
+    fmt.Print(label)
+    fmt.PrintNl()
+}
+
+// level_refused answers whether a failure is the one a level outside the range
+// gives, which is the only variant that carries a value.
+func level_refused(e: compress.Error) -> bool {
+    match e {
+        Level(_) => { return true }
+        _ => { return false }
+    }
+}
+
+func main() {
+    var text = "the same words over and over, the same words over and over"
+    var source = bytes_of(text)
+
+    var packed = new Buf(0)
+    match compress.Compress(packed, source, 3) {
+        Ok(_) => { say("a frame was written", true) }
+        Err(_) => { say("a frame was written", false) }
+    }
+
+    var back = new Buf(0)
+    match compress.Decompress(back, packed.Bytes()) {
+        Ok(_) => { say("the frame reads back", back.Str() == text) }
+        Err(_) => { say("the frame reads back", false) }
+    }
+
+    var empty = new Buf(0)
+    var empty_back = new Buf(0)
+    match compress.Compress(empty, bytes_of(""), 1) {
+        Ok(_) => { }
+        Err(_) => { say("an empty body was written", false) }
+    }
+    match compress.Decompress(empty_back, empty.Bytes()) {
+        Ok(_) => { say("an empty body reads back", empty_back.Str().Len() == 0) }
+        Err(_) => { say("an empty body reads back", false) }
+    }
+
+    var refused = new Buf(0)
+    match compress.Compress(refused, source, 99) {
+        Ok(_) => { say("a level outside the range is refused", false) }
+        Err(e) => { say("a level outside the range is refused", level_refused(e)) }
+    }
+
+    var junk = new Buf(0)
+    match compress.Decompress(junk, bytes_of("not a zstd frame at all")) {
+        Ok(_) => { say("bytes that are not a frame are refused", false) }
+        Err(e) => { say("bytes that are not a frame are refused", level_refused(e) == false) }
+    }
+}
