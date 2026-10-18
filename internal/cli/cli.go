@@ -93,7 +93,7 @@ usage: zyx <command> [options] [paths]
 commands:
   check      analyze packages without emitting object code
   build      compile packages to executables
-  run        build with -O0 and run immediately
+  run        build and run immediately, at -O0 unless a level is given
   fmt        rewrite sources into canonical form
   clean      remove the build tree, and the cache with --cache
   get        add or upgrade a module requirement
