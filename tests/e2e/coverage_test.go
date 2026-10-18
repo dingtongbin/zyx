@@ -400,8 +400,7 @@ func TestInterpolationWritesIntoABuffer(t *testing.T) {
 var deferredRunning = map[string]string{
 	// A construct that exists only while the program is compiled, so no
 	// machine code carries it by nature.
-	"alias":      compileOnly,
-	"bind-const": compileOnly,
+	"alias": compileOnly,
 }
 
 // inImported is the reason a kind is deferred from this measurement: its only

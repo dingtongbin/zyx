@@ -15,7 +15,7 @@ declare void @"std/fmt.Fprint"(ptr, { ptr, i64 })
 declare void @"std/fmt.Fprintln"(ptr, { ptr, i64 })
 declare ptr @zyxrt_region_current()
 declare void @zyxrt_stack_grow(ptr)
-define void @"example.com/golden-hello.main"() uwtable {
+define internal void @"example.com/golden-hello.main"() uwtable inlinehint {
 entry1:
   %t2 = alloca ptr
   %t6 = alloca i8
