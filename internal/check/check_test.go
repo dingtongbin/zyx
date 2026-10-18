@@ -1,6 +1,7 @@
 package check
 
 import (
+	"strings"
 	"testing"
 
 	"zyx/internal/ast"
@@ -10,6 +11,7 @@ import (
 	"zyx/internal/resolve"
 	"zyx/internal/source"
 	"zyx/internal/toolchain"
+	"zyx/internal/types"
 )
 
 // parse parses one source string and fails the test on syntax errors.
@@ -61,6 +63,36 @@ func cTestTable() map[string]*cheader.Table {
 		"scanf":  {Name: "scanf", Variadic: true},
 		"fwrite": {Name: "fwrite", Variadic: true},
 	}}}
+}
+
+// TestAStrCrossingTheCBoundaryCountsAsTwo checks the report a C call gets when the
+// count of arguments does not match. A str crosses as its pointer and its length, so
+// one written argument fills two parameters, and the report has to say so rather than
+// leaving a caller counting the arguments it can see.
+func TestAStrCrossingTheCBoundaryCountsAsTwo(t *testing.T) {
+	tables := map[string]*cheader.Table{"test.h": {Functions: map[string]*cheader.Func{
+		"write_all": {Name: "write_all", Params: []*types.Type{types.Raw, types.Usize}},
+	}}}
+	src := `package server
+
+import c "test.h"
+
+func f() {
+	c.write_all("a", "b")
+}
+`
+	pkg := &resolve.Package{Path: "server", Files: []*ast.File{parse(t, src)}}
+	info, rdiags := resolve.Resolve(pkg, nil)
+	if len(rdiags) != 0 {
+		t.Fatalf("resolve diagnostics: %v", rdiags)
+	}
+	_, diags := Check(pkg, info, nil, toolchain.HostTarget(), tables)
+	for _, d := range diags {
+		if strings.Contains(d.Help, "crosses as two arguments") {
+			return
+		}
+	}
+	t.Errorf("no report about a str crossing as two arguments: %v", diags)
 }
 
 // TestConstantTakesTheTypeItsContextExpects checks the rule that an expression

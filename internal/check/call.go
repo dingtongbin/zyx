@@ -236,8 +236,10 @@ func (c *checker) checkCCall(sel *ast.SelectorExpr, v *ast.CallExpr) *types.Type
 	defer func() { c.addrOK = prev }()
 
 	// A str and a view cross as the pointer and the length they are, so one
-	// argument can fill two parameters.
+	// argument can fill two parameters. A report about the count says so, since
+	// that is the reason the numbers do not match what the source shows.
 	at := 0
+	expanded := false
 	for _, a := range v.Args {
 		var want *types.Type
 		if at < len(fn.Params) {
@@ -254,7 +256,7 @@ func (c *checker) checkCCall(sel *ast.SelectorExpr, v *ast.CallExpr) *types.Type
 		if at+width > len(fn.Params) {
 			if !fn.Variadic {
 				c.errorHelp(diag.CodeArgCount, a.Span(),
-					"pass the declared number of arguments",
+					cArgCountHelp(expanded),
 					"%s takes %d arguments", name, len(fn.Params))
 				return nil
 			}
@@ -267,11 +269,14 @@ func (c *checker) checkCCall(sel *ast.SelectorExpr, v *ast.CallExpr) *types.Type
 				"%s takes %s here, not %s", name, cArgText(fn.Params[at:at+width]), t)
 			return nil
 		}
+		if width == 2 {
+			expanded = true
+		}
 		at += width
 	}
 	if at != len(fn.Params) && !fn.Variadic {
 		c.errorHelp(diag.CodeArgCount, sel.Name.Sp,
-			"pass the declared number of arguments",
+			cArgCountHelp(expanded),
 			"%s takes %d arguments, %d given", name, len(fn.Params), at)
 		return nil
 	}
@@ -279,6 +284,17 @@ func (c *checker) checkCCall(sel *ast.SelectorExpr, v *ast.CallExpr) *types.Type
 		return void
 	}
 	return fn.Result
+}
+
+// cArgCountHelp is the help an argument-count report carries. A str and a view
+// are a pointer and a length on the C side, so one written argument fills two
+// parameters there, and a report that does not say so leaves a caller counting
+// the arguments in the source and finding the numbers do not match.
+func cArgCountHelp(expanded bool) string {
+	if expanded {
+		return "a str or a view crosses as two arguments, its pointer and its length, so count it as two"
+	}
+	return "pass the declared number of arguments"
 }
 
 // cFunction returns the declaration of a C function, searching the headers
