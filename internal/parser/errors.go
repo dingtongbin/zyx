@@ -93,10 +93,26 @@ func describe(tok token.Token) string {
 func (p *parser) name() *ast.Ident {
 	id := &ast.Ident{Sp: p.tok.Span, Name: p.tok.Text()}
 	if p.tok.Kind != token.Ident {
-		p.expected(token.Ident)
+		if !p.keywordName() {
+			p.expected(token.Ident)
+		}
 	}
 	p.advance()
 	return id
+}
+
+// keywordName reports a keyword where an identifier was expected. The language
+// takes the names a C declaration gave its fields, and one of them may be a
+// keyword here: such a field is read through an offset, or through a shim on the
+// C side, which is what the report says rather than calling the token unexpected.
+func (p *parser) keywordName() bool {
+	if _, ok := token.LookupKeyword(p.tok.Text()); !ok {
+		return false
+	}
+	p.errorHelpAt(p.tok, diag.CodeUnexpectedToken,
+		"read the field with meta.offset_of and a load, or give the C side a shim",
+		"%s is a keyword, so it cannot name a field or a binding here", describe(p.tok))
+	return true
 }
 
 // binding consumes a binding name; `_` is accepted as a discard.

@@ -407,6 +407,22 @@ func (p *parser) parseAggregate(typ *ast.TypeName) ast.Expr {
 	for p.tok.Kind != token.RBrace && p.tok.Kind != token.EOF {
 		before := p.pos
 		e := &ast.AggregateEntry{Sp: p.tok.Span}
+		// A field whose name is a keyword cannot be written here either. The
+		// report says so and says what to do instead, rather than calling the
+		// token an unexpected expression, and the value is still read so the
+		// rest of the literal is parsed.
+		if p.keywordName() {
+			p.advance()
+			if p.accept(token.Colon) {
+				e.Value = p.parseExpr()
+			}
+			e.Sp = p.spanFrom(e.Sp)
+			lit.Entries = append(lit.Entries, e)
+			p.skipLineBreaks()
+			p.accept(token.Comma)
+			p.skipLineBreaks()
+			continue
+		}
 		first := p.parseExpr()
 		if p.accept(token.Colon) {
 			e.Key = first

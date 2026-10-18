@@ -423,9 +423,11 @@ func (p *parser) parseTypeMembers(kind memberKind) []ast.Decl {
 				members = append(members, p.parseField())
 			}
 		default:
-			p.errorHelpAt(p.tok, diag.CodeUnexpectedToken,
-				"write a field, method, impl block, or const",
-				"unexpected %s in a type body", describe(p.tok))
+			if !p.keywordName() {
+				p.errorHelpAt(p.tok, diag.CodeUnexpectedToken,
+					"write a field, method, impl block, or const",
+					"unexpected %s in a type body", describe(p.tok))
+			}
 			p.advance()
 		}
 		if p.pos == before {
