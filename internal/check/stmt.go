@@ -211,7 +211,7 @@ func (c *checker) checkAssign(v *ast.AssignStmt) {
 		rt := c.checkExpr(v.Value, lt)
 		lt, rt = c.adaptLiterals(v.Target, v.Value, lt, rt)
 		if lt != nil && rt != nil && lt.Kind != types.Invalid &&
-			rt.Kind != types.Invalid && !types.Identical(lt, rt) {
+			rt.Kind != types.Invalid && !types.Identical(lt, rt) && !offsetArithmetic(lt, rt) {
 			c.errorHelp(diag.CodeTypeMismatch, v.Sp,
 				"convert one operand explicitly",
 				"%s needs two operands of one type, got %s and %s", v.Op, lt, rt)

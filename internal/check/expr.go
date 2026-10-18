@@ -277,6 +277,13 @@ func (c *checker) intBitWidth(t *types.Type) int {
 	return 0
 }
 
+// offsetArithmetic reports whether the operands are an address and an offset
+// from it, which is the only arithmetic a raw takes: the language has no pointer
+// arithmetic, and this is the form of it that C interoperation needs.
+func offsetArithmetic(lt, rt *types.Type) bool {
+	return lt != nil && rt != nil && lt.Kind == types.KindRaw && rt.Kind == types.KindUsize
+}
+
 // binaryType checks a binary operator against the operand rules of the
 // language.
 func (c *checker) binaryType(v *ast.BinaryExpr, want *types.Type) *types.Type {
@@ -285,6 +292,11 @@ func (c *checker) binaryType(v *ast.BinaryExpr, want *types.Type) *types.Type {
 	lt, rt = c.adaptLiterals(v.X, v.Y, lt, rt)
 	if lt == nil || rt == nil || lt.Kind == types.Invalid || rt.Kind == types.Invalid {
 		return comparisonResult(v.Op)
+	}
+	if (v.Op == token.Plus || v.Op == token.Minus) && offsetArithmetic(lt, rt) {
+		// The one arithmetic the language has on an address: an offset leads
+		// from an address, and takes one back.
+		return types.Raw
 	}
 	if !types.Identical(lt, rt) {
 		c.errorHelp(diag.CodeTypeMismatch, v.Sp,

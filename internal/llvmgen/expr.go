@@ -1099,6 +1099,21 @@ func (g *generator) arith(op string, a, b *value) *value {
 	}
 	typ := a.typ
 	ll := a.ll
+	// An address and an offset from it: the language has no pointer
+	// arithmetic, and this is the one form of it, so it is lowered as the
+	// address the offset leads to rather than as an integer computation. The
+	// offset is unsigned, so an offset taken away is negated as one.
+	if typ.Kind == types.KindRaw && b.typ != nil && b.typ.Kind == types.KindUsize &&
+		(op == "+" || op == "-") {
+		off := b.text
+		if op == "-" {
+			off = g.newReg()
+			g.emit("  %s = sub %s 0, %s", off, b.ll, b.text)
+		}
+		out := g.newReg()
+		g.emit("  %s = getelementptr i8, ptr %s, %s %s", out, a.text, b.ll, off)
+		return &value{text: out, ll: g.llType(types.Raw), typ: types.Raw}
+	}
 	// The checks the language defines belong to the operators on integers.
 	// A duration and a floating-point value carry their own arithmetic.
 	checked := typ.IsInteger()
