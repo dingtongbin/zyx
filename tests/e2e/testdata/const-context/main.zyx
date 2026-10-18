@@ -1,0 +1,25 @@
+package main
+
+// A constant expression is evaluated with the type its context expects, so an
+// expression written beside an i32 is written in i32: `640 * 400` is a value of
+// that type rather than a wider one the comparison would reject. A constant that
+// does not fit is still an error, which the checker tests hold.
+
+import "std/fmt"
+
+func main() {
+    var n: i32 = 0
+    if n < 640 * 400 {
+        fmt.Println("fits")
+    }
+    var m = n + 2i32 * 3i32
+    fmt.PrintI64(i64(m))
+    fmt.PrintNl()
+    var xs: [i64; 4] = [1, 2, 3, 4]
+    fmt.PrintI64(xs[1 + 1])
+    fmt.PrintNl()
+    const limit: i32 = 1000
+    if n < limit * 2 {
+        fmt.Println("constant name")
+    }
+}

@@ -365,9 +365,13 @@ func comparisonResult(op token.Kind) *types.Type {
 }
 
 // adaptLiterals lets an unsuffixed numeric literal adopt the type of the
-// other operand, which fixes the type of `1 + x` and `x + 1`.
+// other operand, which fixes the type of `1 + x` and `x + 1`. A constant
+// expression is the same thing written longer, and the language evaluates an
+// expression with the type its context expects, so `x < 640 * 400` is written
+// in the type of x.
 func (c *checker) adaptLiterals(x, y ast.Expr, lt, rt *types.Type) (*types.Type, *types.Type) {
-	if lt == nil || rt == nil || types.Identical(lt, rt) {
+	if lt == nil || rt == nil || lt.Kind == types.Invalid || rt.Kind == types.Invalid ||
+		types.Identical(lt, rt) {
 		return lt, rt
 	}
 	if untypedNumeric(x) && rt.IsNumeric() {
@@ -378,7 +382,79 @@ func (c *checker) adaptLiterals(x, y ast.Expr, lt, rt *types.Type) (*types.Type,
 		c.out.Nodes[y] = lt
 		return lt, lt
 	}
+	if c.takesConstantType(x, rt) {
+		// The constant is checked again with the type it is written under,
+		// which is what types the literals inside it: the language evaluates
+		// an expression with the type its context expects.
+		c.checkExpr(x, rt)
+		return rt, rt
+	}
+	if c.takesConstantType(y, lt) {
+		c.checkExpr(y, lt)
+		return lt, lt
+	}
 	return lt, rt
+}
+
+// takesConstantType reports whether an expression is a constant whose value fits
+// the type that expects it. Only the parts that cannot fail are evaluated: a
+// literal, a name bound to a const, and the arithmetic and bitwise operators
+// over those, so asking for a value here either answers or asks nothing.
+func (c *checker) takesConstantType(e ast.Expr, want *types.Type) bool {
+	if want == nil || !want.IsInteger() || !constantOperand(e) {
+		return false
+	}
+	v := c.eval(e)
+	if v == nil || !v.Type.IsInteger() {
+		return false
+	}
+	return c.fitsConstant(v, want)
+}
+
+// constantOperand reports whether an expression is a constant of the parts that
+// evaluate without a report.
+func constantOperand(e ast.Expr) bool {
+	switch v := e.(type) {
+	case *ast.Literal:
+		return true
+	case *ast.Ident:
+		return true
+	case *ast.UnaryExpr:
+		return (v.Op == token.Plus || v.Op == token.Minus) && constantOperand(v.X)
+	case *ast.BinaryExpr:
+		switch v.Op {
+		case token.Plus, token.Minus, token.Star, token.Slash, token.Percent,
+			token.Shl, token.Shr, token.Amp, token.Pipe, token.Caret:
+			return constantOperand(v.X) && constantOperand(v.Y)
+		}
+	}
+	return false
+}
+
+// fitsConstant reports whether a constant of one integer type fits another,
+// which is what a constant expression must do to be written with it. The value
+// is held as a pattern of its own type's width, so a signed one is read as the
+// value it stands for.
+func (c *checker) fitsConstant(v *Value, t *types.Type) bool {
+	width := c.intBitWidth(t)
+	if width == 0 {
+		return false
+	}
+	own := c.intBitWidth(v.Type)
+	value := new(big.Int).SetUint64(v.Int)
+	if v.Type.IsSigned() && own > 0 && value.Bit(own-1) == 1 {
+		value.Sub(value, new(big.Int).Lsh(big.NewInt(1), uint(own)))
+	}
+	limit := new(big.Int).Lsh(big.NewInt(1), uint(width))
+	low := big.NewInt(0)
+	if t.IsSigned() {
+		limit.Lsh(big.NewInt(1), uint(width-1))
+		low.Neg(limit)
+		limit.Sub(limit, big.NewInt(1))
+	} else {
+		limit.Sub(limit, big.NewInt(1))
+	}
+	return value.Cmp(low) >= 0 && value.Cmp(limit) <= 0
 }
 
 // equalityOK reports whether a type supports == and !=: the primitive
