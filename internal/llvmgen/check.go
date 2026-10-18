@@ -45,12 +45,31 @@ func (g *generator) panicMessage(message string) {
 
 // preemptCheck emits the check a loop back edge makes. A coroutine that
 // computes without blocking would otherwise hold the scheduler thread, so the
-// runtime marks one that has had it long enough and this call lets another
-// coroutine run. The check is one call and one atomic load, and the language
-// keeps it at every optimization level.
+// monitor marks one that has had it long enough and this check lets another
+// coroutine run. The mark is read through the pointer the runtime keeps for the
+// calling thread, which is the flag of the coroutine that thread runs; the call
+// that gives the thread up is made only when the mark is set. A loop that never
+// exceeds the quantum therefore pays a load and a branch per round, and the
+// language keeps the check at every optimization level.
 func (g *generator) preemptCheck() {
+	if !g.m.declared["zyxrt_preempt_mark"] {
+		g.m.declared["zyxrt_preempt_mark"] = true
+		fmt.Fprint(&g.m.funcs, "@zyxrt_preempt_mark = external thread_local global ptr\n")
+	}
+	mark := g.newReg()
+	g.emit("  %s = load ptr, ptr @zyxrt_preempt_mark", mark)
+	flag := g.newReg()
+	g.emit("  %s = load atomic i32, ptr %s monotonic, align 4", flag, mark)
+	set := g.newReg()
+	g.emit("  %s = icmp ne i32 %s, 0", set, flag)
+	due := g.newLabel("preempt.due")
+	after := g.newLabel("preempt.after")
+	g.branch("  br i1 %s, label %%%s, label %%%s", set, due, after)
+	g.label(due)
 	g.declareRuntime("zyxrt_preempt_check", "void")
 	g.emit("  call void @zyxrt_preempt_check()")
+	g.branch("  br label %%%s", after)
+	g.label(after)
 }
 
 // checkedArith lowers an integer addition, subtraction, or multiplication
