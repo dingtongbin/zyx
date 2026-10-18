@@ -31,13 +31,16 @@ func (g *generator) guard(cond, message string) {
 }
 
 // panicMessage reports one message and ends the function, which is what an
-// inserted check does when it fails.
+// inserted check does when it fails. The report is the path nothing takes unless
+// a check fails, so the declaration says it does not return and is cold: the
+// optimizer then treats the branch to it as the unlikely one it is, which is
+// what keeps an inserted check from keeping a function out of an inliner.
 func (g *generator) panicMessage(message string) {
 	global := g.m.stringGlobal(message)
 	ptr := g.newReg()
 	g.emit("  %s = getelementptr inbounds [%d x i8], ptr %s, i64 0, i64 0",
 		ptr, len(message), global)
-	g.declareRuntime("zyxrt_panic", "void", "ptr", "i64")
+	g.declareRuntimeAttrs("zyxrt_panic", "void", []string{"noreturn", "cold"}, "ptr", "i64")
 	g.emit("  call void @zyxrt_panic(ptr %s, i64 %d)", ptr, len(message))
 	g.emit("  unreachable")
 	g.fn.terminated = true
