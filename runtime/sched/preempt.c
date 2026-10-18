@@ -20,6 +20,18 @@ static _Atomic(zyxrt_coro *) running[ZYXXRT_PREEMPT_SLOTS];
 /* running_since is the monotonic time the thread resumed its coroutine. */
 static _Atomic uint64_t running_since[ZYXXRT_PREEMPT_SLOTS];
 
+/* zyxrt_preempt_idle is the flag a thread with no coroutine reads. Nothing sets
+   it, so a back edge outside a coroutine finds the mark clear. */
+static _Atomic int zyxrt_preempt_idle;
+
+/* zyxrt_preempt_mark is where a loop back edge of the calling thread reads the
+   mark. The monitor writes the flag on the coroutine itself, so a back edge has
+   to reach that flag through the thread it runs on, and this pointer is the way:
+   the scheduler points it at the running coroutine's flag and back at a flag of
+   its own while it has none. The compiler reads the flag through this pointer, so
+   the two sides hold to one layout, and the compiler's comment says so too. */
+_Thread_local _Atomic int *zyxrt_preempt_mark = &zyxrt_preempt_idle;
+
 /* self_slot answers the calling thread's slot, or
    ZYXXRT_PREEMPT_NONE when the thread is not a scheduler thread. The answer
    comes from the scheduler rather than from a thread-local variable, because a
@@ -117,6 +129,7 @@ void zyxrt_preempt_enter(zyxrt_coro *c) {
                         atomic_load_explicit(&monitor_clock, memory_order_relaxed),
                         memory_order_relaxed);
   atomic_store_explicit(&running[slot], c, memory_order_release);
+  zyxrt_preempt_mark = &c->preempt;
 }
 
 /* zyxrt_preempt_leave records that the calling thread runs no coroutine, which
@@ -127,6 +140,7 @@ void zyxrt_preempt_leave(void) {
     return;
   }
   atomic_store_explicit(&running[slot], NULL, memory_order_release);
+  zyxrt_preempt_mark = &zyxrt_preempt_idle;
 }
 
 /* zyxrt_preempt_check is what a loop back edge calls. A marked coroutine gives

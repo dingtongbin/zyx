@@ -413,6 +413,25 @@ func exported(name string) bool {
 	return unicode.IsUpper(r)
 }
 
+// localName returns the part of a symbol after the package it belongs to.
+func localName(pkg, symbol string) string {
+	if pkg != "" && strings.HasPrefix(symbol, pkg+".") {
+		return symbol[len(pkg)+1:]
+	}
+	return symbol
+}
+
+// firstComponent returns the part of a name before its first dot, which is the
+// name a qualified one is declared under: an initializer is written for a type
+// ("TreeMap.init"), so the type is what says whether it may be reached from
+// another module.
+func firstComponent(name string) string {
+	if i := strings.IndexByte(name, '.'); i >= 0 {
+		return name[:i]
+	}
+	return name
+}
+
 // globalLinkage returns the linkage a top-level binding takes. A public name
 // can be reached by another module, so the linker names it; a private one is
 // only ever read by its own module, so the object file keeps it to itself.

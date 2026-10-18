@@ -593,7 +593,21 @@ func (g *generator) function(module string, n *zyxc.Node) {
 	}
 
 	var out strings.Builder
-	fmt.Fprintf(&out, "define %s @%s(", retLL, llvmName(symbol))
+	// A private name is only reached from its own module, so the object file
+	// keeps it to itself and the optimizer may inline it wherever the language
+	// allows. What decides is the name the source declared; an initializer is
+	// written for a type rather than for a name, so it follows the type, which
+	// is what the symbol it was given carries.
+	declared := n.Payload[0]
+	if hasMark(n, "init") {
+		declared = firstComponent(localName(g.pkg, symbol))
+	}
+	linkage := globalLinkage(declared)
+	hint := ""
+	if linkage != "" {
+		hint = " inlinehint"
+	}
+	fmt.Fprintf(&out, "define %s%s @%s(", linkage, retLL, llvmName(symbol))
 	var parts []string
 	for i := range params {
 		for j, ll := range params[i].lls {
@@ -602,10 +616,11 @@ func (g *generator) function(module string, n *zyxc.Node) {
 	}
 	out.WriteString(strings.Join(parts, ", "))
 	// uwtable keeps the frame's unwind information, which a panic needs to
-	// walk past it. The check reads the frame it just built, so it is asked
-	// for before the frame is written out.
+	// walk past it, and a private function asks to be inlined, which the
+	// optimizer still weighs where it is called. The check reads the frame it
+	// just built, so it is asked for before the frame is written out.
 	check := g.stackCheck()
-	out.WriteString(") uwtable {\n")
+	out.WriteString(") uwtable" + hint + " {\n")
 	out.WriteString(g.fn.entry + ":\n")
 	out.WriteString(g.fn.allocas.String())
 	out.WriteString(check)
@@ -664,9 +679,22 @@ func symIDOf(n *zyxc.Node) string {
 
 // declareRuntime emits a runtime declaration once.
 func (g *generator) declareRuntime(symbol, ret string, args ...string) {
+	g.declareRuntimeAttrs(symbol, ret, nil, args...)
+}
+
+// declareRuntimeAttrs emits a runtime declaration once, with the attributes the
+// declaration carries. They are what tells the optimizer what a call may do, so
+// a function that never returns and is only reached on a failure is declared the
+// way it is: the block that calls it is then known to be cold, and the check
+// that branches to it costs nothing where the branch is not taken.
+func (g *generator) declareRuntimeAttrs(symbol, ret string, attrs []string, args ...string) {
 	if g.m.declared[symbol] {
 		return
 	}
 	g.m.declared[symbol] = true
-	fmt.Fprintf(&g.m.funcs, "declare %s @%s(%s)\n", ret, symbol, strings.Join(args, ", "))
+	suffix := ""
+	if len(attrs) > 0 {
+		suffix = " " + strings.Join(attrs, " ")
+	}
+	fmt.Fprintf(&g.m.funcs, "declare %s @%s(%s)%s\n", ret, symbol, strings.Join(args, ", "), suffix)
 }

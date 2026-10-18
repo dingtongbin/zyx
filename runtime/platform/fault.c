@@ -50,17 +50,22 @@ static const char *fault_what(DWORD code) {
 }
 
 /* The exceptions the trap reports itself: a fault of the program, which no one
-   can carry on from. The trap has to claim these because it is the only handler
-   that runs on every thread. The threads the runtime starts to run coroutines are
-   raw system threads, and the filter the C runtime set is called by a frame such
-   a thread does not have, so a fault there reaches nothing but the trap.
+   can carry on from. The trap claims these because it is the only handler that
+   runs where they happen. A fault on a coroutine's stack is one the dispatch does
+   not walk to a place it accepts as unhandled, so the filter below is reached
+   there only when the stack is the thread's own. The bounds of a coroutine's stack
+   are in the thread environment block already, and the walk of the system still
+   does not accept it, so what such a stack needs is not a frame of a particular
+   shape. A fault of the program is reported from the trap, on any stack.
 
    An exception the language does not name - a C++ library's own, the
    thread-naming exception a debugger's convention uses, a platform's - is left to
    the dispatch, which is what a library that raises and catches its own exception
    needs: a VEH runs before the dispatch, so claiming an exception there takes it
    away from the handler the library wrote. Such an exception that reaches the top
-   with no handler at all is reported by the filter below. */
+   with no handler at all is reported by the filter below, which the system calls
+   for it: on the main thread, and on a thread the runtime started where the call
+   that raised it ran on the thread's own stack. */
 static int fault_of_the_program(DWORD code) {
   switch (code) {
   case EXCEPTION_ACCESS_VIOLATION:
@@ -105,8 +110,14 @@ static LONG CALLBACK fatal_handler(PEXCEPTION_POINTERS info) {
 }
 
 /* The backstop for what the trap does not claim: an exception that reached the top
-   of a thread the C runtime started with no handler at all is reported the same
-   way, rather than ending the process in silence. */
+   of a thread the system walks with no handler at all is reported the same way,
+   rather than ending the process in silence. It reaches the main thread and the
+   threads the runtime starts, whose frames are the thread's own; it is not reached
+   when the exception is raised on a coroutine's stack, which the dispatch of this
+   system does not walk to a top it accepts as unhandled, measured with the bounds
+   of the stack, a terminating frame, and unwind information for it in place. An
+   exception there is therefore one the trap has to claim if it is to be reported,
+   which is why only the faults of the program are claimed. */
 static LONG WINAPI unhandled_handler(PEXCEPTION_POINTERS info) {
   if (reported_by_another(info->ExceptionRecord->ExceptionCode)) {
     return EXCEPTION_CONTINUE_SEARCH;

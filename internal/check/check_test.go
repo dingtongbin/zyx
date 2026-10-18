@@ -63,6 +63,30 @@ func cTestTable() map[string]*cheader.Table {
 	}}}
 }
 
+// TestConstantTakesTheTypeItsContextExpects checks the rule that an expression
+// with an expected type is evaluated with it: a constant written beside an i32 is
+// a value of that type, and one whose value does not fit is still an error rather
+// than a value narrowed to fit.
+func TestConstantTakesTheTypeItsContextExpects(t *testing.T) {
+	fits := `package server
+
+func f(n: i32) -> bool {
+	return n < 640 * 400
+}
+`
+	if _, diags := checkSource(t, "server", nil, nil, fits); len(diags) != 0 {
+		t.Fatalf("a constant that fits was rejected: %v", codes(diags))
+	}
+	tooBig := `package server
+
+func f(n: i32) -> bool {
+	return n < 4000000 * 4000
+}
+`
+	_, diags := checkSource(t, "server", nil, nil, tooBig)
+	wantCode(t, diags, diag.CodeTypeMismatch)
+}
+
 // checkedDep resolves and checks a dependency package.
 func checkedDep(t *testing.T, path, src string) (*resolve.Interface, *Interface) {
 	t.Helper()

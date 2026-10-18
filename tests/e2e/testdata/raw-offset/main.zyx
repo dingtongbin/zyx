@@ -1,0 +1,26 @@
+package main
+
+// The one arithmetic the language has on an address: an offset leads from an
+// address and takes one back. The address comes from the C side and the byte at
+// the offset is read by the C side, so what proves the offset is the byte the C
+// side finds there; the answer does not depend on the address a run was given.
+
+import "std/fmt"
+
+import c "probe.h" {
+    fast table
+    fast byte_at
+}
+
+func main() {
+    var base = c.table()
+    fmt.PrintI64(i64(c.byte_at(base)))
+    fmt.PrintNl()
+    fmt.PrintI64(i64(c.byte_at(base + 3usize)))
+    fmt.PrintNl()
+    fmt.PrintI64(i64(c.byte_at(base + 8usize)))
+    fmt.PrintNl()
+    var back = base + 8usize - 8usize
+    fmt.PrintI64(i64(c.byte_at(back)))
+    fmt.PrintNl()
+}

@@ -27,7 +27,7 @@ declare void @"std/fmt.Fprint"(ptr, { ptr, i64 })
 declare void @"std/fmt.Fprintln"(ptr, { ptr, i64 })
 declare ptr @zyxrt_region_current()
 declare void @zyxrt_stack_grow(ptr)
-define void @"example.com/golden-marks.note"({ ptr, i64 } %p0_0) uwtable {
+define internal void @"example.com/golden-marks.note"({ ptr, i64 } %p0_0) uwtable inlinehint {
 entry1:
   %t1 = alloca { ptr, i64 }
   %t3 = alloca ptr
@@ -69,7 +69,7 @@ defer9:
   ret void
 }
 declare void @zyxrt_defer_run(ptr)
-define void @"example.com/golden-marks.work"(i8 %p0_0) uwtable {
+define internal void @"example.com/golden-marks.work"(i8 %p0_0) uwtable inlinehint {
 entry5:
   %t11 = alloca i8
   %t13 = alloca ptr
@@ -134,7 +134,7 @@ defer18:
   ret void
 }
 declare void @zyxrt_panic(ptr, i64)
-define void @"example.com/golden-marks.boom"() uwtable {
+define internal void @"example.com/golden-marks.boom"() uwtable inlinehint {
 entry16:
   %t46 = alloca ptr
   %t48 = alloca ptr
@@ -183,7 +183,7 @@ declare ptr @zyxrt_coro_spawn(ptr, ptr, i32)
 declare void @zyxrt_region_wait(ptr)
 declare void @zyxrt_region_leave()
 declare void @zyxrt_region_free(ptr)
-define void @"example.com/golden-marks.main"() uwtable {
+define internal void @"example.com/golden-marks.main"() uwtable inlinehint {
 entry22:
   %t69 = alloca ptr
   %t71 = alloca ptr

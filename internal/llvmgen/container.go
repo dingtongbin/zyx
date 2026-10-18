@@ -174,10 +174,7 @@ func (g *generator) arrayCall(module string, n *zyxc.Node, recv *value, name str
 	elem := arg(recv.typ, 0)
 	switch name {
 	case "Len":
-		g.declareRuntime("zyxrt_array_len", g.ptrInt(), "ptr")
-		reg := g.newReg()
-		g.emit("  %s = call %s @zyxrt_array_len(ptr %s)", reg, g.ptrInt(), recv.text)
-		return &value{text: reg, ll: g.ptrInt(), typ: types.Usize}
+		return &value{text: g.arrayLen(g.arrayHeaderOf(recv.text)), ll: g.ptrInt(), typ: types.Usize}
 	case "Cap":
 		g.declareRuntime("zyxrt_array_cap", g.ptrInt(), "ptr")
 		reg := g.newReg()
@@ -1072,4 +1069,55 @@ func (g *generator) arraySize(elem *types.Type) (uint64, bool) {
 		return 0, false
 	}
 	return size, true
+}
+
+// The header the runtime writes beside an array, which is what an element access
+// reads rather than calling the runtime: the length of the array first, then the
+// capacity, the size of one element, the count of the structural modifications,
+// and the address of the elements. Both sides hold to this layout, and both say
+// so where it is declared.
+const arrayHeaderFields = 5
+
+// arrayHeaderOf answers the address an array's length and its elements are read
+// through. A container that was never created holds a null handle, and the length
+// of one is zero, which is what the runtime answers for it: a null handle reads
+// through a zeroed header instead, so an access to one panics where it did rather
+// than faulting on the handle.
+func (g *generator) arrayHeaderOf(handle string) string {
+	none := g.newReg()
+	g.emit("  %s = icmp eq ptr %s, null", none, handle)
+	header := g.newReg()
+	g.emit("  %s = select i1 %s, ptr %s, ptr %s", header, none, g.arrayEmptyGlobal(), handle)
+	return header
+}
+
+// arrayLen reads the length of an array from its header.
+func (g *generator) arrayLen(header string) string {
+	length := g.newReg()
+	g.emit("  %s = load %s, ptr %s", length, g.ptrInt(), header)
+	return length
+}
+
+// arrayData reads the address of the elements of an array from its header.
+func (g *generator) arrayData(header string) string {
+	field := g.newReg()
+	g.emit("  %s = getelementptr inbounds i8, ptr %s, i64 %d", field, header,
+		uint64(arrayHeaderFields-1)*g.target.Layout().PtrSize)
+	data := g.newReg()
+	g.emit("  %s = load ptr, ptr %s", data, field)
+	return data
+}
+
+// arrayEmptyGlobal returns the header a null container is read through,
+// declaring it on first use. It is all zeros, and its first field is the length
+// of zero that a null container has.
+func (g *generator) arrayEmptyGlobal() string {
+	if name := g.m.arrayEmpty; name != "" {
+		return name
+	}
+	size := uint64(arrayHeaderFields) * g.target.Layout().PtrSize
+	g.m.arrayEmpty = "@.array.empty"
+	g.m.globals = append(g.m.globals, fmt.Sprintf(
+		"%s = private unnamed_addr constant [%d x i8] zeroinitializer\n", g.m.arrayEmpty, size))
+	return g.m.arrayEmpty
 }
