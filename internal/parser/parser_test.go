@@ -2,6 +2,7 @@ package parser
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"zyx/internal/ast"
@@ -422,6 +423,36 @@ var keep = func(x: i64) -> bool => x > 0
 	}
 }
 
+// TestAKeywordCannotNameAField checks the report a field whose name is a keyword
+// gets, in the three places a field name is written: a declaration, a use, and an
+// aggregate literal. A C declaration may name a field with such a word, and the
+// name then cannot be written in a program at all, so each report has to say what
+// to do instead. The code is the one an unexpected token gets, which is why this
+// holds the message rather than the code.
+func TestAKeywordCannotNameAField(t *testing.T) {
+	const want = "is a keyword, so it cannot name a field or a binding here"
+	cases := map[string]string{
+		"declaration": "package main\n\nstruct Event {\n\ttype: i32\n}\n",
+		"use":         "package main\n\nfunc F(ev: Event) -> bool {\n\treturn ev.type == 1\n}\n",
+		"literal":     "package main\n\nfunc F() {\n\tvar ev = Event { type: 1 }\n}\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, diags := parseSrc(t, src)
+			for _, d := range diags {
+				if strings.Contains(d.Message, want) {
+					if !strings.Contains(d.Help, "meta.offset_of") {
+						t.Errorf("the report does not say what to do instead: %q", d.Help)
+					}
+					return
+				}
+			}
+			t.Errorf("no report about a keyword name among %d diagnostics: %v", len(diags), diags)
+		})
+	}
+}
+
+// TestSyntaxErrors checks the code each syntax error is reported with.
 func TestSyntaxErrors(t *testing.T) {
 	cases := []struct {
 		name string
